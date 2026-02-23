@@ -1,0 +1,175 @@
+name: architecture
+version: "1.0.0"
+description: Architecture principles for the Forge codebase.
+principles:
+  - id: arch-001
+    category: architecture
+    severity: warning
+    title: Interface-first design
+    description: >
+      Define interfaces before implementations. Packages should export
+      interfaces that describe capabilities, and concrete types should
+      satisfy those interfaces. Accept interfaces, return structs.
+    rationale: >
+      Interface-first design enables testability through mocks, supports
+      multiple backends (agents, trackers, environments), and enforces
+      clear contracts between packages.
+    check: >
+      Verify that key abstractions are defined as interfaces. Check that
+      functions accept interface parameters where possible. Ensure
+      implementations are in separate files from their interfaces.
+    examples:
+      - type: bad
+        code: |
+          func RunBuild(agent *ClaudeCodeAgent, tracker *GitHubTracker) error {
+              return agent.Execute(tracker.GetIssue())
+          }
+        explanation: Function depends on concrete types, making it impossible to test or swap backends.
+      - type: good
+        code: |
+          func RunBuild(agent Agent, tracker Tracker) error {
+              return agent.Execute(tracker.GetIssue())
+          }
+        explanation: Function accepts interfaces, allowing any agent or tracker implementation.
+    tags:
+      - interfaces
+      - design
+
+  - id: arch-002
+    category: architecture
+    severity: warning
+    title: Context propagation
+    description: >
+      Always pass context.Context as the first parameter to functions that
+      perform I/O, call external services, or may need cancellation. Never
+      store contexts in structs.
+    rationale: >
+      Context carries deadlines, cancellation signals, and request-scoped
+      values. Proper propagation ensures graceful shutdown, timeout handling,
+      and tracing work correctly across the call chain.
+    check: >
+      Verify that functions performing I/O or calling external services
+      accept context.Context as their first parameter. Check that contexts
+      are not stored in struct fields. Ensure context.Background() is only
+      used at program entry points.
+    examples:
+      - type: bad
+        code: |
+          type Service struct {
+              ctx context.Context
+          }
+          func (s *Service) FetchData() ([]byte, error) {
+              return http.Get(s.url)
+          }
+        explanation: Context stored in struct and not passed to HTTP call.
+      - type: good
+        code: |
+          func (s *Service) FetchData(ctx context.Context) ([]byte, error) {
+              req, err := http.NewRequestWithContext(ctx, "GET", s.url, nil)
+              if err != nil {
+                  return nil, fmt.Errorf("creating request: %w", err)
+              }
+              resp, err := http.DefaultClient.Do(req)
+          }
+        explanation: Context is a parameter and propagated to the HTTP request.
+    tags:
+      - context
+      - concurrency
+
+  - id: arch-003
+    category: architecture
+    severity: warning
+    title: Error wrapping with context
+    description: >
+      Wrap errors with fmt.Errorf("operation: %%w", err) to provide context
+      about where and why the error occurred. Never swallow errors silently.
+    rationale: >
+      Error wrapping creates a chain that makes debugging possible. Without
+      context, errors like "file not found" give no indication of which file
+      or which operation failed.
+    check: >
+      Verify that returned errors include context via fmt.Errorf with %%w.
+      Check that no error return paths silently discard errors (assigning
+      to _ or ignoring the return value). Ensure error messages describe
+      the operation that failed.
+    examples:
+      - type: bad
+        code: |
+          data, err := os.ReadFile(path)
+          if err != nil {
+              return err
+          }
+        explanation: Raw error returned without any context about which operation or file failed.
+      - type: good
+        code: |
+          data, err := os.ReadFile(path)
+          if err != nil {
+              return fmt.Errorf("reading config %s: %w", path, err)
+          }
+        explanation: Error wraps the original with context about what was being done.
+    tags:
+      - errors
+      - debugging
+
+  - id: arch-004
+    category: architecture
+    severity: critical
+    title: No circular dependencies
+    description: >
+      Packages must not have circular import dependencies. If package A
+      imports package B, package B must not import package A, directly
+      or transitively.
+    rationale: >
+      Circular dependencies indicate poor package boundaries and make the
+      code impossible to compile in Go. They signal that responsibilities
+      are not cleanly separated between packages.
+    check: >
+      Verify the dependency graph has no cycles. Check that lower-level
+      packages (principles, config) do not import higher-level packages
+      (engine, server). Use go vet or dependency analysis tools.
+    examples:
+      - type: bad
+        code: |
+          // package engine imports package review
+          // package review imports package engine
+          // This creates a circular dependency that won't compile.
+        explanation: Engine and review depend on each other, creating a cycle.
+      - type: good
+        code: |
+          // package engine defines a Reviewer interface
+          // package review implements engine.Reviewer
+          // engine imports nothing from review; review imports engine's interface
+        explanation: The dependency is one-way, using interfaces to break the cycle.
+    tags:
+      - dependencies
+      - packages
+
+  - id: arch-005
+    category: architecture
+    severity: info
+    title: Package cohesion
+    description: >
+      Related types, functions, and methods should live in the same package.
+      A package should have a single, well-defined responsibility. Avoid
+      "util" or "helpers" packages.
+    rationale: >
+      Cohesive packages are easier to understand, test, and maintain. Grab-bag
+      packages like "util" grow unbounded and create hidden coupling between
+      unrelated features.
+    check: >
+      Check that each package has a clear, documented purpose. Verify there
+      are no "util", "helpers", or "common" packages. Ensure types that are
+      always used together live in the same package.
+    examples:
+      - type: bad
+        code: |
+          // package util contains: ParseYAML, FormatTime, HashPassword, ValidateEmail
+        explanation: Unrelated functions dumped into a grab-bag package.
+      - type: good
+        code: |
+          // package principles contains: Principle, PrincipleSet, Store, Validate
+          // All types relate to the principles domain.
+        explanation: Package has a single, cohesive responsibility.
+    tags:
+      - packages
+      - cohesion

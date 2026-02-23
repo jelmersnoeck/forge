@@ -1,0 +1,192 @@
+name: simplicity
+version: "1.0.0"
+description: Simplicity principles for the Forge codebase.
+principles:
+  - id: sim-001
+    category: simplicity
+    severity: warning
+    title: No premature abstraction
+    description: >
+      Do not introduce abstractions (interfaces, generics, factories) until
+      there are at least two concrete use cases. Prefer concrete code that
+      works over abstract code that might be needed later.
+    rationale: >
+      Premature abstractions add complexity without value. They make code
+      harder to understand and often end up being the wrong abstraction
+      when real requirements arrive. "A little copying is better than a
+      little dependency."
+    check: >
+      Look for interfaces with a single implementation and no test mocks.
+      Check for generic types or factory patterns that are only used in
+      one place. Verify abstractions have at least two distinct consumers.
+    examples:
+      - type: bad
+        code: |
+          type DataProcessor interface {
+              Process(data []byte) ([]byte, error)
+          }
+          type JSONProcessor struct{}
+          // JSONProcessor is the only implementation, used in one place.
+        explanation: Interface created for a single implementation with no clear need for polymorphism.
+      - type: good
+        code: |
+          func processJSON(data []byte) ([]byte, error) {
+              // Direct implementation — if we need a second processor later,
+              // we can extract the interface then.
+          }
+        explanation: Simple function that does the job; abstraction deferred until needed.
+    tags:
+      - abstraction
+      - yagni
+
+  - id: sim-002
+    category: simplicity
+    severity: info
+    title: Functions under 50 lines
+    description: >
+      Functions should generally be under 50 lines of code (excluding
+      comments and blank lines). Longer functions should be broken into
+      well-named helper functions.
+    rationale: >
+      Short functions are easier to understand, test, and review. A function
+      that fits on one screen can be understood at a glance. Long functions
+      usually do too many things.
+    check: >
+      Measure function length excluding comments and blank lines. Flag
+      functions over 50 lines. Exceptions: table-driven tests and switch
+      statements on types may be longer.
+    examples:
+      - type: bad
+        code: |
+          func handleRequest(w http.ResponseWriter, r *http.Request) {
+              // ... 120 lines of validation, business logic,
+              // database queries, response formatting ...
+          }
+        explanation: Monolithic function that handles everything in one place.
+      - type: good
+        code: |
+          func handleRequest(w http.ResponseWriter, r *http.Request) {
+              input, err := parseInput(r)
+              if err != nil { ... }
+              result, err := processRequest(r.Context(), input)
+              if err != nil { ... }
+              writeResponse(w, result)
+          }
+        explanation: Main function delegates to focused helpers, each under 50 lines.
+    tags:
+      - functions
+      - readability
+
+  - id: sim-003
+    category: simplicity
+    severity: info
+    title: Clear naming over comments
+    description: >
+      Choose descriptive names for variables, functions, and types that
+      make the code self-documenting. Use comments for "why", not "what".
+      If you need a comment to explain what code does, rename instead.
+    rationale: >
+      Good names reduce cognitive load and eliminate the risk of comments
+      becoming stale. Comments that restate the code add noise. Names are
+      always in sync with the code; comments often are not.
+    check: >
+      Look for comments that describe what code does rather than why.
+      Check for single-letter variable names outside of loop indices.
+      Verify function names describe their behavior.
+    examples:
+      - type: bad
+        code: |
+          // check if the user is valid
+          func check(u *U) bool {
+              // get the name
+              n := u.N
+              return n != ""
+          }
+        explanation: Comments restate the code; names are cryptic and require comments.
+      - type: good
+        code: |
+          func isValidUser(user *User) bool {
+              return user.Name != ""
+          }
+        explanation: Names make the code self-documenting; no comments needed.
+    tags:
+      - naming
+      - readability
+
+  - id: sim-004
+    category: simplicity
+    severity: warning
+    title: No clever code
+    description: >
+      Write straightforward code that any team member can understand on
+      first reading. Avoid bitwise tricks, nested ternary-like patterns,
+      excessive use of closures, or any pattern that requires a comment
+      to explain its mechanics.
+    rationale: >
+      Code is read far more often than it is written. Clever code creates
+      maintenance burden and increases bug risk because reviewers and future
+      maintainers may misunderstand the intent.
+    check: >
+      Look for unusual bit manipulation, deeply nested closures, complex
+      one-liners, or patterns that require comments to explain what they do
+      rather than why. Check for overly compact code that sacrifices clarity.
+    examples:
+      - type: bad
+        code: |
+          // Use bit shift to check if power of 2
+          func isPow2(n int) bool { return n > 0 && n&(n-1) == 0 }
+        explanation: Bit manipulation trick that most developers need to look up.
+      - type: good
+        code: |
+          func isPowerOfTwo(n int) bool {
+              if n <= 0 {
+                  return false
+              }
+              for n > 1 {
+                  if n%2 != 0 {
+                      return false
+                  }
+                  n = n / 2
+              }
+              return true
+          }
+        explanation: Clear iterative approach that anyone can understand immediately.
+    tags:
+      - readability
+      - maintenance
+
+  - id: sim-005
+    category: simplicity
+    severity: info
+    title: Minimal public API surface
+    description: >
+      Export only what is needed by other packages. Start with everything
+      unexported and export only when there is a concrete external consumer.
+      Smaller API surfaces are easier to maintain and evolve.
+    rationale: >
+      Every exported symbol is a commitment to backwards compatibility.
+      Large public APIs create coupling between packages and make refactoring
+      harder. Unexported symbols can be freely changed.
+    check: >
+      Review exported types, functions, and methods. For each, verify there
+      is an external consumer. Check for exported helper functions that
+      could be unexported. Look for exported types that are only used within
+      their own package.
+    examples:
+      - type: bad
+        code: |
+          // All of these are exported but only Store is used externally.
+          func ParsePrincipleID(id string) (string, int, error) { ... }
+          func FormatSeverity(s Severity) string { ... }
+          func SortPrinciples(ps []Principle) { ... }
+        explanation: Helper functions are exported despite having no external consumers.
+      - type: good
+        code: |
+          // Only Store and its methods are exported.
+          func parsePrincipleID(id string) (string, int, error) { ... }
+          func formatSeverity(s Severity) string { ... }
+          func sortPrinciples(ps []Principle) { ... }
+        explanation: Internal helpers are unexported; only the needed API surface is public.
+    tags:
+      - api
+      - encapsulation
