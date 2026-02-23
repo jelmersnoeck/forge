@@ -1,0 +1,180 @@
+name: security
+version: "1.0.0"
+description: Security principles for the Forge codebase.
+principles:
+  - id: sec-001
+    category: security
+    severity: critical
+    title: No hardcoded secrets or credentials
+    description: >
+      Never embed secrets, API keys, passwords, tokens, or credentials
+      directly in source code. Use environment variables, secret managers,
+      or configuration files that are excluded from version control.
+    rationale: >
+      Hardcoded secrets end up in version control history and are trivially
+      extractable. A single leaked credential can compromise entire systems.
+    check: >
+      Scan for string literals that look like API keys, passwords, tokens,
+      or connection strings. Check for common patterns like "password=",
+      "secret=", "token=", "apikey=", AWS key prefixes (AKIA), and base64
+      encoded credential blocks.
+    examples:
+      - type: bad
+        code: |
+          const apiKey = "sk-abc123def456"
+          db, err := sql.Open("postgres", "postgres://admin:hunter2@localhost/db")
+        explanation: Credentials are hardcoded and will be committed to version control.
+      - type: good
+        code: |
+          apiKey := os.Getenv("API_KEY")
+          db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+        explanation: Credentials are loaded from environment variables at runtime.
+    tags:
+      - secrets
+      - credentials
+
+  - id: sec-002
+    category: security
+    severity: critical
+    title: Input validation at system boundaries
+    description: >
+      All input from external sources (HTTP requests, CLI arguments, file
+      reads, environment variables used as data) must be validated before
+      use. Validate type, length, format, and range.
+    rationale: >
+      Unvalidated input is the root cause of most security vulnerabilities
+      including injection, overflow, and logic bugs. Validation at boundaries
+      prevents malicious data from propagating through the system.
+    check: >
+      At every system boundary (HTTP handlers, CLI command handlers, file
+      parsers), verify that inputs are validated before being passed to
+      internal logic. Check for length limits, type assertions, and format
+      validation.
+    examples:
+      - type: bad
+        code: |
+          func handler(w http.ResponseWriter, r *http.Request) {
+              id := r.URL.Query().Get("id")
+              result := db.Query("SELECT * FROM items WHERE id = " + id)
+          }
+        explanation: The id parameter is used directly without any validation.
+      - type: good
+        code: |
+          func handler(w http.ResponseWriter, r *http.Request) {
+              id := r.URL.Query().Get("id")
+              parsed, err := strconv.Atoi(id)
+              if err != nil || parsed < 0 {
+                  http.Error(w, "invalid id", http.StatusBadRequest)
+                  return
+              }
+              result := db.QueryContext(ctx, "SELECT * FROM items WHERE id = $1", parsed)
+          }
+        explanation: Input is parsed, validated, and used with parameterized queries.
+    tags:
+      - input
+      - validation
+
+  - id: sec-003
+    category: security
+    severity: critical
+    title: No SQL or command injection
+    description: >
+      Never construct SQL queries or OS commands by concatenating user input.
+      Use parameterized queries for SQL and exec.Command with separate
+      arguments for shell commands.
+    rationale: >
+      Injection vulnerabilities consistently top the OWASP rankings. They
+      allow attackers to execute arbitrary code or queries, leading to data
+      breaches and system compromise.
+    check: >
+      Look for string concatenation or fmt.Sprintf used to build SQL queries
+      or os/exec commands with user-supplied data. Verify parameterized
+      queries ($1, ?) are used for SQL and exec.Command receives arguments
+      as separate parameters.
+    examples:
+      - type: bad
+        code: |
+          cmd := exec.Command("sh", "-c", "git clone " + userURL)
+          query := fmt.Sprintf("SELECT * FROM users WHERE name = '%s'", userName)
+        explanation: User input is interpolated directly into commands and queries.
+      - type: good
+        code: |
+          cmd := exec.Command("git", "clone", "--", userURL)
+          query := "SELECT * FROM users WHERE name = $1"
+          rows, err := db.QueryContext(ctx, query, userName)
+        explanation: Arguments are passed separately, preventing injection.
+    tags:
+      - injection
+      - sql
+
+  - id: sec-004
+    category: security
+    severity: critical
+    title: Proper authentication and authorization checks
+    description: >
+      Every endpoint and operation that accesses protected resources must
+      verify the caller's identity (authentication) and permissions
+      (authorization) before proceeding.
+    rationale: >
+      Missing auth checks allow unauthorized access to data and operations.
+      Authorization must be checked on every request — not just at the UI
+      layer — because APIs can be called directly.
+    check: >
+      For each HTTP handler or RPC method that accesses protected resources,
+      verify that authentication middleware is applied and authorization
+      checks are performed before the operation executes. Look for handlers
+      missing auth middleware in route setup.
+    examples:
+      - type: bad
+        code: |
+          mux.HandleFunc("/api/admin/users", listUsersHandler)
+        explanation: No authentication or authorization middleware on an admin endpoint.
+      - type: good
+        code: |
+          mux.Handle("/api/admin/users", authMiddleware(requireRole("admin", listUsersHandler)))
+        explanation: Endpoint is protected by authentication and role-based authorization.
+    tags:
+      - auth
+      - access-control
+
+  - id: sec-005
+    category: security
+    severity: warning
+    title: Secure error handling
+    description: >
+      Error messages returned to users or external callers must not expose
+      internal details such as stack traces, file paths, database schemas,
+      or internal IP addresses. Log detailed errors server-side; return
+      generic messages to callers.
+    rationale: >
+      Detailed error messages leak implementation details that help attackers
+      map the system. Stack traces reveal framework versions, file paths
+      reveal directory structure, and SQL errors reveal schema.
+    check: >
+      Verify that error responses to external callers use generic messages.
+      Check that internal error details are logged (via slog or similar)
+      rather than returned. Look for fmt.Errorf or err.Error() in HTTP
+      response bodies.
+    examples:
+      - type: bad
+        code: |
+          func handler(w http.ResponseWriter, r *http.Request) {
+              result, err := db.Query(query)
+              if err != nil {
+                  http.Error(w, err.Error(), http.StatusInternalServerError)
+              }
+          }
+        explanation: The raw database error is sent to the user, potentially exposing schema details.
+      - type: good
+        code: |
+          func handler(w http.ResponseWriter, r *http.Request) {
+              result, err := db.QueryContext(ctx, query)
+              if err != nil {
+                  slog.Error("query failed", "error", err, "query", query)
+                  http.Error(w, "internal server error", http.StatusInternalServerError)
+              }
+          }
+        explanation: Error details are logged server-side; a generic message is returned to the user.
+    tags:
+      - errors
+      - logging

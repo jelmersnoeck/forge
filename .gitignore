@@ -2,4 +2,5 @@ bin/
 *.exe
 *.test
 *.out
-.forge/
+.forge/*
+!.forge/principles/
