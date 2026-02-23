@@ -1,8 +1,13 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 
+	"github.com/jelmersnoeck/forge/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -20,9 +25,6 @@ The server exposes REST endpoints for triggering builds, viewing status,
 and receiving webhooks from GitHub, Jira, and Linear. It also provides
 SSE endpoints for real-time build progress streaming.
 
-This feature is planned for Phase 3. See the architecture documentation
-for the full server design.
-
 Example:
   forge serve --port 8080
   forge serve --port 9090 --config /path/to/config.yaml`,
@@ -37,7 +39,30 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	fmt.Printf("Server mode not yet implemented (port: %d).\n", servePort)
-	fmt.Println("This feature is planned for Phase 3. See forge-architecture-v0.md for details.")
-	return nil
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// Override port from flag if set.
+	if cmd.Flags().Changed("port") {
+		cfg.Server.Port = servePort
+	}
+
+	eng, err := buildEngine(cfg)
+	if err != nil {
+		return err
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	srv := server.New(eng, &cfg.Server, logger)
+
+	// Set up context with signal handling for graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return srv.Start(ctx)
 }
