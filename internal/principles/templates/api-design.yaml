@@ -1,0 +1,130 @@
+name: api-design
+version: "1.0.0"
+description: "API design principles covering versioning, error responses, pagination, and consistency."
+principles:
+  - id: api-001
+    category: architecture
+    severity: warning
+    title: "API versioning"
+    description: "APIs must include a version identifier in the URL path (e.g., /v1/) or Accept header. Breaking changes require a new version."
+    rationale: "Versioning allows evolving APIs without breaking existing clients. URL-based versioning is the most visible and easiest to manage."
+    check: "Verify that API routes include a version prefix. Flag any breaking changes made without a version bump."
+    examples:
+      - type: bad
+        code: |
+          mux.Handle("/users", usersHandler)
+          mux.Handle("/users/{id}", userHandler)
+        explanation: "No version prefix; breaking changes will affect all clients simultaneously."
+      - type: good
+        code: |
+          mux.Handle("/v1/users", usersHandler)
+          mux.Handle("/v1/users/{id}", userHandler)
+        explanation: "Version prefix allows running v1 and v2 side by side during migration."
+    tags: [versioning, rest, compatibility]
+
+  - id: api-002
+    category: architecture
+    severity: warning
+    title: "Structured error responses"
+    description: "API errors must return a consistent JSON structure with at minimum: an error code, a human-readable message, and the HTTP status code."
+    rationale: "Consistent error responses allow clients to programmatically handle errors. Ad-hoc error formats make client code fragile."
+    check: "Verify that error responses follow a consistent schema. Flag plain text error responses or inconsistent error JSON structures."
+    examples:
+      - type: bad
+        code: |
+          http.Error(w, "not found", http.StatusNotFound)
+        explanation: "Plain text error; clients cannot programmatically distinguish error types."
+      - type: good
+        code: |
+          w.Header().Set("Content-Type", "application/json")
+          w.WriteHeader(http.StatusNotFound)
+          json.NewEncoder(w).Encode(map[string]any{
+            "error": map[string]any{
+              "code":    "user_not_found",
+              "message": "User with the specified ID was not found",
+              "status":  404,
+            },
+          })
+        explanation: "Structured JSON error with code, message, and status fields."
+    tags: [errors, rest, consistency]
+
+  - id: api-003
+    category: architecture
+    severity: warning
+    title: "Pagination for list endpoints"
+    description: "List endpoints must support pagination. Use cursor-based pagination for large or frequently updated datasets, or offset-based for simpler cases."
+    rationale: "Unbounded list responses cause performance issues and timeouts. Pagination ensures predictable response sizes and server load."
+    check: "Flag list endpoints that return all records without pagination parameters. Verify that list responses include pagination metadata."
+    examples:
+      - type: bad
+        code: |
+          func listUsers(w http.ResponseWriter, r *http.Request) {
+            users, _ := db.GetAllUsers()
+            json.NewEncoder(w).Encode(users)
+          }
+        explanation: "Returns all users at once; will fail with large datasets."
+      - type: good
+        code: |
+          func listUsers(w http.ResponseWriter, r *http.Request) {
+            cursor := r.URL.Query().Get("cursor")
+            limit := 50
+            users, nextCursor, _ := db.GetUsers(cursor, limit)
+            json.NewEncoder(w).Encode(map[string]any{
+              "data":        users,
+              "next_cursor": nextCursor,
+              "has_more":    nextCursor != "",
+            })
+          }
+        explanation: "Cursor-based pagination with metadata for client navigation."
+    tags: [pagination, rest, performance]
+
+  - id: api-004
+    category: architecture
+    severity: info
+    title: "Use appropriate HTTP methods"
+    description: "APIs must use HTTP methods according to their semantics: GET for reads, POST for creation, PUT for full updates, PATCH for partial updates, DELETE for removal."
+    rationale: "Correct method usage enables caching (GET), idempotency expectations (PUT, DELETE), and clear intent for API consumers."
+    check: "Verify that handlers use appropriate HTTP methods. Flag GET endpoints that modify state or POST endpoints used for reads."
+    examples:
+      - type: bad
+        code: |
+          mux.HandleFunc("GET /users/delete/{id}", deleteUserHandler)
+        explanation: "GET should never modify state; this breaks caching and can be triggered by crawlers."
+      - type: good
+        code: |
+          mux.HandleFunc("DELETE /v1/users/{id}", deleteUserHandler)
+        explanation: "DELETE method clearly indicates a destructive operation."
+    tags: [http-methods, rest, semantics]
+
+  - id: api-005
+    category: architecture
+    severity: info
+    title: "Request validation"
+    description: "All API request bodies and parameters must be validated before processing. Return 400 Bad Request with specific validation errors."
+    rationale: "Input validation prevents invalid data from reaching business logic, reduces errors, and provides clear feedback to API consumers."
+    check: "Verify that handlers validate required fields, types, and constraints before processing. Flag handlers that use request data without validation."
+    examples:
+      - type: bad
+        code: |
+          func createUser(w http.ResponseWriter, r *http.Request) {
+            var user User
+            json.NewDecoder(r.Body).Decode(&user)
+            db.Create(&user)
+          }
+        explanation: "No validation of required fields; invalid data reaches the database."
+      - type: good
+        code: |
+          func createUser(w http.ResponseWriter, r *http.Request) {
+            var user User
+            if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+              writeError(w, http.StatusBadRequest, "invalid_json", "Request body is not valid JSON")
+              return
+            }
+            if user.Email == "" {
+              writeError(w, http.StatusBadRequest, "missing_field", "Email is required")
+              return
+            }
+            db.Create(&user)
+          }
+        explanation: "Validates JSON parsing and required fields before processing."
+    tags: [validation, rest, input]

@@ -1,0 +1,100 @@
+name: go-security
+version: "1.0.0"
+description: "Go-specific security principles covering injection, cryptography, and concurrency safety."
+principles:
+  - id: sec-001
+    category: security
+    severity: critical
+    title: "SQL injection prevention"
+    description: "All SQL queries must use parameterized queries or prepared statements. Never concatenate user input into SQL strings."
+    rationale: "SQL injection is a top-10 OWASP vulnerability. Parameterized queries ensure user input is always treated as data, never as SQL commands."
+    check: "Verify that database/sql queries use ? or $N placeholders. Flag any string concatenation or fmt.Sprintf used to build SQL queries."
+    examples:
+      - type: bad
+        code: |
+          query := fmt.Sprintf("SELECT * FROM users WHERE id = '%s'", userID)
+          db.Query(query)
+        explanation: "String interpolation allows SQL injection via the userID parameter."
+      - type: good
+        code: |
+          db.Query("SELECT * FROM users WHERE id = ?", userID)
+        explanation: "Parameterized query ensures userID is treated as a data value."
+    tags: [sql, injection, owasp]
+
+  - id: sec-002
+    category: security
+    severity: critical
+    title: "Command injection prevention"
+    description: "Never pass unsanitized user input to os/exec.Command or similar process execution functions."
+    rationale: "Command injection allows arbitrary code execution on the host system. Always use argument arrays instead of shell interpolation."
+    check: "Verify that exec.Command uses separate arguments, not shell strings. Flag any use of exec.Command with 'sh', '-c' and user-controlled strings."
+    examples:
+      - type: bad
+        code: |
+          cmd := exec.Command("sh", "-c", "echo " + userInput)
+        explanation: "User input is passed directly to a shell, allowing command injection."
+      - type: good
+        code: |
+          cmd := exec.Command("echo", userInput)
+        explanation: "Arguments are passed as separate parameters, preventing shell interpretation."
+    tags: [exec, injection, owasp]
+
+  - id: sec-003
+    category: security
+    severity: warning
+    title: "Use crypto/rand for security-sensitive randomness"
+    description: "Use crypto/rand instead of math/rand for generating tokens, keys, nonces, or any security-sensitive random values."
+    rationale: "math/rand is deterministic and predictable. Security tokens generated with math/rand can be guessed by attackers."
+    check: "Flag any use of math/rand in code that generates tokens, session IDs, API keys, or cryptographic values."
+    examples:
+      - type: bad
+        code: |
+          token := fmt.Sprintf("%x", rand.Int63())
+        explanation: "math/rand produces predictable output; tokens can be guessed."
+      - type: good
+        code: |
+          b := make([]byte, 32)
+          crypto_rand.Read(b)
+          token := hex.EncodeToString(b)
+        explanation: "crypto/rand provides cryptographically secure randomness."
+    tags: [crypto, randomness]
+
+  - id: sec-004
+    category: security
+    severity: critical
+    title: "Race condition prevention"
+    description: "Shared mutable state must be protected by sync primitives (Mutex, RWMutex, atomic operations, or channels)."
+    rationale: "Data races lead to undefined behavior in Go and can cause security vulnerabilities such as TOCTOU bugs or corrupted authentication state."
+    check: "Verify that all goroutine-shared variables are protected. Flag struct fields accessed from multiple goroutines without synchronization."
+    examples:
+      - type: bad
+        code: |
+          var counter int
+          go func() { counter++ }()
+          go func() { counter++ }()
+        explanation: "Concurrent writes to counter without synchronization cause a data race."
+      - type: good
+        code: |
+          var counter atomic.Int64
+          go func() { counter.Add(1) }()
+          go func() { counter.Add(1) }()
+        explanation: "atomic.Int64 provides safe concurrent access."
+    tags: [concurrency, race-condition]
+
+  - id: sec-005
+    category: security
+    severity: warning
+    title: "TLS configuration hardening"
+    description: "TLS configurations must enforce TLS 1.2 or higher and disable insecure cipher suites."
+    rationale: "Weak TLS versions and cipher suites are vulnerable to known attacks (POODLE, BEAST, etc.)."
+    check: "Verify that tls.Config sets MinVersion to tls.VersionTLS12 or higher. Flag InsecureSkipVerify=true in production code."
+    examples:
+      - type: bad
+        code: |
+          tlsConfig := &tls.Config{InsecureSkipVerify: true}
+        explanation: "Disabling certificate verification allows man-in-the-middle attacks."
+      - type: good
+        code: |
+          tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+        explanation: "Enforces minimum TLS 1.2 with proper certificate verification."
+    tags: [tls, crypto, network]
