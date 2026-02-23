@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -26,22 +25,22 @@ func (e *Engine) Review(ctx context.Context, req ReviewRequest) (*review.Result,
 
 	// Load principles for the review.
 	var ps []principles.Principle
-	if e.Principles != nil && len(req.PrincipleSets) > 0 {
+	if e.principles != nil && len(req.PrincipleSets) > 0 {
 		var err error
-		ps, err = e.Principles.Load(ctx, req.PrincipleSets...)
+		ps, err = e.principles.Load(ctx, req.PrincipleSets...)
 		if err != nil {
 			return nil, fmt.Errorf("loading principles: %w", err)
 		}
-	} else if e.Principles != nil {
+	} else if e.principles != nil {
 		// If no specific sets requested, use all loaded principles.
-		ps = e.Principles.All()
+		ps = e.principles.All()
 	}
 
 	// Assemble the review prompt.
 	prompt := principles.AssembleReviewPrompt(req.Diff, ps)
 
 	// Get the reviewer agent.
-	reviewerAgent, err := e.getAgent(e.Config.ReviewerAgent)
+	reviewerAgent, err := e.getAgent(e.config.ReviewerAgent)
 	if err != nil {
 		return nil, fmt.Errorf("getting reviewer agent: %w", err)
 	}
@@ -68,21 +67,13 @@ func (e *Engine) Review(ctx context.Context, req ReviewRequest) (*review.Result,
 	}
 
 	// Parse findings from agent output.
-	findings, err := parseFindings(resp.Output)
+	findings, err := review.ParseFindings(resp.Output)
 	if err != nil {
-		slog.Warn("failed to parse review findings, treating as no findings",
-			"error", err,
-			"output_length", len(resp.Output),
-		)
-		// If we cannot parse, return empty result rather than failing.
-		return &review.Result{
-			Findings:    nil,
-			HasCritical: false,
-		}, nil
+		return nil, fmt.Errorf("parsing review findings: %w", err)
 	}
 
 	// Apply severity threshold filtering.
-	threshold := parseSeverity(e.Config.SeverityThreshold)
+	threshold := parseSeverity(e.config.SeverityThreshold)
 	filtered := review.FilterBySeverity(findings, threshold)
 
 	// Deduplicate findings.
@@ -101,31 +92,6 @@ func (e *Engine) Review(ctx context.Context, req ReviewRequest) (*review.Result,
 	)
 
 	return result, nil
-}
-
-// parseFindings extracts review findings from agent JSON output.
-// The agent output may contain a JSON array of findings or a JSON
-// object with a "findings" key.
-func parseFindings(output string) ([]review.Finding, error) {
-	if output == "" {
-		return nil, nil
-	}
-
-	// Try parsing as a direct array of findings.
-	var findings []review.Finding
-	if err := json.Unmarshal([]byte(output), &findings); err == nil {
-		return findings, nil
-	}
-
-	// Try parsing as an object with a "findings" key.
-	var wrapper struct {
-		Findings []review.Finding `json:"findings"`
-	}
-	if err := json.Unmarshal([]byte(output), &wrapper); err == nil {
-		return wrapper.Findings, nil
-	}
-
-	return nil, fmt.Errorf("could not parse review output as findings JSON")
 }
 
 // parseSeverity converts a severity threshold string to a Severity value.

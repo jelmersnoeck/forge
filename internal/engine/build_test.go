@@ -484,6 +484,54 @@ func TestBuild_CodeAgentReceivesFeedback(t *testing.T) {
 	}
 }
 
+func TestCountCritical(t *testing.T) {
+	tests := []struct {
+		name     string
+		findings []review.Finding
+		want     int
+	}{
+		{
+			name:     "empty findings",
+			findings: nil,
+			want:     0,
+		},
+		{
+			name: "no critical findings",
+			findings: []review.Finding{
+				{Severity: principles.SeverityWarning, Message: "warning"},
+				{Severity: principles.SeverityInfo, Message: "info"},
+			},
+			want: 0,
+		},
+		{
+			name: "one critical finding",
+			findings: []review.Finding{
+				{Severity: principles.SeverityCritical, Message: "critical"},
+				{Severity: principles.SeverityWarning, Message: "warning"},
+			},
+			want: 1,
+		},
+		{
+			name: "multiple critical findings",
+			findings: []review.Finding{
+				{Severity: principles.SeverityCritical, Message: "crit 1"},
+				{Severity: principles.SeverityCritical, Message: "crit 2"},
+				{Severity: principles.SeverityInfo, Message: "info"},
+			},
+			want: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := countCritical(tt.findings)
+			if got != tt.want {
+				t.Errorf("countCritical() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && containsStr(s, substr)
 }

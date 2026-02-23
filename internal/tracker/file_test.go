@@ -96,21 +96,67 @@ func TestFileTracker_GetIssue_NotFound(t *testing.T) {
 	}
 }
 
-func TestFileTracker_GetIssue_AbsolutePath(t *testing.T) {
+func TestFileTracker_GetIssue_PathTraversal(t *testing.T) {
 	dir := t.TempDir()
-	content := "# Absolute Path Issue\n\nBody here.\n"
-	path := filepath.Join(dir, "abs.md")
+	tracker := NewFileTracker(dir)
+
+	tests := []struct {
+		name string
+		ref  string
+	}{
+		{"dot-dot traversal", "../../../etc/passwd"},
+		{"dot-dot in middle", "subdir/../../etc/passwd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tracker.GetIssue(context.Background(), tt.ref)
+			if err == nil {
+				t.Fatal("expected error for path traversal, got nil")
+			}
+			if !strings.Contains(err.Error(), "path traversal") {
+				t.Errorf("error should mention path traversal, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileTracker_ResolvePath_AbsoluteRefStaysInBase(t *testing.T) {
+	// filepath.Join(baseDir, "/etc/passwd") strips the leading / from the
+	// ref, so it resolves within baseDir. This is safe behavior -- the file
+	// just won't exist.
+	dir := t.TempDir()
+	tracker := NewFileTracker(dir)
+	_, err := tracker.GetIssue(context.Background(), "/etc/passwd")
+	if err == nil {
+		t.Fatal("expected error (file not found), got nil")
+	}
+	// The error should be about the file not existing, not path traversal,
+	// because filepath.Join safely nests the path under baseDir.
+	if strings.Contains(err.Error(), "path traversal") {
+		t.Error("absolute ref joined under baseDir should not trigger path traversal")
+	}
+}
+
+func TestFileTracker_GetIssue_ValidSubdir(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Subdir Issue\n\nBody.\n"
+	path := filepath.Join(subdir, "issue.md")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	tracker := NewFileTracker(dir)
-	issue, err := tracker.GetIssue(context.Background(), path)
+	issue, err := tracker.GetIssue(context.Background(), "sub/issue.md")
 	if err != nil {
-		t.Fatalf("GetIssue with absolute path unexpected error: %v", err)
+		t.Fatalf("GetIssue unexpected error: %v", err)
 	}
-	if issue.Title != "Absolute Path Issue" {
-		t.Errorf("Title = %q, want %q", issue.Title, "Absolute Path Issue")
+	if issue.Title != "Subdir Issue" {
+		t.Errorf("Title = %q, want %q", issue.Title, "Subdir Issue")
 	}
 }
 

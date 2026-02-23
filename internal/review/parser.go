@@ -2,6 +2,7 @@ package review
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 )
@@ -11,25 +12,27 @@ import (
 // - A JSON array of findings
 // - A single JSON object finding
 // - Text output containing embedded JSON (array or object)
-// - Malformed JSON (logs warning, returns what it can)
-func ParseFindings(output string) []Finding {
+//
+// Returns an error if non-empty output cannot be parsed as findings.
+// An empty or whitespace-only input returns nil findings with no error.
+func ParseFindings(output string) ([]Finding, error) {
 	output = strings.TrimSpace(output)
 	if output == "" {
-		return nil
+		return nil, nil
 	}
 
 	// Try direct JSON parse first (array or object).
 	if findings := tryParseJSON(output); findings != nil {
-		return findings
+		return findings, nil
 	}
 
 	// Try to find JSON embedded in text output.
 	if findings := extractEmbeddedJSON(output); findings != nil {
-		return findings
+		return findings, nil
 	}
 
 	slog.Warn("could not parse any findings from agent output", "output_length", len(output))
-	return nil
+	return nil, fmt.Errorf("could not parse review output as findings (output length: %d)", len(output))
 }
 
 // tryParseJSON attempts to parse the input as a JSON array of findings

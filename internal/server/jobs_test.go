@@ -202,6 +202,76 @@ func TestJobQueue_Concurrent(t *testing.T) {
 	}
 }
 
+func TestJobQueue_Run_PanicRecovery(t *testing.T) {
+	q := NewJobQueue(nil)
+
+	q.RegisterHandler(JobTypeBuild, func(ctx context.Context, job *Job) (interface{}, error) {
+		panic("handler exploded")
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go q.Run(ctx)
+
+	id := q.Submit(&Job{
+		Type:    JobTypeBuild,
+		Request: "test",
+	})
+
+	time.Sleep(200 * time.Millisecond)
+
+	got, ok := q.Get(id)
+	if !ok {
+		t.Fatal("expected to find job after panic")
+	}
+	if got.Status != JobStatusFailed {
+		t.Errorf("expected status %q after panic, got %q", JobStatusFailed, got.Status)
+	}
+	if got.Error == "" {
+		t.Error("expected non-empty error on panicked job")
+	}
+	if len(got.Error) < 6 || got.Error[:6] != "panic:" {
+		t.Errorf("expected error to start with 'panic:', got %q", got.Error)
+	}
+}
+
+func TestJobQueue_Run_PanicRecoveryWorkerSurvives(t *testing.T) {
+	q := NewJobQueue(nil)
+
+	callCount := 0
+	q.RegisterHandler(JobTypeBuild, func(ctx context.Context, job *Job) (interface{}, error) {
+		callCount++
+		if callCount == 1 {
+			panic("first job panics")
+		}
+		return "ok", nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go q.Run(ctx)
+
+	// First job: will panic.
+	id1 := q.Submit(&Job{Type: JobTypeBuild, Request: "panic-job"})
+	time.Sleep(200 * time.Millisecond)
+
+	// Second job: should still be processed because worker survived the panic.
+	id2 := q.Submit(&Job{Type: JobTypeBuild, Request: "normal-job"})
+	time.Sleep(200 * time.Millisecond)
+
+	got1, _ := q.Get(id1)
+	if got1.Status != JobStatusFailed {
+		t.Errorf("first job: expected status %q, got %q", JobStatusFailed, got1.Status)
+	}
+
+	got2, _ := q.Get(id2)
+	if got2.Status != JobStatusCompleted {
+		t.Errorf("second job: expected status %q, got %q (worker died after panic)", JobStatusCompleted, got2.Status)
+	}
+}
+
 func TestGenerateJobID(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {

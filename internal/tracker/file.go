@@ -24,10 +24,14 @@ func NewFileTracker(baseDir string) *FileTracker {
 }
 
 // GetIssue reads a markdown file and parses it as an issue.
-// The ref is treated as a file path (relative to baseDir if not absolute).
+// The ref is treated as a file path relative to baseDir. Absolute paths and
+// paths that resolve outside baseDir are rejected.
 // Frontmatter between --- delimiters is parsed for metadata.
 func (f *FileTracker) GetIssue(ctx context.Context, ref string) (*Issue, error) {
-	path := f.resolvePath(ref)
+	path, err := f.resolvePath(ref)
+	if err != nil {
+		return nil, fmt.Errorf("get issue %s: %w", ref, err)
+	}
 	slog.DebugContext(ctx, "reading file issue", "path", path)
 
 	data, err := os.ReadFile(path)
@@ -100,12 +104,22 @@ func (f *FileTracker) Link(_ context.Context, _, _ string, _ LinkRelation) error
 	return fmt.Errorf("file tracker: link: %w", ErrNotSupported)
 }
 
-// resolvePath resolves a reference to an absolute file path.
-func (f *FileTracker) resolvePath(ref string) string {
-	if filepath.IsAbs(ref) {
-		return ref
+// resolvePath resolves a reference to an absolute file path within baseDir.
+// It rejects absolute paths and any path that would escape baseDir via
+// directory traversal.
+func (f *FileTracker) resolvePath(ref string) (string, error) {
+	joined := filepath.Join(f.baseDir, ref)
+	cleaned := filepath.Clean(joined)
+	base := filepath.Clean(f.baseDir)
+
+	// The cleaned path must be within baseDir. We check that it either equals
+	// baseDir or starts with baseDir followed by a separator to prevent
+	// partial-prefix matches (e.g. /tmp/issuesEvil matching /tmp/issues).
+	if cleaned != base && !strings.HasPrefix(cleaned, base+string(filepath.Separator)) {
+		return "", fmt.Errorf("path traversal detected: %s resolves outside base directory", ref)
 	}
-	return filepath.Join(f.baseDir, ref)
+
+	return cleaned, nil
 }
 
 // parseMarkdownIssue parses a markdown string into an Issue.

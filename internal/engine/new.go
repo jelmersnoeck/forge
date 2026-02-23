@@ -66,9 +66,9 @@ func New(cfg *EngineConfig, agents map[string]agent.Agent, trackers map[string]t
 	)
 
 	return &Engine{
-		Agents:     agents,
-		Trackers:   trackers,
-		Principles: store,
-		Config:     cfg,
+		agents:     agents,
+		trackers:   trackers,
+		principles: store,
+		config:     cfg,
 	}, nil
 }

@@ -68,7 +68,10 @@ func (h *HTTP) Run(ctx context.Context, req Request) (*Response, error) {
 	}
 	defer httpResp.Body.Close()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	// Limit response body to 10 MB to prevent unbounded memory usage from
+	// a malicious or misbehaving remote server.
+	const maxResponseSize = 10 << 20
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("http agent: read response: %w", err)
 	}

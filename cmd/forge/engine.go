@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/agent"
@@ -105,15 +106,27 @@ func buildTrackers(cfg *config.Config) (map[string]tracker.Tracker, error) {
 			return nil, fmt.Errorf("getting working directory: %w", err)
 		}
 		trackers["file"] = tracker.NewFileTracker(dir)
-	default:
-		// Create the default tracker even if we do not recognise it, so the
-		// engine validation does not fail. For unsupported tracker types we
-		// fall back to a file tracker.
-		dir, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("getting working directory: %w", err)
+	case "jira":
+		if cfg.Tracker.Jira == nil {
+			return nil, fmt.Errorf("tracker default is %q but tracker.jira config is missing", cfg.Tracker.Default)
 		}
-		trackers[cfg.Tracker.Default] = tracker.NewFileTracker(dir)
+		email, token, _ := strings.Cut(cfg.Tracker.Jira.Auth, ":")
+		trackers["jira"] = tracker.NewJiraTracker(
+			cfg.Tracker.Jira.Instance,
+			cfg.Tracker.Jira.DefaultProject,
+			email,
+			token,
+		)
+	case "linear":
+		if cfg.Tracker.Linear == nil {
+			return nil, fmt.Errorf("tracker default is %q but tracker.linear config is missing", cfg.Tracker.Default)
+		}
+		trackers["linear"] = tracker.NewLinearTracker(
+			cfg.Tracker.Linear.Team,
+			cfg.Tracker.Linear.Auth,
+		)
+	default:
+		return nil, fmt.Errorf("unsupported tracker type: %q", cfg.Tracker.Default)
 	}
 
 	return trackers, nil

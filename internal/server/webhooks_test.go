@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,9 +13,18 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jelmersnoeck/forge/internal/agent"
 	"github.com/jelmersnoeck/forge/internal/engine"
+	"github.com/jelmersnoeck/forge/internal/tracker"
 	"github.com/jelmersnoeck/forge/pkg/config"
 )
+
+// mockWebhookAgent implements agent.Agent for webhook tests.
+type mockWebhookAgent struct{}
+
+func (m *mockWebhookAgent) Run(_ context.Context, _ agent.Request) (*agent.Response, error) {
+	return &agent.Response{Output: "mock"}, nil
+}
 
 func newTestServer(secret string) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -26,11 +36,13 @@ func newTestServer(secret string) *Server {
 			},
 		},
 	}
+	eng, _ := engine.New(&engine.EngineConfig{}, map[string]agent.Agent{"mock": &mockWebhookAgent{}}, map[string]tracker.Tracker{}, nil)
+
 	broker := NewSSEBroker()
 	queue := NewJobQueue(broker)
 
 	return &Server{
-		engine:  &engine.Engine{},
+		engine:  eng,
 		config:  cfg,
 		logger:  logger,
 		jobs:    queue,

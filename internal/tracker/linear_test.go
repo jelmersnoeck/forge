@@ -2,8 +2,9 @@ package tracker
 
 import (
 	"context"
-	"fmt"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -181,7 +182,7 @@ func (tlt *testLinearTracker) doGraphQLWithURL(ctx context.Context, url, query s
 func TestLinearTracker_CreatePR_NotSupported(t *testing.T) {
 	lt := NewLinearTracker("TEAM", "token")
 	_, err := lt.CreatePR(context.Background(), &CreatePRRequest{})
-	if err != ErrNotSupported {
+	if !errors.Is(err, ErrNotSupported) {
 		t.Errorf("CreatePR() error = %v, want ErrNotSupported", err)
 	}
 }

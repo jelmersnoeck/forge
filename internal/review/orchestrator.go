@@ -117,7 +117,14 @@ func (o *Orchestrator) Review(ctx context.Context, req ReviewRequest) (*Result, 
 			}
 
 			// Parse findings from agent output.
-			findings := ParseFindings(resp.Output)
+			findings, parseErr := ParseFindings(resp.Output)
+			if parseErr != nil {
+				results <- reviewerResult{
+					name: rc.Name,
+					err:  fmt.Errorf("parsing findings from reviewer %s: %w", rc.Name, parseErr),
+				}
+				return
+			}
 			// Tag each finding with the reviewer name.
 			for i := range findings {
 				findings[i].Reviewer = rc.Name

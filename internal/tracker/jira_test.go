@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -181,7 +182,7 @@ func TestJiraTracker_Link(t *testing.T) {
 func TestJiraTracker_CreatePR_NotSupported(t *testing.T) {
 	jt := NewJiraTracker("https://jira.example.com", "PROJ", "user@example.com", "token123")
 	_, err := jt.CreatePR(context.Background(), &CreatePRRequest{})
-	if err != ErrNotSupported {
+	if !errors.Is(err, ErrNotSupported) {
 		t.Errorf("CreatePR() error = %v, want ErrNotSupported", err)
 	}
 }

@@ -173,16 +173,16 @@ func TestReview_UnparsableOutput(t *testing.T) {
 		t.Fatalf("New engine: %v", err)
 	}
 
-	// Unparsable output should return empty result, not error.
-	result, err := eng.Review(context.Background(), ReviewRequest{
+	// Unparsable output should return an error, not a clean pass.
+	_, err = eng.Review(context.Background(), ReviewRequest{
 		Diff:    "some diff",
 		WorkDir: t.TempDir(),
 	})
-	if err != nil {
-		t.Fatalf("Review should not error on unparsable output: %v", err)
+	if err == nil {
+		t.Fatal("expected error for unparsable review output")
 	}
-	if result.HasCritical {
-		t.Error("expected no critical findings for unparsable output")
+	if !strings.Contains(err.Error(), "parsing review findings") {
+		t.Errorf("expected parse error, got: %v", err)
 	}
 }
 
@@ -266,7 +266,9 @@ func TestReview_SeverityThresholdFiltering(t *testing.T) {
 	}
 }
 
-func TestParseFindings(t *testing.T) {
+func TestReviewParseFindingsIntegration(t *testing.T) {
+	// Tests that review.ParseFindings is correctly used by the engine.
+	// Detailed parsing tests live in the review package.
 	tests := []struct {
 		name    string
 		input   string
@@ -289,7 +291,7 @@ func TestParseFindings(t *testing.T) {
 			want:  1,
 		},
 		{
-			name:  "findings in wrapper object",
+			name:  "findings embedded in wrapper object",
 			input: `{"findings":[{"file":"a.go","line":1,"principle_id":"sec-001","severity":"critical","message":"bad"}]}`,
 			want:  1,
 		},
@@ -302,13 +304,13 @@ func TestParseFindings(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseFindings(tt.input)
+			got, err := review.ParseFindings(tt.input)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("parseFindings() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("review.ParseFindings() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if len(got) != tt.want {
-				t.Errorf("parseFindings() got %d findings, want %d", len(got), tt.want)
+				t.Errorf("review.ParseFindings() got %d findings, want %d", len(got), tt.want)
 			}
 		})
 	}

@@ -172,8 +172,8 @@ func (j *JiraTracker) CreateIssue(ctx context.Context, req *CreateIssueRequest) 
 }
 
 // CreatePR returns ErrNotSupported because Jira does not manage pull requests.
-func (j *JiraTracker) CreatePR(ctx context.Context, req *CreatePRRequest) (*PullRequest, error) {
-	return nil, ErrNotSupported
+func (j *JiraTracker) CreatePR(_ context.Context, _ *CreatePRRequest) (*PullRequest, error) {
+	return nil, fmt.Errorf("jira tracker: create pr: %w", ErrNotSupported)
 }
 
 // Comment adds a comment to a Jira issue.
