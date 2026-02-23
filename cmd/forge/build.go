@@ -16,7 +16,7 @@ var (
 	buildPrinciples string
 	buildBranch     string
 	buildFormat     string
-	buildWorkstream bool
+	buildWorkstream string
 )
 
 var buildCmd = &cobra.Command{
@@ -28,29 +28,34 @@ The build command fetches an issue from the configured tracker, generates an
 implementation plan, runs the code agent, reviews the output against loaded
 principles, and creates a pull request if the review passes.
 
+Use --workstream to execute all issues in a workstream YAML in dependency order.
+
 Example:
   forge build --issue gh:org/repo#123
-  forge build --issue #42 --branch develop --format json`,
+  forge build --issue #42 --branch develop --format json
+  forge build --workstream .forge/workstreams/ws-auth.yaml`,
 	RunE: runBuild,
 }
 
 func init() {
-	buildCmd.Flags().StringVar(&buildIssue, "issue", "", "Issue reference (required, e.g. gh:org/repo#123, #42)")
+	buildCmd.Flags().StringVar(&buildIssue, "issue", "", "Issue reference (e.g. gh:org/repo#123, #42)")
 	buildCmd.Flags().StringVar(&buildPrinciples, "principles", "", "Comma-separated principle sets to apply (default: from config)")
 	buildCmd.Flags().StringVar(&buildBranch, "branch", "main", "Base branch to create PR against")
 	buildCmd.Flags().StringVar(&buildFormat, "format", "text", "Output format: text or json")
-	buildCmd.Flags().BoolVar(&buildWorkstream, "workstream", false, "Run in workstream mode (Phase 4)")
-
-	_ = buildCmd.MarkFlagRequired("issue")
+	buildCmd.Flags().StringVar(&buildWorkstream, "workstream", "", "Path to workstream YAML for multi-issue execution")
 
 	rootCmd.AddCommand(buildCmd)
 }
 
 func runBuild(cmd *cobra.Command, args []string) error {
-	if buildWorkstream {
-		fmt.Println("Workstream mode not yet implemented.")
-		fmt.Println("This feature is planned for Phase 4. See forge-architecture-v0.md for details.")
-		return nil
+	// Workstream mode: execute all issues in dependency order.
+	if buildWorkstream != "" {
+		return runWorkstreamBuild(buildWorkstream)
+	}
+
+	// Single issue mode: requires --issue.
+	if buildIssue == "" {
+		return fmt.Errorf("either --issue or --workstream is required")
 	}
 
 	cfg, err := loadConfig()

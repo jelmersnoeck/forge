@@ -17,32 +17,50 @@ var (
 
 var planCmd = &cobra.Command{
 	Use:   "plan",
-	Short: "Generate an implementation plan for an issue",
-	Long: `Generate an implementation plan for an issue without executing it.
+	Short: "Generate an implementation plan for an issue or decompose a goal",
+	Long: `Generate an implementation plan for an issue without executing it,
+or decompose a high-level goal into a workstream with phases and issues.
 
-The plan command fetches an issue from the configured tracker, runs the
-planner agent to generate a structured implementation plan, and outputs
-the result. This can be used to preview what forge build would do, or
-for interactive plan review before approving execution.
-
-Example:
+Issue planning mode (default):
   forge plan --issue gh:org/repo#123
   forge plan --issue #42 --format json
-  forge plan --issue ./specs/feature.md --principles security`,
+
+Goal decomposition mode:
+  forge plan --goal "Implement authentication system"
+  forge plan --goal "Add API endpoints" --context ./specs/api.md
+
+Issue creation from workstream:
+  forge plan --execute --workstream .forge/workstreams/ws-auth.yaml`,
 	RunE: runPlan,
 }
 
 func init() {
-	planCmd.Flags().StringVar(&planIssue, "issue", "", "Issue reference (required, e.g. gh:org/repo#123, #42)")
+	planCmd.Flags().StringVar(&planIssue, "issue", "", "Issue reference (e.g. gh:org/repo#123, #42)")
 	planCmd.Flags().StringVar(&planPrinciples, "principles", "", "Comma-separated principle sets to apply")
 	planCmd.Flags().StringVar(&planFormat, "format", "text", "Output format: text or json")
 
-	_ = planCmd.MarkFlagRequired("issue")
+	// Workstream planning flags (defined in workstream.go).
+	addPlanGoalFlags(planCmd)
 
 	rootCmd.AddCommand(planCmd)
 }
 
 func runPlan(cmd *cobra.Command, args []string) error {
+	// Goal decomposition mode.
+	if planGoal != "" {
+		return runPlanGoal(cmd, args)
+	}
+
+	// Issue creation from workstream mode.
+	if planExecute {
+		return runPlanExecute(cmd, args)
+	}
+
+	// Single issue plan mode (original behavior).
+	if planIssue == "" {
+		return fmt.Errorf("one of --issue, --goal, or --execute is required")
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
