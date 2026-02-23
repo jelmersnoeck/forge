@@ -1,0 +1,97 @@
+name: "Forge Code Review"
+description: "Run principle-based code review on pull requests"
+
+inputs:
+  principles:
+    description: "Comma-separated list of principle sets to apply"
+    required: false
+    default: ""
+  config:
+    description: "Path to forge config file"
+    required: false
+    default: ""
+  severity-threshold:
+    description: "Minimum severity to report (info, warning, critical)"
+    required: false
+    default: "warning"
+  format:
+    description: "Output format (sarif, json)"
+    required: false
+    default: "sarif"
+
+outputs:
+  findings-count:
+    description: "Total number of findings"
+    value: ${{ steps.review.outputs.findings-count }}
+  has-critical:
+    description: "Whether any critical findings were found"
+    value: ${{ steps.review.outputs.has-critical }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.22"
+
+    - name: Install Forge
+      shell: bash
+      run: |
+        if command -v forge &> /dev/null; then
+          echo "Forge is already installed"
+        else
+          go install github.com/jelmersnoeck/forge/cmd/forge@latest
+        fi
+
+    - name: Run Forge Review
+      id: review
+      shell: bash
+      run: |
+        ARGS="--diff HEAD~1..HEAD"
+        ARGS="$ARGS --format ${{ inputs.format }}"
+        ARGS="$ARGS --severity-threshold ${{ inputs.severity-threshold }}"
+
+        if [ -n "${{ inputs.principles }}" ]; then
+          ARGS="$ARGS --principles ${{ inputs.principles }}"
+        fi
+
+        if [ -n "${{ inputs.config }}" ]; then
+          ARGS="$ARGS --config ${{ inputs.config }}"
+        fi
+
+        OUTPUT_FILE="forge-review-results.${{ inputs.format }}"
+
+        # Run forge review; capture exit code but don't fail the step yet.
+        set +e
+        forge review $ARGS > "$OUTPUT_FILE" 2>&1
+        EXIT_CODE=$?
+        set -e
+
+        # Parse results for outputs.
+        if [ "${{ inputs.format }}" = "sarif" ] && [ -f "$OUTPUT_FILE" ]; then
+          FINDINGS_COUNT=$(jq '[.runs[].results[]] | length' "$OUTPUT_FILE" 2>/dev/null || echo "0")
+          HAS_CRITICAL=$(jq '[.runs[].results[] | select(.level == "error")] | length > 0' "$OUTPUT_FILE" 2>/dev/null || echo "false")
+        else
+          FINDINGS_COUNT="0"
+          HAS_CRITICAL="false"
+        fi
+
+        echo "findings-count=$FINDINGS_COUNT" >> "$GITHUB_OUTPUT"
+        echo "has-critical=$HAS_CRITICAL" >> "$GITHUB_OUTPUT"
+
+        echo "Forge review complete: $FINDINGS_COUNT findings, critical=$HAS_CRITICAL"
+
+        # Fail the step if forge review returned a non-zero exit code
+        # and there are critical findings.
+        if [ "$HAS_CRITICAL" = "true" ]; then
+          echo "::error::Forge review found critical findings"
+          exit 1
+        fi
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: inputs.format == 'sarif' && always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: forge-review-results.sarif
+        category: forge-review

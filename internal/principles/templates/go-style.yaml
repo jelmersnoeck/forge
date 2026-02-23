@@ -1,0 +1,135 @@
+name: go-style
+version: "1.0.0"
+description: "Go style guide principles covering naming conventions, error handling, and interface design."
+principles:
+  - id: style-001
+    category: simplicity
+    severity: warning
+    title: "Return errors, don't panic"
+    description: "Functions should return errors instead of calling panic(). Reserve panic for truly unrecoverable situations (e.g., programmer bugs during init)."
+    rationale: "Panics crash the entire program. Error returns allow callers to decide how to handle failures gracefully."
+    check: "Flag any panic() calls in non-init, non-test code. Verify that all error paths return errors to callers."
+    examples:
+      - type: bad
+        code: |
+          func ParseConfig(path string) *Config {
+            data, err := os.ReadFile(path)
+            if err != nil {
+              panic(err)
+            }
+            // ...
+          }
+        explanation: "Panic on file read error crashes the entire application."
+      - type: good
+        code: |
+          func ParseConfig(path string) (*Config, error) {
+            data, err := os.ReadFile(path)
+            if err != nil {
+              return nil, fmt.Errorf("reading config %s: %w", path, err)
+            }
+            // ...
+          }
+        explanation: "Returning wrapped error lets caller handle the failure."
+    tags: [error-handling, idiom]
+
+  - id: style-002
+    category: simplicity
+    severity: warning
+    title: "Wrap errors with context"
+    description: "When returning errors, wrap them with fmt.Errorf and %w to add context while preserving the error chain."
+    rationale: "Wrapped errors provide a trace of what operation failed at each level, making debugging much faster."
+    check: "Flag bare error returns (return err) where context could be added. Verify error messages describe the operation that failed."
+    examples:
+      - type: bad
+        code: |
+          func LoadUser(id string) (*User, error) {
+            user, err := db.Get(id)
+            if err != nil {
+              return nil, err
+            }
+            return user, nil
+          }
+        explanation: "Bare error return loses context about what operation failed."
+      - type: good
+        code: |
+          func LoadUser(id string) (*User, error) {
+            user, err := db.Get(id)
+            if err != nil {
+              return nil, fmt.Errorf("loading user %s: %w", id, err)
+            }
+            return user, nil
+          }
+        explanation: "Wrapped error adds context while preserving the underlying error."
+    tags: [error-handling, idiom]
+
+  - id: style-003
+    category: simplicity
+    severity: info
+    title: "Accept interfaces, return structs"
+    description: "Functions should accept interface parameters for flexibility but return concrete types for clarity."
+    rationale: "Accepting interfaces makes functions testable and composable. Returning concrete types avoids unnecessary abstraction and makes the API predictable."
+    check: "Flag functions that return interfaces when they could return concrete types. Verify that function parameters use the narrowest interface needed."
+    examples:
+      - type: bad
+        code: |
+          func NewStore() Store {
+            return &fileStore{}
+          }
+        explanation: "Returning the Store interface hides the concrete type unnecessarily."
+      - type: good
+        code: |
+          func NewStore() *FileStore {
+            return &FileStore{}
+          }
+        explanation: "Returning the concrete type is clearer; callers can still assign to an interface variable."
+    tags: [interfaces, design]
+
+  - id: style-004
+    category: simplicity
+    severity: warning
+    title: "Context as first parameter"
+    description: "Functions that accept a context.Context should take it as their first parameter, named ctx."
+    rationale: "This is a universal Go convention. Consistent placement makes it immediately obvious which functions support cancellation and deadlines."
+    check: "Flag any function with context.Context that is not the first parameter or is not named ctx."
+    examples:
+      - type: bad
+        code: |
+          func FetchData(url string, ctx context.Context) ([]byte, error) {
+        explanation: "Context is not the first parameter, violating Go conventions."
+      - type: good
+        code: |
+          func FetchData(ctx context.Context, url string) ([]byte, error) {
+        explanation: "Context is the first parameter, following Go conventions."
+    tags: [context, convention]
+
+  - id: style-005
+    category: simplicity
+    severity: info
+    title: "Use meaningful variable names"
+    description: "Variables should have descriptive names. Short names (i, n, err) are fine for small scopes; longer names for larger scopes."
+    rationale: "Readable code reduces bugs and review time. The scope of a variable should determine the length of its name."
+    check: "Flag single-letter variables used beyond a few lines of scope (except conventional ones like i, j, k, n, err, ctx)."
+    examples:
+      - type: bad
+        code: |
+          func process(s []*Thing) error {
+            for _, t := range s {
+              if t.X > 0 {
+                d := compute(t)
+                // ... 30 more lines using d and t
+              }
+            }
+          }
+        explanation: "s, t, d are too short for their scope; reader must constantly look back at definitions."
+      - type: good
+        code: |
+          func processThings(things []*Thing) error {
+            for _, thing := range things {
+              if thing.Value > 0 {
+                result := compute(thing)
+                // ... 30 more lines using result and thing
+              }
+            }
+          }
+        explanation: "Descriptive names make the code self-documenting."
+    tags: [naming, readability]

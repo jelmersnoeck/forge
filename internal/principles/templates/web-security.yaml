@@ -1,0 +1,138 @@
+name: web-security
+version: "1.0.0"
+description: "Web security principles covering XSS, CSRF, authentication, and secure headers."
+principles:
+  - id: web-001
+    category: security
+    severity: critical
+    title: "Cross-site scripting (XSS) prevention"
+    description: "All user-supplied data rendered in HTML must be properly escaped. Use html/template instead of text/template for HTML output."
+    rationale: "XSS allows attackers to execute arbitrary JavaScript in users' browsers, leading to session hijacking and data theft."
+    check: "Flag use of text/template for HTML rendering. Verify that html/template is used and that raw HTML insertion (template.HTML) is justified."
+    examples:
+      - type: bad
+        code: |
+          import "text/template"
+          tmpl := template.Must(template.New("page").Parse("<h1>{{.Title}}</h1>"))
+        explanation: "text/template does not escape HTML; malicious Title values execute as JavaScript."
+      - type: good
+        code: |
+          import "html/template"
+          tmpl := template.Must(template.New("page").Parse("<h1>{{.Title}}</h1>"))
+        explanation: "html/template auto-escapes values based on context (HTML, JS, URL, CSS)."
+    tags: [xss, owasp, html]
+
+  - id: web-002
+    category: security
+    severity: critical
+    title: "CSRF protection for state-changing endpoints"
+    description: "All state-changing HTTP endpoints (POST, PUT, DELETE, PATCH) must validate a CSRF token."
+    rationale: "Without CSRF protection, attackers can trick authenticated users into making unintended requests via malicious websites."
+    check: "Verify that state-changing handlers check a CSRF token (from header or form field). Flag POST/PUT/DELETE handlers without CSRF validation."
+    examples:
+      - type: bad
+        code: |
+          mux.HandleFunc("POST /transfer", func(w http.ResponseWriter, r *http.Request) {
+            amount := r.FormValue("amount")
+            doTransfer(amount)
+          })
+        explanation: "No CSRF token validation; request could originate from a malicious site."
+      - type: good
+        code: |
+          mux.HandleFunc("POST /transfer", func(w http.ResponseWriter, r *http.Request) {
+            if !validateCSRFToken(r) {
+              http.Error(w, "invalid CSRF token", http.StatusForbidden)
+              return
+            }
+            amount := r.FormValue("amount")
+            doTransfer(amount)
+          })
+        explanation: "CSRF token is validated before processing the request."
+    tags: [csrf, owasp, authentication]
+
+  - id: web-003
+    category: security
+    severity: warning
+    title: "Secure cookie attributes"
+    description: "Session and authentication cookies must set Secure, HttpOnly, and SameSite attributes."
+    rationale: "Without these attributes, cookies can be stolen via XSS (HttpOnly), sent over HTTP (Secure), or leaked via cross-site requests (SameSite)."
+    check: "Verify that http.Cookie sets HttpOnly=true, Secure=true, and SameSite=http.SameSiteStrictMode or Lax for auth cookies."
+    examples:
+      - type: bad
+        code: |
+          http.SetCookie(w, &http.Cookie{Name: "session", Value: token})
+        explanation: "Cookie has no security attributes; vulnerable to XSS and cross-site attacks."
+      - type: good
+        code: |
+          http.SetCookie(w, &http.Cookie{
+            Name:     "session",
+            Value:    token,
+            HttpOnly: true,
+            Secure:   true,
+            SameSite: http.SameSiteStrictMode,
+            Path:     "/",
+          })
+        explanation: "Cookie is protected against XSS, HTTP interception, and cross-site request forgery."
+    tags: [cookies, session, owasp]
+
+  - id: web-004
+    category: security
+    severity: warning
+    title: "Authentication rate limiting"
+    description: "Login and authentication endpoints must implement rate limiting to prevent brute-force attacks."
+    rationale: "Without rate limiting, attackers can attempt unlimited password guesses. Rate limiting makes brute-force attacks impractical."
+    check: "Verify that login handlers implement per-IP or per-account rate limiting. Flag authentication endpoints without any rate limiting."
+    examples:
+      - type: bad
+        code: |
+          func handleLogin(w http.ResponseWriter, r *http.Request) {
+            user := r.FormValue("username")
+            pass := r.FormValue("password")
+            if authenticate(user, pass) {
+              createSession(w, user)
+            }
+          }
+        explanation: "No rate limiting; attackers can attempt unlimited logins."
+      - type: good
+        code: |
+          func handleLogin(w http.ResponseWriter, r *http.Request) {
+            if !rateLimiter.Allow(r.RemoteAddr) {
+              http.Error(w, "too many requests", http.StatusTooManyRequests)
+              return
+            }
+            user := r.FormValue("username")
+            pass := r.FormValue("password")
+            if authenticate(user, pass) {
+              createSession(w, user)
+            }
+          }
+        explanation: "Rate limiter prevents brute-force attempts."
+    tags: [authentication, rate-limiting, owasp]
+
+  - id: web-005
+    category: security
+    severity: warning
+    title: "Security headers"
+    description: "HTTP responses must include security headers: Content-Security-Policy, X-Content-Type-Options, X-Frame-Options, and Strict-Transport-Security."
+    rationale: "Security headers provide defense-in-depth against XSS, clickjacking, MIME sniffing, and protocol downgrade attacks."
+    check: "Verify that a middleware or handler sets security headers on all responses. Flag applications serving HTML without these headers."
+    examples:
+      - type: bad
+        code: |
+          func handler(w http.ResponseWriter, r *http.Request) {
+            w.Write([]byte("<html>...</html>"))
+          }
+        explanation: "No security headers set; browser has no guidance on security policies."
+      - type: good
+        code: |
+          func securityHeaders(next http.Handler) http.Handler {
+            return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+              w.Header().Set("X-Content-Type-Options", "nosniff")
+              w.Header().Set("X-Frame-Options", "DENY")
+              w.Header().Set("Content-Security-Policy", "default-src 'self'")
+              w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+              next.ServeHTTP(w, r)
+            })
+          }
+        explanation: "Middleware applies security headers to all responses."
+    tags: [headers, owasp, defense-in-depth]
