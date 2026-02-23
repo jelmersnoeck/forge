@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/engine"
+	"github.com/jelmersnoeck/forge/internal/principles"
 	"github.com/jelmersnoeck/forge/internal/review"
 	"github.com/jelmersnoeck/forge/internal/tracker"
 	"github.com/jelmersnoeck/forge/pkg/config"
@@ -109,7 +110,7 @@ func TestOutputBuildText_WithFindings(t *testing.T) {
 			{
 				Findings: []review.Finding{
 					{
-						Severity: "critical",
+						Severity: principles.SeverityCritical,
 						Message:  "SQL injection vulnerability",
 						File:     "db.go",
 						Line:     42,
@@ -209,16 +210,16 @@ func TestBuildEngine_DefaultConfig(t *testing.T) {
 		t.Fatal("buildEngine() returned nil engine")
 	}
 
-	if eng.Config.MaxIterations != 3 {
-		t.Errorf("MaxIterations = %d, want 3", eng.Config.MaxIterations)
+	if eng.Config().MaxIterations != 3 {
+		t.Errorf("MaxIterations = %d, want 3", eng.Config().MaxIterations)
 	}
 
-	if eng.Config.DefaultAgent != "claude-code" {
-		t.Errorf("DefaultAgent = %q, want %q", eng.Config.DefaultAgent, "claude-code")
+	if eng.Config().DefaultAgent != "claude-code" {
+		t.Errorf("DefaultAgent = %q, want %q", eng.Config().DefaultAgent, "claude-code")
 	}
 
-	if eng.Config.DefaultTracker != "github" {
-		t.Errorf("DefaultTracker = %q, want %q", eng.Config.DefaultTracker, "github")
+	if eng.Config().DefaultTracker != "github" {
+		t.Errorf("DefaultTracker = %q, want %q", eng.Config().DefaultTracker, "github")
 	}
 }
 
@@ -231,7 +232,7 @@ func TestBuildEngine_FileTracker(t *testing.T) {
 		t.Fatalf("buildEngine() error: %v", err)
 	}
 
-	if _, ok := eng.Trackers["file"]; !ok {
+	if !eng.HasTracker("file") {
 		t.Error("expected file tracker to be registered")
 	}
 }
@@ -259,11 +260,89 @@ func TestBuildEngine_CustomRoles(t *testing.T) {
 		t.Fatalf("buildEngine() error: %v", err)
 	}
 
-	if eng.Config.ReviewerAgent != "opencode" {
-		t.Errorf("ReviewerAgent = %q, want %q", eng.Config.ReviewerAgent, "opencode")
+	if eng.Config().ReviewerAgent != "opencode" {
+		t.Errorf("ReviewerAgent = %q, want %q", eng.Config().ReviewerAgent, "opencode")
 	}
 
-	if _, ok := eng.Agents["opencode"]; !ok {
+	if !eng.HasAgent("opencode") {
 		t.Error("expected opencode agent to be registered")
+	}
+}
+
+func TestBuildEngine_JiraTracker(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tracker.Default = "jira"
+	cfg.Tracker.Jira = &config.JiraConfig{
+		Instance:       "https://test.atlassian.net",
+		DefaultProject: "PROJ",
+		Auth:           "user@example.com:api-token",
+	}
+
+	eng, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine() error: %v", err)
+	}
+
+	if !eng.HasTracker("jira") {
+		t.Error("expected jira tracker to be registered")
+	}
+}
+
+func TestBuildEngine_JiraTracker_MissingConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tracker.Default = "jira"
+	cfg.Tracker.Jira = nil
+
+	_, err := buildEngine(cfg)
+	if err == nil {
+		t.Fatal("expected error when jira config is nil")
+	}
+	if !strings.Contains(err.Error(), "tracker.jira config is missing") {
+		t.Errorf("error = %q, want mention of missing jira config", err.Error())
+	}
+}
+
+func TestBuildEngine_LinearTracker(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tracker.Default = "linear"
+	cfg.Tracker.Linear = &config.LinearConfig{
+		Team: "TEAM",
+		Auth: "lin_api_key",
+	}
+
+	eng, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine() error: %v", err)
+	}
+
+	if !eng.HasTracker("linear") {
+		t.Error("expected linear tracker to be registered")
+	}
+}
+
+func TestBuildEngine_LinearTracker_MissingConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tracker.Default = "linear"
+	cfg.Tracker.Linear = nil
+
+	_, err := buildEngine(cfg)
+	if err == nil {
+		t.Fatal("expected error when linear config is nil")
+	}
+	if !strings.Contains(err.Error(), "tracker.linear config is missing") {
+		t.Errorf("error = %q, want mention of missing linear config", err.Error())
+	}
+}
+
+func TestBuildEngine_UnsupportedTracker(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tracker.Default = "bitbucket"
+
+	_, err := buildEngine(cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported tracker type")
+	}
+	if !strings.Contains(err.Error(), "unsupported tracker type") {
+		t.Errorf("error = %q, want mention of unsupported tracker type", err.Error())
 	}
 }

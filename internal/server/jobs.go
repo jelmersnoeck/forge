@@ -6,6 +6,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -174,6 +177,35 @@ func (q *JobQueue) Run(ctx context.Context) {
 }
 
 func (q *JobQueue) processJob(ctx context.Context, jobID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			slog.Error("job handler panicked",
+				"job_id", jobID,
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(stack),
+			)
+			q.mu.Lock()
+			if job, ok := q.jobs[jobID]; ok {
+				job.Status = JobStatusFailed
+				job.Error = fmt.Sprintf("panic: %v", r)
+				job.UpdatedAt = time.Now().UTC()
+			}
+			q.mu.Unlock()
+
+			if q.broker != nil {
+				q.broker.Publish(jobID, Event{
+					Type: "job_completed",
+					Data: map[string]interface{}{
+						"job_id": jobID,
+						"status": JobStatusFailed,
+						"error":  fmt.Sprintf("panic: %v", r),
+					},
+				})
+			}
+		}
+	}()
+
 	q.mu.Lock()
 	job, ok := q.jobs[jobID]
 	if !ok {

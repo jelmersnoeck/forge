@@ -7,6 +7,7 @@ import (
 
 	"github.com/jelmersnoeck/forge/internal/agent"
 	"github.com/jelmersnoeck/forge/internal/gitutil"
+	"github.com/jelmersnoeck/forge/internal/principles"
 	"github.com/jelmersnoeck/forge/internal/review"
 	"github.com/jelmersnoeck/forge/internal/tracker"
 )
@@ -19,7 +20,7 @@ import (
 // then reviews the output. If the review finds critical issues, feedback is
 // assembled and passed back to the code agent for the next iteration.
 func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, error) {
-	slog.Info("starting governed build", "issue_ref", req.IssueRef, "max_iterations", e.Config.MaxIterations)
+	slog.Info("starting governed build", "issue_ref", req.IssueRef, "max_iterations", e.config.MaxIterations)
 
 	result := &BuildResult{
 		Status: BuildStatusFailed,
@@ -34,9 +35,9 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 
 	trackerName := ref.Tracker
 	if trackerName == "" {
-		trackerName = e.Config.DefaultTracker
+		trackerName = e.config.DefaultTracker
 	}
-	t, ok := e.Trackers[trackerName]
+	t, ok := e.trackers[trackerName]
 	if !ok {
 		result.Error = fmt.Sprintf("tracker %q not configured", trackerName)
 		return result, fmt.Errorf("tracker %q not configured", trackerName)
@@ -51,7 +52,7 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 
 	// Step 2: Create git branch.
 	git := gitutil.New(req.WorkDir)
-	branchName := gitutil.FormatBranch(e.Config.BranchPattern, map[string]string{
+	branchName := gitutil.FormatBranch(e.config.BranchPattern, map[string]string{
 		"Tracker": ref.Tracker,
 		"IssueID": ref.ID,
 	})
@@ -76,7 +77,7 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 	result.Plan = planResult.Plan
 
 	// Step 4: If approval required, return for CLI to handle.
-	if e.Config.RequireApproval {
+	if e.config.RequireApproval {
 		slog.Info("plan requires approval, returning for review")
 		result.Status = BuildStatusRejected
 		return result, nil
@@ -88,9 +89,9 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 		baseBranch = "main"
 	}
 
-	for iteration := 1; iteration <= e.Config.MaxIterations; iteration++ {
+	for iteration := 1; iteration <= e.config.MaxIterations; iteration++ {
 		result.Iterations = iteration
-		slog.Info("starting build iteration", "iteration", iteration, "max", e.Config.MaxIterations)
+		slog.Info("starting build iteration", "iteration", iteration, "max", e.config.MaxIterations)
 
 		// Step 5: Run code agent.
 		codeErr := e.runCodeAgent(ctx, req, issue, planResult.Plan, result.feedbackFromLastReview())
@@ -117,6 +118,12 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 		if err != nil {
 			result.Error = fmt.Sprintf("getting diff: %v", err)
 			return result, fmt.Errorf("getting diff: %w", err)
+		}
+
+		if diff == "" && iteration == 1 {
+			slog.Warn("empty diff after first code iteration; the code agent may not have made changes",
+				"issue_ref", req.IssueRef,
+			)
 		}
 
 		reviewResult, err := e.Review(ctx, ReviewRequest{
@@ -147,13 +154,13 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 		}
 
 		// Step 8: Max iterations check.
-		if iteration == e.Config.MaxIterations {
+		if iteration == e.config.MaxIterations {
 			slog.Warn("max iterations reached with critical findings",
 				"iterations", iteration,
 				"critical_findings", countCritical(reviewResult.Findings),
 			)
 			result.Status = BuildStatusMaxLoops
-			result.Error = fmt.Sprintf("max iterations (%d) reached with critical findings", e.Config.MaxIterations)
+			result.Error = fmt.Sprintf("max iterations (%d) reached with critical findings", e.config.MaxIterations)
 			return result, nil
 		}
 
@@ -169,7 +176,7 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 // runCodeAgent executes the code agent with the full context of the issue,
 // plan, and any feedback from prior review iterations.
 func (e *Engine) runCodeAgent(ctx context.Context, req BuildRequest, issue *tracker.Issue, plan string, feedback string) error {
-	coderAgent, err := e.getAgent(e.Config.CoderAgent)
+	coderAgent, err := e.getAgent(e.config.CoderAgent)
 	if err != nil {
 		return fmt.Errorf("getting coder agent: %w", err)
 	}
@@ -261,7 +268,7 @@ func (r *BuildResult) feedbackFromLastReview() string {
 func countCritical(findings []review.Finding) int {
 	count := 0
 	for _, f := range findings {
-		if f.Severity == "critical" {
+		if f.Severity == principles.SeverityCritical {
 			count++
 		}
 	}

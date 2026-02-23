@@ -133,19 +133,21 @@ func (e *Executor) Execute(ctx context.Context, ws *Workstream) error {
 
 	// Determine final workstream status.
 	allCompleted := true
-	anyFailed := false
+	failedCount := 0
+	totalCount := 0
 	for _, issue := range ws.AllIssues() {
+		totalCount++
 		if issue.Status != StatusCompleted {
 			allCompleted = false
 		}
 		if issue.Status == StatusFailed {
-			anyFailed = true
+			failedCount++
 		}
 	}
 
 	if allCompleted {
 		ws.Status = StatusCompleted
-	} else if anyFailed {
+	} else if failedCount > 0 {
 		ws.Status = StatusFailed
 	}
 
@@ -153,6 +155,10 @@ func (e *Executor) Execute(ctx context.Context, ws *Workstream) error {
 		"workstream_id", ws.ID,
 		"status", ws.Status,
 	)
+
+	if failedCount > 0 {
+		return fmt.Errorf("workstream %s: %d of %d issues failed", ws.ID, failedCount, totalCount)
+	}
 
 	return nil
 }

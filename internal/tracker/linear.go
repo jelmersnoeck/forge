@@ -196,8 +196,8 @@ func (l *LinearTracker) CreateIssue(ctx context.Context, req *CreateIssueRequest
 }
 
 // CreatePR returns ErrNotSupported because Linear does not manage pull requests.
-func (l *LinearTracker) CreatePR(ctx context.Context, req *CreatePRRequest) (*PullRequest, error) {
-	return nil, ErrNotSupported
+func (l *LinearTracker) CreatePR(_ context.Context, _ *CreatePRRequest) (*PullRequest, error) {
+	return nil, fmt.Errorf("linear tracker: create pr: %w", ErrNotSupported)
 }
 
 // Comment adds a comment to a Linear issue.

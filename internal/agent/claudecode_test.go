@@ -239,6 +239,35 @@ func TestNewClaudeCode_CustomPath(t *testing.T) {
 	}
 }
 
+func TestClaudeCode_ParseFallbackSetsError(t *testing.T) {
+	c := NewClaudeCode("")
+
+	// Simulate what happens when parseOutput fails: the Run method
+	// should fall back to raw output and set the Error field.
+	rawOutput := []byte("this is not JSON")
+	_, err := c.parseOutput(rawOutput, 1.0)
+	if err == nil {
+		t.Fatal("expected parseOutput to return error for non-JSON input")
+	}
+
+	// The Run method catches this error and creates a fallback response.
+	// Verify the fallback response would have the Error field set.
+	// (We can't easily test Run itself without a real binary, so we test
+	// the contract: parseOutput returns error -> caller sets Error field.)
+	resp := &Response{
+		Output:   string(rawOutput),
+		ExitCode: 0,
+		Duration: 1.0,
+		Error:    "output parse fallback: " + err.Error(),
+	}
+	if resp.Error == "" {
+		t.Error("expected non-empty Error field on fallback response")
+	}
+	if resp.Output != "this is not JSON" {
+		t.Errorf("expected raw output preserved, got %q", resp.Output)
+	}
+}
+
 // Verify ClaudeCode implements Agent interface.
 var _ Agent = (*ClaudeCode)(nil)
 

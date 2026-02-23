@@ -5,14 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"sync"
 	"time"
 )
-
-// requestIDKey is the context key for the request ID.
-type contextKey string
 
 const requestIDHeader = "X-Request-ID"
 
@@ -68,19 +66,33 @@ func panicRecovery(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// corsMiddleware adds CORS headers for cross-origin requests.
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+// corsMiddleware adds CORS headers for cross-origin requests. Only origins in
+// the allowedOrigins list are permitted. If the list is empty, no
+// Access-Control-Allow-Origin header is set, which effectively rejects
+// cross-origin requests.
+func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = true
+	}
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && allowed[origin] {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+				w.Header().Set("Vary", "Origin")
+			}
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // rateLimiter implements a simple token-bucket rate limiter per IP.
@@ -89,6 +101,7 @@ type rateLimiter struct {
 	visitors map[string]*visitor
 	rate     int           // Max requests per window.
 	window   time.Duration // Window duration.
+	stop     chan struct{}  // Closed to signal cleanup goroutine to exit.
 }
 
 type visitor struct {
@@ -101,6 +114,7 @@ func newRateLimiter(rate int, window time.Duration) *rateLimiter {
 		visitors: make(map[string]*visitor),
 		rate:     rate,
 		window:   window,
+		stop:     make(chan struct{}),
 	}
 	// Background cleanup of old entries.
 	go rl.cleanup()
@@ -127,24 +141,42 @@ func (rl *rateLimiter) allow(ip string) bool {
 func (rl *rateLimiter) cleanup() {
 	ticker := time.NewTicker(rl.window * 2)
 	defer ticker.Stop()
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for ip, v := range rl.visitors {
-			if now.Sub(v.lastReset) > rl.window*2 {
-				delete(rl.visitors, ip)
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now()
+			for ip, v := range rl.visitors {
+				if now.Sub(v.lastReset) > rl.window*2 {
+					delete(rl.visitors, ip)
+				}
 			}
+			rl.mu.Unlock()
+		case <-rl.stop:
+			return
 		}
-		rl.mu.Unlock()
 	}
+}
+
+// Stop signals the background cleanup goroutine to exit.
+func (rl *rateLimiter) Stop() {
+	close(rl.stop)
+}
+
+// stripPort extracts the IP address from a RemoteAddr string, removing the
+// port suffix. For addresses that cannot be parsed, the original string is
+// returned as-is.
+func stripPort(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }
 
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			ip = fwd
-		}
+		ip := stripPort(r.RemoteAddr)
 		if !rl.allow(ip) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)

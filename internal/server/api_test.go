@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -228,6 +231,7 @@ func TestRoutes_FullIntegration(t *testing.T) {
 	body, _ := json.Marshal(BuildAPIRequest{Issue: "gh:org/repo#1"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/build", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -240,8 +244,137 @@ func TestRoutes_FullIntegration(t *testing.T) {
 		t.Error("expected X-Request-ID header from middleware")
 	}
 
-	// Verify CORS middleware ran.
-	if w.Header().Get("Access-Control-Allow-Origin") == "" {
-		t.Error("expected CORS header from middleware")
+	// Verify CORS middleware ran for allowed origin.
+	if w.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
+		t.Errorf("expected CORS header for allowed origin, got %q", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestValidateWorkDir_EmptyDefaultsToCwd(t *testing.T) {
+	dir, err := validateWorkDir("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cwd, _ := os.Getwd()
+	if dir != cwd {
+		t.Errorf("expected %q, got %q", cwd, dir)
+	}
+}
+
+func TestValidateWorkDir_ValidAbsoluteDir(t *testing.T) {
+	tmp := t.TempDir()
+	dir, err := validateWorkDir(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dir != filepath.Clean(tmp) {
+		t.Errorf("expected %q, got %q", filepath.Clean(tmp), dir)
+	}
+}
+
+func TestValidateWorkDir_RelativePath(t *testing.T) {
+	_, err := validateWorkDir("relative/path")
+	if err == nil {
+		t.Fatal("expected error for relative path, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Errorf("expected 'must be absolute' in error, got: %v", err)
+	}
+}
+
+func TestValidateWorkDir_DotDotTraversal(t *testing.T) {
+	_, err := validateWorkDir("/tmp/../../../etc")
+	if err == nil {
+		t.Fatal("expected error for .. traversal, got nil")
+	}
+}
+
+func TestValidateWorkDir_NonExistent(t *testing.T) {
+	_, err := validateWorkDir("/nonexistent/path/that/does/not/exist")
+	if err == nil {
+		t.Fatal("expected error for non-existent path, got nil")
+	}
+}
+
+func TestValidateWorkDir_NotADirectory(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("hello"), 0o644)
+
+	_, err := validateWorkDir(f)
+	if err == nil {
+		t.Fatal("expected error for file path, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("expected 'not a directory' in error, got: %v", err)
+	}
+}
+
+func TestHandleBuild_InvalidWorkDir(t *testing.T) {
+	s := newFullTestServer()
+
+	body, _ := json.Marshal(BuildAPIRequest{
+		Issue:   "gh:org/repo#1",
+		WorkDir: "relative/path",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/build", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	s.handleBuild(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIError
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Code != "INVALID_WORK_DIR" {
+		t.Errorf("expected code INVALID_WORK_DIR, got %q", resp.Code)
+	}
+}
+
+func TestHandleReview_InvalidWorkDir(t *testing.T) {
+	s := newFullTestServer()
+
+	body, _ := json.Marshal(ReviewAPIRequest{
+		Diff:    "some diff content",
+		WorkDir: "relative/path",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	s.handleReview(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIError
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Code != "INVALID_WORK_DIR" {
+		t.Errorf("expected code INVALID_WORK_DIR, got %q", resp.Code)
+	}
+}
+
+func TestHandlePlan_InvalidWorkDir(t *testing.T) {
+	s := newFullTestServer()
+
+	body, _ := json.Marshal(PlanAPIRequest{
+		Issue:   "gh:org/repo#1",
+		WorkDir: "relative/path",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plan", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	s.handlePlan(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIError
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Code != "INVALID_WORK_DIR" {
+		t.Errorf("expected code INVALID_WORK_DIR, got %q", resp.Code)
 	}
 }

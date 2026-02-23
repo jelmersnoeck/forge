@@ -13,10 +13,27 @@ import (
 
 // Engine is the core orchestrator for governed builds.
 type Engine struct {
-	Agents     map[string]agent.Agent
-	Trackers   map[string]tracker.Tracker
-	Principles *principles.Store
-	Config     *EngineConfig
+	agents     map[string]agent.Agent
+	trackers   map[string]tracker.Tracker
+	principles *principles.Store
+	config     *EngineConfig
+}
+
+// Config returns the engine's configuration.
+func (e *Engine) Config() *EngineConfig {
+	return e.config
+}
+
+// HasAgent reports whether an agent with the given name is registered.
+func (e *Engine) HasAgent(name string) bool {
+	_, ok := e.agents[name]
+	return ok
+}
+
+// HasTracker reports whether a tracker with the given name is registered.
+func (e *Engine) HasTracker(name string) bool {
+	_, ok := e.trackers[name]
+	return ok
 }
 
 // EngineConfig holds runtime configuration for the engine.

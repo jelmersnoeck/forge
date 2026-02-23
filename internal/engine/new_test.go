@@ -22,14 +22,14 @@ func TestNew_Success(t *testing.T) {
 	if eng == nil {
 		t.Fatal("expected non-nil engine")
 	}
-	if eng.Config.MaxIterations != 3 {
-		t.Errorf("expected default MaxIterations=3, got %d", eng.Config.MaxIterations)
+	if eng.config.MaxIterations != 3 {
+		t.Errorf("expected default MaxIterations=3, got %d", eng.config.MaxIterations)
 	}
-	if eng.Config.BranchPattern != "forge/{{.Tracker}}-{{.IssueID}}" {
-		t.Errorf("unexpected default branch pattern: %s", eng.Config.BranchPattern)
+	if eng.config.BranchPattern != "forge/{{.Tracker}}-{{.IssueID}}" {
+		t.Errorf("unexpected default branch pattern: %s", eng.config.BranchPattern)
 	}
-	if eng.Config.SeverityThreshold != "critical" {
-		t.Errorf("unexpected default severity threshold: %s", eng.Config.SeverityThreshold)
+	if eng.config.SeverityThreshold != "critical" {
+		t.Errorf("unexpected default severity threshold: %s", eng.config.SeverityThreshold)
 	}
 }
 
@@ -78,14 +78,14 @@ func TestNew_AgentRoleDefaults(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if eng.Config.PlannerAgent != "mock" {
-		t.Errorf("expected PlannerAgent to default to 'mock', got %q", eng.Config.PlannerAgent)
+	if eng.config.PlannerAgent != "mock" {
+		t.Errorf("expected PlannerAgent to default to 'mock', got %q", eng.config.PlannerAgent)
 	}
-	if eng.Config.CoderAgent != "mock" {
-		t.Errorf("expected CoderAgent to default to 'mock', got %q", eng.Config.CoderAgent)
+	if eng.config.CoderAgent != "mock" {
+		t.Errorf("expected CoderAgent to default to 'mock', got %q", eng.config.CoderAgent)
 	}
-	if eng.Config.ReviewerAgent != "mock" {
-		t.Errorf("expected ReviewerAgent to default to 'mock', got %q", eng.Config.ReviewerAgent)
+	if eng.config.ReviewerAgent != "mock" {
+		t.Errorf("expected ReviewerAgent to default to 'mock', got %q", eng.config.ReviewerAgent)
 	}
 }
 
@@ -108,14 +108,14 @@ func TestNew_CustomAgentRoles(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if eng.Config.PlannerAgent != "planner" {
-		t.Errorf("expected PlannerAgent='planner', got %q", eng.Config.PlannerAgent)
+	if eng.config.PlannerAgent != "planner" {
+		t.Errorf("expected PlannerAgent='planner', got %q", eng.config.PlannerAgent)
 	}
-	if eng.Config.CoderAgent != "coder" {
-		t.Errorf("expected CoderAgent='coder', got %q", eng.Config.CoderAgent)
+	if eng.config.CoderAgent != "coder" {
+		t.Errorf("expected CoderAgent='coder', got %q", eng.config.CoderAgent)
 	}
-	if eng.Config.ReviewerAgent != "reviewer" {
-		t.Errorf("expected ReviewerAgent='reviewer', got %q", eng.Config.ReviewerAgent)
+	if eng.config.ReviewerAgent != "reviewer" {
+		t.Errorf("expected ReviewerAgent='reviewer', got %q", eng.config.ReviewerAgent)
 	}
 }
 
@@ -145,8 +145,8 @@ func TestNew_CustomMaxIterations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if eng.Config.MaxIterations != 5 {
-		t.Errorf("expected MaxIterations=5, got %d", eng.Config.MaxIterations)
+	if eng.config.MaxIterations != 5 {
+		t.Errorf("expected MaxIterations=5, got %d", eng.config.MaxIterations)
 	}
 }
 
@@ -159,5 +159,67 @@ func TestNew_EmptyAgentName(t *testing.T) {
 	_, err := New(&EngineConfig{}, agents, trackers, nil)
 	if err != nil {
 		t.Fatalf("New with empty config: %v", err)
+	}
+}
+
+func TestEngine_Config(t *testing.T) {
+	agents := map[string]agent.Agent{"mock": &mockAgent{}}
+	trackers := map[string]tracker.Tracker{"github": newMockTracker()}
+
+	eng, err := New(&EngineConfig{
+		DefaultAgent:   "mock",
+		DefaultTracker: "github",
+		MaxIterations:  7,
+	}, agents, trackers, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	cfg := eng.Config()
+	if cfg == nil {
+		t.Fatal("Config() returned nil")
+	}
+	if cfg.MaxIterations != 7 {
+		t.Errorf("Config().MaxIterations = %d, want 7", cfg.MaxIterations)
+	}
+}
+
+func TestEngine_HasAgent(t *testing.T) {
+	agents := map[string]agent.Agent{"mock": &mockAgent{}}
+	trackers := map[string]tracker.Tracker{"github": newMockTracker()}
+
+	eng, err := New(&EngineConfig{
+		DefaultAgent:   "mock",
+		DefaultTracker: "github",
+	}, agents, trackers, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if !eng.HasAgent("mock") {
+		t.Error("expected HasAgent('mock') to return true")
+	}
+	if eng.HasAgent("nonexistent") {
+		t.Error("expected HasAgent('nonexistent') to return false")
+	}
+}
+
+func TestEngine_HasTracker(t *testing.T) {
+	agents := map[string]agent.Agent{"mock": &mockAgent{}}
+	trackers := map[string]tracker.Tracker{"github": newMockTracker()}
+
+	eng, err := New(&EngineConfig{
+		DefaultAgent:   "mock",
+		DefaultTracker: "github",
+	}, agents, trackers, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if !eng.HasTracker("github") {
+		t.Error("expected HasTracker('github') to return true")
+	}
+	if eng.HasTracker("jira") {
+		t.Error("expected HasTracker('jira') to return false")
 	}
 }

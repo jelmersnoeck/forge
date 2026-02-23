@@ -75,6 +75,7 @@ func (s *Server) Start(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		s.logger.Info("shutting down server")
+		s.limiter.Stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -107,7 +108,7 @@ func (s *Server) routes() http.Handler {
 	// Apply middleware (outermost first).
 	var handler http.Handler = mux
 	handler = s.limiter.middleware(handler)
-	handler = corsMiddleware(handler)
+	handler = corsMiddleware(s.config.AllowedOrigins)(handler)
 	handler = loggingMiddleware(s.logger)(handler)
 	handler = panicRecovery(s.logger)(handler)
 	handler = requestIDMiddleware(handler)

@@ -77,11 +77,15 @@ func (c *ClaudeCode) Run(ctx context.Context, req Request) (*Response, error) {
 
 	resp, parseErr := c.parseOutput(stdout.Bytes(), duration)
 	if parseErr != nil {
-		// Fall back to raw output if JSON parsing fails.
+		slog.Warn("failed to parse claude JSON output, falling back to raw output",
+			"error", parseErr,
+			"output_length", len(stdout.Bytes()),
+		)
 		return &Response{
 			Output:   stdout.String(),
 			ExitCode: 0,
 			Duration: duration,
+			Error:    fmt.Sprintf("output parse fallback: %v", parseErr),
 		}, nil
 	}
 

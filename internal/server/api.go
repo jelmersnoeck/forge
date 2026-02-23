@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -43,6 +45,42 @@ type APIError struct {
 
 // --- Handlers ---
 
+// validateWorkDir validates and resolves a work_dir from an API request.
+// An empty value defaults to the current working directory. The path must be
+// absolute, must exist as a directory, and must not contain ".." components
+// after cleaning.
+func validateWorkDir(workDir string) (string, error) {
+	if workDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("validate work_dir: %w", err)
+		}
+		return cwd, nil
+	}
+
+	if !filepath.IsAbs(workDir) {
+		return "", fmt.Errorf("validate work_dir: path must be absolute")
+	}
+
+	// Reject paths containing ".." components before cleaning, which could be
+	// used to traverse outside an intended directory boundary.
+	if containsDotDot(workDir) {
+		return "", fmt.Errorf("validate work_dir: path must not contain '..' components")
+	}
+
+	cleaned := filepath.Clean(workDir)
+
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("validate work_dir: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("validate work_dir: path is not a directory")
+	}
+
+	return cleaned, nil
+}
+
 // handleBuild accepts a build request and submits it as an async job.
 func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 	var req BuildAPIRequest
@@ -56,6 +94,13 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	workDir, err := validateWorkDir(req.WorkDir)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "INVALID_WORK_DIR", err.Error())
+		return
+	}
+	req.WorkDir = workDir
+
 	job := &Job{
 		Type:    JobTypeBuild,
 		Request: req,
@@ -63,7 +108,6 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 	jobID := s.jobs.Submit(job)
 
 	s.logger.Info("build job submitted", "job_id", jobID, "issue", req.Issue)
-	w.WriteHeader(http.StatusAccepted)
 	s.writeJSON(w, http.StatusAccepted, map[string]string{
 		"job_id": jobID,
 		"status": string(JobStatusPending),
@@ -83,10 +127,16 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	workDir, err := validateWorkDir(req.WorkDir)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "INVALID_WORK_DIR", err.Error())
+		return
+	}
+
 	result, err := s.engine.Review(r.Context(), engine.ReviewRequest{
 		Diff:          req.Diff,
 		PrincipleSets: req.PrincipleSets,
-		WorkDir:       req.WorkDir,
+		WorkDir:       workDir,
 	})
 	if err != nil {
 		s.logger.Error("review failed", "error", err)
@@ -110,10 +160,16 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	workDir, err := validateWorkDir(req.WorkDir)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "INVALID_WORK_DIR", err.Error())
+		return
+	}
+
 	result, err := s.engine.Plan(r.Context(), engine.PlanRequest{
 		IssueRef:      req.Issue,
 		PrincipleSets: req.PrincipleSets,
-		WorkDir:       req.WorkDir,
+		WorkDir:       workDir,
 	})
 	if err != nil {
 		s.logger.Error("plan failed", "error", err)
@@ -272,6 +328,16 @@ func extractPathParam(path, prefix string) string {
 		param = param[:idx]
 	}
 	return param
+}
+
+// containsDotDot reports whether the path contains a ".." component.
+func containsDotDot(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // queryInt reads an integer query parameter with a default.

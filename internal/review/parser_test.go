@@ -11,6 +11,7 @@ func TestParseFindings(t *testing.T) {
 		name    string
 		output  string
 		wantLen int
+		wantErr bool
 		check   func(t *testing.T, findings []Finding)
 	}{
 		{
@@ -24,8 +25,8 @@ func TestParseFindings(t *testing.T) {
 			wantLen: 0,
 		},
 		{
-			name: "single JSON object",
-			output: `{"file":"main.go","line":10,"principle_id":"sec-001","severity":"critical","message":"SQL injection","suggestion":"Use parameterized queries"}`,
+			name:    "single JSON object",
+			output:  `{"file":"main.go","line":10,"principle_id":"sec-001","severity":"critical","message":"SQL injection","suggestion":"Use parameterized queries"}`,
 			wantLen: 1,
 			check: func(t *testing.T, findings []Finding) {
 				f := findings[0]
@@ -85,17 +86,17 @@ The above issue is critical and should be fixed before merging.`,
 		{
 			name:    "completely malformed output",
 			output:  "This is just plain text with no JSON at all.",
-			wantLen: 0,
+			wantErr: true,
 		},
 		{
 			name:    "invalid JSON that looks like JSON",
 			output:  `{"file": "main.go", "line": broken}`,
-			wantLen: 0,
+			wantErr: true,
 		},
 		{
-			name: "JSON object with only empty fields is not a finding",
-			output: `{"foo":"bar"}`,
-			wantLen: 0,
+			name:    "JSON object with only empty fields is not a finding",
+			output:  `{"foo":"bar"}`,
+			wantErr: true,
 		},
 		{
 			name: "array embedded in text with surrounding prose",
@@ -113,7 +114,10 @@ These findings cover security principles sec-001 and sec-002.`,
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			findings := ParseFindings(tt.output)
+			findings, err := ParseFindings(tt.output)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseFindings() error = %v, wantErr %v", err, tt.wantErr)
+			}
 			if len(findings) != tt.wantLen {
 				t.Fatalf("ParseFindings() returned %d findings, want %d", len(findings), tt.wantLen)
 			}

@@ -125,20 +125,26 @@ func (te *testExecutor) Execute(ctx context.Context, ws *Workstream) error {
 	}
 
 	allCompleted := true
-	anyFailed := false
+	failedCount := 0
+	totalCount := 0
 	for _, issue := range ws.AllIssues() {
+		totalCount++
 		if issue.Status != StatusCompleted {
 			allCompleted = false
 		}
 		if issue.Status == StatusFailed {
-			anyFailed = true
+			failedCount++
 		}
 	}
 
 	if allCompleted {
 		ws.Status = StatusCompleted
-	} else if anyFailed {
+	} else if failedCount > 0 {
 		ws.Status = StatusFailed
+	}
+
+	if failedCount > 0 {
+		return fmt.Errorf("workstream %s: %d of %d issues failed", ws.ID, failedCount, totalCount)
 	}
 
 	return nil
@@ -221,8 +227,12 @@ func TestExecutor_FailureSkipsDependents(t *testing.T) {
 	exec := &testExecutor{mock: mock, maxParallel: 1}
 
 	err := exec.Execute(context.Background(), ws)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	if err == nil {
+		t.Fatal("expected error when issues fail")
+	}
+	// Verify error message format.
+	if !containsStr(err.Error(), "3 of 3 issues failed") {
+		t.Errorf("expected error to mention '3 of 3 issues failed', got: %v", err)
 	}
 
 	if ws.Status != StatusFailed {
@@ -373,8 +383,12 @@ func TestExecutor_PartialFailure(t *testing.T) {
 	exec := &testExecutor{mock: mock, maxParallel: 2}
 
 	err := exec.Execute(context.Background(), ws)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	if err == nil {
+		t.Fatal("expected error when issues fail")
+	}
+	// Verify error message describes the failure.
+	if !containsStr(err.Error(), "2 of 3 issues failed") {
+		t.Errorf("expected error to mention failed issue count, got: %v", err)
 	}
 
 	if ws.Status != StatusFailed {
@@ -394,4 +408,13 @@ func TestExecutor_PartialFailure(t *testing.T) {
 	if c.Status != StatusFailed {
 		t.Errorf("C status = %q, want %q", c.Status, StatusFailed)
 	}
+}
+
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

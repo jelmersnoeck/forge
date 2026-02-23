@@ -24,9 +24,9 @@ func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error)
 	// Determine which tracker to use.
 	trackerName := ref.Tracker
 	if trackerName == "" {
-		trackerName = e.Config.DefaultTracker
+		trackerName = e.config.DefaultTracker
 	}
-	t, ok := e.Trackers[trackerName]
+	t, ok := e.trackers[trackerName]
 	if !ok {
 		return nil, fmt.Errorf("tracker %q not configured", trackerName)
 	}
@@ -39,8 +39,8 @@ func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error)
 
 	// Load principles for prompt assembly.
 	principlePrompt := ""
-	if e.Principles != nil && len(req.PrincipleSets) > 0 {
-		ps, err := e.Principles.Load(ctx, req.PrincipleSets...)
+	if e.principles != nil && len(req.PrincipleSets) > 0 {
+		ps, err := e.principles.Load(ctx, req.PrincipleSets...)
 		if err != nil {
 			return nil, fmt.Errorf("loading principles: %w", err)
 		}
@@ -72,7 +72,7 @@ func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error)
 	)
 
 	// Get the planner agent.
-	plannerAgent, err := e.getAgent(e.Config.PlannerAgent)
+	plannerAgent, err := e.getAgent(e.config.PlannerAgent)
 	if err != nil {
 		return nil, fmt.Errorf("getting planner agent: %w", err)
 	}
@@ -108,7 +108,7 @@ func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error)
 
 // getAgent retrieves an agent by name from the engine's agent map.
 func (e *Engine) getAgent(name string) (agent.Agent, error) {
-	a, ok := e.Agents[name]
+	a, ok := e.agents[name]
 	if !ok {
 		return nil, fmt.Errorf("agent %q not configured", name)
 	}

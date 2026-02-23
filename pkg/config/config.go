@@ -82,8 +82,9 @@ type ReviewConfig struct {
 
 // ServerConfig defines HTTP server settings.
 type ServerConfig struct {
-	Port     int                 `yaml:"port"     mapstructure:"port"`
-	Webhooks WebhookConfig       `yaml:"webhooks" mapstructure:"webhooks"`
+	Port           int           `yaml:"port"            mapstructure:"port"`
+	AllowedOrigins []string      `yaml:"allowed_origins" mapstructure:"allowed_origins"`
+	Webhooks       WebhookConfig `yaml:"webhooks"        mapstructure:"webhooks"`
 }
 
 // WebhookConfig defines webhook endpoints.
