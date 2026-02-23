@@ -7,10 +7,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is set at build time via -ldflags.
+var version = "dev"
+
 var rootCmd = &cobra.Command{
-	Use:   "forge",
-	Short: "Governed AI development tooling",
-	Long:  "Forge wraps coding agents with principles, review, real-environment testing, and project-level orchestration.",
+	Use:     "forge",
+	Short:   "Governed AI development tooling",
+	Long:    "Forge wraps coding agents with principles, review, real-environment testing, and project-level orchestration.",
+	Version: version,
+}
+
+func init() {
+	rootCmd.PersistentFlags().String("config", "", "Path to config file (default: auto-discover .forge/config.yaml)")
 }
 
 func main() {
