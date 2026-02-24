@@ -26,7 +26,8 @@ type Server struct {
 // New creates a new Server wired with the engine, config, and logger.
 func New(eng *engine.Engine, cfg *config.ServerConfig, logger *slog.Logger) *Server {
 	broker := NewSSEBroker()
-	queue := NewJobQueue(broker)
+	store := NewMemoryJobStore()
+	queue := NewJobQueue(store, broker)
 
 	s := &Server{
 		engine:  eng,

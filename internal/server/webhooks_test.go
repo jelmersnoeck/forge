@@ -39,7 +39,7 @@ func newTestServer(secret string) *Server {
 	eng, _ := engine.New(&engine.EngineConfig{}, map[string]agent.Agent{"mock": &mockWebhookAgent{}}, map[string]tracker.Tracker{}, nil)
 
 	broker := NewSSEBroker()
-	queue := NewJobQueue(broker)
+	queue := NewJobQueue(NewMemoryJobStore(), broker)
 
 	return &Server{
 		engine:  eng,

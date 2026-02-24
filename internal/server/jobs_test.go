@@ -9,7 +9,7 @@ import (
 
 func TestJobQueue_Submit(t *testing.T) {
 	broker := NewSSEBroker()
-	q := NewJobQueue(broker)
+	q := NewJobQueue(NewMemoryJobStore(), broker)
 
 	job := &Job{
 		Type:    JobTypeBuild,
@@ -37,7 +37,7 @@ func TestJobQueue_Submit(t *testing.T) {
 }
 
 func TestJobQueue_Get_NotFound(t *testing.T) {
-	q := NewJobQueue(nil)
+	q := NewJobQueue(NewMemoryJobStore(), nil)
 	_, ok := q.Get("nonexistent")
 	if ok {
 		t.Error("expected not found for nonexistent job")
@@ -45,7 +45,7 @@ func TestJobQueue_Get_NotFound(t *testing.T) {
 }
 
 func TestJobQueue_List(t *testing.T) {
-	q := NewJobQueue(nil)
+	q := NewJobQueue(NewMemoryJobStore(), nil)
 
 	// Submit 5 jobs with staggered times.
 	for i := 0; i < 5; i++ {
@@ -83,7 +83,7 @@ func TestJobQueue_List(t *testing.T) {
 
 func TestJobQueue_Run(t *testing.T) {
 	broker := NewSSEBroker()
-	q := NewJobQueue(broker)
+	q := NewJobQueue(NewMemoryJobStore(), broker)
 
 	processed := make(chan string, 1)
 	q.RegisterHandler(JobTypeBuild, func(ctx context.Context, job *Job) (interface{}, error) {
@@ -121,7 +121,7 @@ func TestJobQueue_Run(t *testing.T) {
 }
 
 func TestJobQueue_Run_Failure(t *testing.T) {
-	q := NewJobQueue(nil)
+	q := NewJobQueue(NewMemoryJobStore(), nil)
 
 	q.RegisterHandler(JobTypeBuild, func(ctx context.Context, job *Job) (interface{}, error) {
 		return nil, context.DeadlineExceeded
@@ -149,7 +149,7 @@ func TestJobQueue_Run_Failure(t *testing.T) {
 }
 
 func TestJobQueue_AddLog(t *testing.T) {
-	q := NewJobQueue(nil)
+	q := NewJobQueue(NewMemoryJobStore(), nil)
 
 	id := q.Submit(&Job{
 		Type:    JobTypeBuild,
@@ -169,7 +169,7 @@ func TestJobQueue_AddLog(t *testing.T) {
 }
 
 func TestJobQueue_Concurrent(t *testing.T) {
-	q := NewJobQueue(nil)
+	q := NewJobQueue(NewMemoryJobStore(), nil)
 
 	q.RegisterHandler(JobTypeBuild, func(ctx context.Context, job *Job) (interface{}, error) {
 		return "ok", nil
@@ -203,7 +203,7 @@ func TestJobQueue_Concurrent(t *testing.T) {
 }
 
 func TestJobQueue_Run_PanicRecovery(t *testing.T) {
-	q := NewJobQueue(nil)
+	q := NewJobQueue(NewMemoryJobStore(), nil)
 
 	q.RegisterHandler(JobTypeBuild, func(ctx context.Context, job *Job) (interface{}, error) {
 		panic("handler exploded")
@@ -237,7 +237,7 @@ func TestJobQueue_Run_PanicRecovery(t *testing.T) {
 }
 
 func TestJobQueue_Run_PanicRecoveryWorkerSurvives(t *testing.T) {
-	q := NewJobQueue(nil)
+	q := NewJobQueue(NewMemoryJobStore(), nil)
 
 	callCount := 0
 	q.RegisterHandler(JobTypeBuild, func(ctx context.Context, job *Job) (interface{}, error) {

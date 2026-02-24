@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"sort"
 	"sync"
 	"time"
 )
@@ -52,22 +51,24 @@ type LogEntry struct {
 	Message string    `json:"message"`
 }
 
-// JobQueue is an in-memory, thread-safe job queue with background processing.
+// JobQueue is a thread-safe job queue with background processing.
+// It delegates persistence to a JobStore and owns orchestration
+// (handlers, pending channel, SSE events, panic recovery).
 type JobQueue struct {
-	mu       sync.RWMutex
-	jobs     map[string]*Job
+	store    JobStore
 	pending  chan string
 	handlers map[JobType]JobHandler
 	broker   *SSEBroker
+	mu       sync.RWMutex // protects handlers map only
 }
 
 // JobHandler processes a job and returns a result or error.
 type JobHandler func(ctx context.Context, job *Job) (interface{}, error)
 
-// NewJobQueue creates a new in-memory job queue.
-func NewJobQueue(broker *SSEBroker) *JobQueue {
+// NewJobQueue creates a new job queue backed by the given store.
+func NewJobQueue(store JobStore, broker *SSEBroker) *JobQueue {
 	return &JobQueue{
-		jobs:     make(map[string]*Job),
+		store:    store,
 		pending:  make(chan string, 1000),
 		handlers: make(map[JobType]JobHandler),
 		broker:   broker,
@@ -83,84 +84,55 @@ func (q *JobQueue) RegisterHandler(jobType JobType, handler JobHandler) {
 
 // Submit adds a new job to the queue and returns its ID.
 func (q *JobQueue) Submit(job *Job) string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if job.ID == "" {
-		job.ID = generateJobID()
-	}
-	now := time.Now().UTC()
 	job.Status = JobStatusPending
-	job.CreatedAt = now
-	job.UpdatedAt = now
-	q.jobs[job.ID] = job
+	id, err := q.store.Create(context.Background(), job)
+	if err != nil {
+		slog.Error("failed to create job", "error", err)
+		return ""
+	}
 
 	// Non-blocking send to the pending channel.
 	select {
-	case q.pending <- job.ID:
+	case q.pending <- id:
 	default:
 		// Queue is full; the job stays pending and will be picked up
 		// when Run drains the channel.
 	}
 
 	if q.broker != nil {
-		q.broker.Publish(job.ID, Event{
+		q.broker.Publish(id, Event{
 			Type: "job_submitted",
 			Data: map[string]interface{}{
-				"job_id": job.ID,
+				"job_id": id,
 				"type":   job.Type,
 				"status": job.Status,
 			},
 		})
 	}
 
-	return job.ID
+	return id
 }
 
 // Get retrieves a job by ID.
 func (q *JobQueue) Get(id string) (*Job, bool) {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	j, ok := q.jobs[id]
-	if !ok {
+	job, err := q.store.Get(context.Background(), id)
+	if err != nil || job == nil {
 		return nil, false
 	}
-	// Return a shallow copy to avoid races on the caller's side.
-	cp := *j
-	cp.Logs = make([]LogEntry, len(j.Logs))
-	copy(cp.Logs, j.Logs)
-	return &cp, true
+	return job, true
 }
 
 // List returns jobs ordered by creation time (newest first) with pagination.
 func (q *JobQueue) List(limit, offset int) []*Job {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	all := make([]*Job, 0, len(q.jobs))
-	for _, j := range q.jobs {
-		all = append(all, j)
-	}
-	sort.Slice(all, func(i, k int) bool {
-		return all[i].CreatedAt.After(all[k].CreatedAt)
+	jobs, err := q.store.List(context.Background(), JobFilter{
+		Limit:  limit,
+		Offset: offset,
 	})
-
-	if offset >= len(all) {
+	if err != nil {
+		slog.Error("failed to list jobs", "error", err)
 		return nil
 	}
-	end := offset + limit
-	if end > len(all) {
-		end = len(all)
-	}
-
-	result := make([]*Job, end-offset)
-	for i, j := range all[offset:end] {
-		cp := *j
-		cp.Logs = make([]LogEntry, len(j.Logs))
-		copy(cp.Logs, j.Logs)
-		result[i] = &cp
-	}
-	return result
+	return jobs
 }
 
 // Run starts the background worker that processes pending jobs.
@@ -185,13 +157,13 @@ func (q *JobQueue) processJob(ctx context.Context, jobID string) {
 				"panic", fmt.Sprintf("%v", r),
 				"stack", string(stack),
 			)
-			q.mu.Lock()
-			if job, ok := q.jobs[jobID]; ok {
+			job, _ := q.store.Get(ctx, jobID)
+			if job != nil {
 				job.Status = JobStatusFailed
 				job.Error = fmt.Sprintf("panic: %v", r)
 				job.UpdatedAt = time.Now().UTC()
+				q.store.Update(ctx, job)
 			}
-			q.mu.Unlock()
 
 			if q.broker != nil {
 				q.broker.Publish(jobID, Event{
@@ -206,23 +178,26 @@ func (q *JobQueue) processJob(ctx context.Context, jobID string) {
 		}
 	}()
 
-	q.mu.Lock()
-	job, ok := q.jobs[jobID]
-	if !ok {
-		q.mu.Unlock()
+	job, err := q.store.Get(ctx, jobID)
+	if err != nil || job == nil {
 		return
 	}
+
+	q.mu.RLock()
 	handler, hasHandler := q.handlers[job.Type]
+	q.mu.RUnlock()
+
 	if !hasHandler {
 		job.Status = JobStatusFailed
 		job.Error = "no handler registered for job type: " + string(job.Type)
 		job.UpdatedAt = time.Now().UTC()
-		q.mu.Unlock()
+		q.store.Update(ctx, job)
 		return
 	}
+
 	job.Status = JobStatusRunning
 	job.UpdatedAt = time.Now().UTC()
-	q.mu.Unlock()
+	q.store.Update(ctx, job)
 
 	if q.broker != nil {
 		q.broker.Publish(jobID, Event{
@@ -234,18 +209,21 @@ func (q *JobQueue) processJob(ctx context.Context, jobID string) {
 		})
 	}
 
-	result, err := handler(ctx, job)
+	result, handleErr := handler(ctx, job)
 
-	q.mu.Lock()
-	if err != nil {
+	job, _ = q.store.Get(ctx, jobID)
+	if job == nil {
+		return
+	}
+	if handleErr != nil {
 		job.Status = JobStatusFailed
-		job.Error = err.Error()
+		job.Error = handleErr.Error()
 	} else {
 		job.Status = JobStatusCompleted
 		job.Result = result
 	}
 	job.UpdatedAt = time.Now().UTC()
-	q.mu.Unlock()
+	q.store.Update(ctx, job)
 
 	if q.broker != nil {
 		q.broker.Publish(jobID, Event{
@@ -261,14 +239,10 @@ func (q *JobQueue) processJob(ctx context.Context, jobID string) {
 
 // AddLog appends a log entry to a job.
 func (q *JobQueue) AddLog(jobID, message string) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if j, ok := q.jobs[jobID]; ok {
-		j.Logs = append(j.Logs, LogEntry{
-			Time:    time.Now().UTC(),
-			Message: message,
-		})
-	}
+	q.store.AddLog(context.Background(), jobID, LogEntry{
+		Time:    time.Now().UTC(),
+		Message: message,
+	})
 }
 
 // generateJobID creates a random hex string for job identification.
