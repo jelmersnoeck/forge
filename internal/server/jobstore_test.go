@@ -170,6 +170,95 @@ func testJobStore(t *testing.T, newStore func() JobStore) {
 	})
 }
 
+// --- SQLite-specific tests ---
+
+func TestSQLiteJobStore_IssueRefIndexing(t *testing.T) {
+	store, err := NewSQLiteJobStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create jobs with BuildAPIRequest (has Issue field).
+	store.Create(ctx, &Job{
+		Type:    JobTypeBuild,
+		Status:  JobStatusCompleted,
+		Request: BuildAPIRequest{Issue: "gh:org/repo#1"},
+	})
+	store.Create(ctx, &Job{
+		Type:    JobTypeBuild,
+		Status:  JobStatusCompleted,
+		Request: BuildAPIRequest{Issue: "gh:org/repo#2"},
+	})
+
+	// Query by issue ref.
+	jobs, err := store.List(ctx, JobFilter{IssueRef: "gh:org/repo#1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Errorf("expected 1 job for issue #1, got %d", len(jobs))
+	}
+}
+
+func TestSQLiteJobStore_PersistAcrossReopen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	// Create and populate.
+	store1, err := NewSQLiteJobStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := store1.Create(context.Background(), &Job{
+		Type:    JobTypeBuild,
+		Status:  JobStatusCompleted,
+		Request: "persisted",
+	})
+	store1.Close()
+
+	// Reopen and verify.
+	store2, err := NewSQLiteJobStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+
+	got, err := store2.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected job to persist across reopen")
+	}
+	if got.Status != JobStatusCompleted {
+		t.Errorf("status: got %q, want %q", got.Status, JobStatusCompleted)
+	}
+}
+
+func TestSQLiteJobStore_CascadeDeleteLogs(t *testing.T) {
+	store, err := NewSQLiteJobStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	id, _ := store.Create(ctx, &Job{Type: JobTypeBuild, Status: JobStatusPending, Request: "test"})
+	store.AddLog(ctx, id, LogEntry{Time: time.Now(), Message: "log1"})
+	store.AddLog(ctx, id, LogEntry{Time: time.Now(), Message: "log2"})
+
+	// Delete the job — logs should cascade.
+	store.Delete(ctx, id)
+
+	// Verify via direct DB query that logs are gone.
+	var count int
+	store.db.QueryRow("SELECT COUNT(*) FROM job_logs WHERE job_id = ?", id).Scan(&count)
+	if count != 0 {
+		t.Errorf("expected 0 orphan logs, got %d", count)
+	}
+}
+
 func TestJobStoreContract_Memory(t *testing.T) {
 	testJobStore(t, func() JobStore { return NewMemoryJobStore() })
 }

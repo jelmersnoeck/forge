@@ -46,7 +46,7 @@ type SQLiteJobStore struct {
 // NewSQLiteJobStore opens (or creates) a SQLite database at path and
 // applies the schema. The path can be ":memory:" for testing.
 func NewSQLiteJobStore(path string) (*SQLiteJobStore, error) {
-	dsn := path + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON"
+	dsn := path + "?_journal_mode=WAL&_busy_timeout=5000"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -54,6 +54,13 @@ func NewSQLiteJobStore(path string) (*SQLiteJobStore, error) {
 
 	// SQLite performs best with a single writer connection.
 	db.SetMaxOpenConns(1)
+
+	// Enable foreign keys via explicit PRAGMA — the modernc.org/sqlite
+	// driver does not honour _foreign_keys=ON in the DSN.
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
 
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		db.Close()
