@@ -24,9 +24,24 @@ type Server struct {
 }
 
 // New creates a new Server wired with the engine, config, and logger.
-func New(eng *engine.Engine, cfg *config.ServerConfig, logger *slog.Logger) *Server {
+// When cfg.DatabasePath is set, jobs are persisted to SQLite; otherwise
+// an in-memory store is used (jobs do not survive restarts).
+func New(eng *engine.Engine, cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 	broker := NewSSEBroker()
-	store := NewMemoryJobStore()
+
+	var store JobStore
+	if cfg.DatabasePath != "" {
+		var err error
+		store, err = NewSQLiteJobStore(cfg.DatabasePath)
+		if err != nil {
+			return nil, fmt.Errorf("open job store: %w", err)
+		}
+		logger.Info("using SQLite job store", "path", cfg.DatabasePath)
+	} else {
+		store = NewMemoryJobStore()
+		logger.Info("using in-memory job store (jobs will not persist across restarts)")
+	}
+
 	queue := NewJobQueue(store, broker)
 
 	s := &Server{
@@ -43,7 +58,12 @@ func New(eng *engine.Engine, cfg *config.ServerConfig, logger *slog.Logger) *Ser
 	queue.RegisterHandler(JobTypeReview, s.reviewJobHandler)
 	queue.RegisterHandler(JobTypePlan, s.planJobHandler)
 
-	return s
+	return s, nil
+}
+
+// Close releases resources held by the server, including the job store.
+func (s *Server) Close() error {
+	return s.jobs.store.Close()
 }
 
 // Start starts the HTTP server and blocks until ctx is cancelled.
@@ -77,6 +97,7 @@ func (s *Server) Start(ctx context.Context) error {
 	case <-ctx.Done():
 		s.logger.Info("shutting down server")
 		s.limiter.Stop()
+		s.Close() // Close the job store.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {

@@ -85,6 +85,7 @@ type ServerConfig struct {
 	Port           int           `yaml:"port"            mapstructure:"port"`
 	AllowedOrigins []string      `yaml:"allowed_origins" mapstructure:"allowed_origins"`
 	Webhooks       WebhookConfig `yaml:"webhooks"        mapstructure:"webhooks"`
+	DatabasePath   string        `yaml:"database_path"   mapstructure:"database_path"`
 }
 
 // WebhookConfig defines webhook endpoints.

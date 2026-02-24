@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -48,7 +49,11 @@ func newFullTestServer() *Server {
 		MaxIterations: 3,
 	}, map[string]agent.Agent{"mock": &mockServerAgent{}}, map[string]tracker.Tracker{}, nil)
 
-	return New(eng, cfg, logger)
+	srv, err := New(eng, cfg, logger)
+	if err != nil {
+		panic(fmt.Sprintf("newFullTestServer: %v", err))
+	}
+	return srv
 }
 
 func TestRoutes_Healthz(t *testing.T) {
@@ -118,7 +123,10 @@ func TestRoutes_CORS_EmptyConfig(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	cfg := &config.ServerConfig{Port: 8080}
 	eng, _ := engine.New(&engine.EngineConfig{MaxIterations: 3}, map[string]agent.Agent{}, map[string]tracker.Tracker{}, nil)
-	s := New(eng, cfg, logger)
+	s, err := New(eng, cfg, logger)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
 	handler := s.routes()
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/v1/build", nil)
@@ -188,7 +196,10 @@ func TestNew(t *testing.T) {
 	cfg := &config.ServerConfig{Port: 9090}
 	eng := newTestEngine(t)
 
-	s := New(eng, cfg, logger)
+	s, err := New(eng, cfg, logger)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
 	if s == nil {
 		t.Fatal("expected non-nil server")
 	}

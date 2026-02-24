@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -58,7 +59,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Level: slog.LevelInfo,
 	}))
 
-	srv := server.New(eng, &cfg.Server, logger)
+	srv, err := server.New(eng, &cfg.Server, logger)
+	if err != nil {
+		return fmt.Errorf("create server: %w", err)
+	}
 
 	// Set up context with signal handling for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
