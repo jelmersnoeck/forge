@@ -68,6 +68,8 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		s.handlePROpened(w, payload)
 	case eventType == "issue_comment" && action == "created":
 		s.handleIssueComment(w, payload)
+	case eventType == "pull_request_review" && action == "submitted":
+		s.handlePRReview(w, payload)
 	default:
 		// Acknowledge but take no action.
 		s.writeJSON(w, http.StatusOK, map[string]string{

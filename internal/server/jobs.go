@@ -18,9 +18,10 @@ import (
 type JobType string
 
 const (
-	JobTypeBuild  JobType = "build"
-	JobTypeReview JobType = "review"
-	JobTypePlan   JobType = "plan"
+	JobTypeBuild    JobType = "build"
+	JobTypeReview   JobType = "review"
+	JobTypePlan     JobType = "plan"
+	JobTypeFeedback JobType = "feedback"
 )
 
 // JobStatus tracks the lifecycle of a job.

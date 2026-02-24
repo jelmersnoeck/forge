@@ -41,6 +41,7 @@ func New(eng *engine.Engine, cfg *config.ServerConfig, logger *slog.Logger) *Ser
 	queue.RegisterHandler(JobTypeBuild, s.buildJobHandler)
 	queue.RegisterHandler(JobTypeReview, s.reviewJobHandler)
 	queue.RegisterHandler(JobTypePlan, s.planJobHandler)
+	queue.RegisterHandler(JobTypeFeedback, s.feedbackJobHandler)
 
 	return s
 }
@@ -98,6 +99,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/build", s.handleBuild)
 	mux.HandleFunc("POST /api/v1/review", s.handleReview)
 	mux.HandleFunc("POST /api/v1/plan", s.handlePlan)
+	mux.HandleFunc("POST /api/v1/feedback", s.handleFeedback)
 	mux.HandleFunc("GET /api/v1/jobs", s.handleListJobs)
 	// Job detail and stream use path prefix matching.
 	mux.HandleFunc("GET /api/v1/jobs/", s.routeJobSubpath)
@@ -208,4 +210,51 @@ func (s *Server) planJobHandler(ctx context.Context, job *Job) (interface{}, err
 		PrincipleSets: req.PrincipleSets,
 		WorkDir:       req.WorkDir,
 	})
+}
+
+func (s *Server) feedbackJobHandler(ctx context.Context, job *Job) (interface{}, error) {
+	var feedbackReq engine.FeedbackRequest
+
+	switch req := job.Request.(type) {
+	case FeedbackAPIRequest:
+		feedbackReq = engine.FeedbackRequest{
+			PRNumber:      req.PRNumber,
+			RepoFullName:  req.RepoFullName,
+			ReviewBody:    req.ReviewBody,
+			Comments:      req.Comments,
+			WorkDir:       req.WorkDir,
+			PrincipleSets: req.PrincipleSets,
+		}
+	case map[string]interface{}:
+		// From webhook — extract fields from the generic map.
+		if n, ok := req["pr_number"].(float64); ok {
+			feedbackReq.PRNumber = int(n)
+		} else if n, ok := req["pr_number"].(int); ok {
+			feedbackReq.PRNumber = n
+		}
+		feedbackReq.RepoFullName, _ = req["repo_full_name"].(string)
+		feedbackReq.ReviewBody, _ = req["review_body"].(string)
+		feedbackReq.WorkDir, _ = req["work_dir"].(string)
+
+		if comments, ok := req["comments"].([]engine.ReviewComment); ok {
+			feedbackReq.Comments = comments
+		}
+	default:
+		return nil, fmt.Errorf("unexpected request type for feedback job")
+	}
+
+	if feedbackReq.PRNumber == 0 {
+		return nil, fmt.Errorf("pr_number is required")
+	}
+
+	s.jobs.AddLog(job.ID, fmt.Sprintf("starting feedback for PR #%d in %s", feedbackReq.PRNumber, feedbackReq.RepoFullName))
+
+	result, err := s.engine.Feedback(ctx, feedbackReq)
+	if err != nil {
+		s.jobs.AddLog(job.ID, fmt.Sprintf("feedback failed: %v", err))
+		return nil, err
+	}
+
+	s.jobs.AddLog(job.ID, fmt.Sprintf("feedback completed: status=%s, files_changed=%d", result.Status, len(result.FilesChanged)))
+	return result, nil
 }
