@@ -13,6 +13,8 @@ import (
 // Review performs a standalone review of a diff against loaded principles.
 // This is used by `forge review --diff` and also called internally during
 // the build loop after each code iteration.
+//
+// Agent invocations are wrapped with retry logic for transient error recovery.
 func (e *Engine) Review(ctx context.Context, req ReviewRequest) (*review.Result, error) {
 	slog.Info("starting review", "principle_sets", req.PrincipleSets)
 
@@ -45,8 +47,7 @@ func (e *Engine) Review(ctx context.Context, req ReviewRequest) (*review.Result,
 		return nil, fmt.Errorf("getting reviewer agent: %w", err)
 	}
 
-	// Run the review agent with read-only permissions.
-	resp, err := reviewerAgent.Run(ctx, agent.Request{
+	agentReq := agent.Request{
 		Prompt:  prompt,
 		WorkDir: req.WorkDir,
 		Mode:    agent.ModeReview,
@@ -57,13 +58,21 @@ func (e *Engine) Review(ctx context.Context, req ReviewRequest) (*review.Result,
 			Network: false,
 		},
 		OutputFormat: "json",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("running review agent: %w", err)
 	}
 
-	if resp.Error != "" {
-		return nil, fmt.Errorf("review agent error: %s", resp.Error)
+	// Run the review agent with retry for transient failures.
+	resp, err := RetryWithResult(ctx, e.config.Retry, func(ctx context.Context) (*agent.Response, error) {
+		resp, err := reviewerAgent.Run(ctx, agentReq)
+		if err != nil {
+			return nil, fmt.Errorf("running review agent: %w", err)
+		}
+		if resp.Error != "" {
+			return nil, fmt.Errorf("review agent error: %s", resp.Error)
+		}
+		return resp, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	// Parse findings from agent output.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jelmersnoeck/forge/internal/agent"
 	"github.com/jelmersnoeck/forge/internal/gitutil"
@@ -19,6 +20,10 @@ import (
 // The loop runs up to MaxIterations times. Each iteration runs the code agent,
 // then reviews the output. If the review finds critical issues, feedback is
 // assembled and passed back to the code agent for the next iteration.
+//
+// Agent and tracker API calls are wrapped with retry logic for transient error
+// recovery. Checkpoints are saved at phase boundaries so that a crashed build
+// can be resumed from the last completed phase.
 func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, error) {
 	slog.Info("starting governed build", "issue_ref", req.IssueRef, "max_iterations", e.config.MaxIterations)
 
@@ -43,7 +48,10 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 		return result, fmt.Errorf("tracker %q not configured", trackerName)
 	}
 
-	issue, err := t.GetIssue(ctx, req.IssueRef)
+	// Fetch issue with retry — tracker API calls are retryable.
+	issue, err := RetryWithResult(ctx, e.config.Retry, func(ctx context.Context) (*tracker.Issue, error) {
+		return t.GetIssue(ctx, req.IssueRef)
+	})
 	if err != nil {
 		result.Error = fmt.Sprintf("fetching issue: %v", err)
 		return result, fmt.Errorf("fetching issue %s: %w", req.IssueRef, err)
@@ -64,7 +72,7 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 
 	slog.Info("created branch", "branch", branchName)
 
-	// Step 3: Run plan agent.
+	// Step 3: Run plan agent (with retry).
 	planResult, err := e.Plan(ctx, PlanRequest{
 		IssueRef:      req.IssueRef,
 		PrincipleSets: req.PrincipleSets,
@@ -75,6 +83,16 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 		return result, fmt.Errorf("planning: %w", err)
 	}
 	result.Plan = planResult.Plan
+
+	// Save checkpoint after plan phase.
+	e.saveCheckpoint(ctx, &Checkpoint{
+		IssueRef:   req.IssueRef,
+		Phase:      "plan",
+		Iteration:  0,
+		BranchName: branchName,
+		PlanOutput: planResult.Plan,
+		CreatedAt:  time.Now(),
+	})
 
 	// Step 4: If approval required, return for CLI to handle.
 	if e.config.RequireApproval {
@@ -93,7 +111,17 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 		result.Iterations = iteration
 		slog.Info("starting build iteration", "iteration", iteration, "max", e.config.MaxIterations)
 
-		// Step 5: Run code agent.
+		// Save checkpoint at the start of each code iteration.
+		e.saveCheckpoint(ctx, &Checkpoint{
+			IssueRef:   req.IssueRef,
+			Phase:      "code",
+			Iteration:  iteration,
+			BranchName: branchName,
+			PlanOutput: planResult.Plan,
+			CreatedAt:  time.Now(),
+		})
+
+		// Step 5: Run code agent with retry.
 		codeErr := e.runCodeAgent(ctx, req, issue, planResult.Plan, result.feedbackFromLastReview())
 		if codeErr != nil {
 			result.Error = fmt.Sprintf("code agent (iteration %d): %v", iteration, codeErr)
@@ -126,6 +154,17 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 			)
 		}
 
+		// Save checkpoint before review phase.
+		e.saveCheckpoint(ctx, &Checkpoint{
+			IssueRef:   req.IssueRef,
+			Phase:      "review",
+			Iteration:  iteration,
+			BranchName: branchName,
+			PlanOutput: planResult.Plan,
+			CreatedAt:  time.Now(),
+		})
+
+		// Run review with retry.
 		reviewResult, err := e.Review(ctx, ReviewRequest{
 			Diff:          diff,
 			PrincipleSets: req.PrincipleSets,
@@ -141,7 +180,7 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 		if !reviewResult.HasCritical {
 			slog.Info("review clean, proceeding to PR", "iteration", iteration)
 
-			// Step 9: Create PR via tracker.
+			// Step 9: Create PR via tracker with retry.
 			pr, err := e.createPR(ctx, t, issue, branchName, baseBranch, ref)
 			if err != nil {
 				result.Error = fmt.Sprintf("creating PR: %v", err)
@@ -149,6 +188,10 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 			}
 			result.PR = pr
 			result.Status = BuildStatusSuccess
+
+			// Clean up checkpoint on success.
+			e.deleteCheckpoint(ctx, req.IssueRef)
+
 			slog.Info("governed build complete", "pr_url", pr.URL, "iterations", iteration)
 			return result, nil
 		}
@@ -174,7 +217,8 @@ func (e *Engine) Build(ctx context.Context, req BuildRequest) (*BuildResult, err
 }
 
 // runCodeAgent executes the code agent with the full context of the issue,
-// plan, and any feedback from prior review iterations.
+// plan, and any feedback from prior review iterations. The agent call is
+// wrapped with retry logic for transient error recovery.
 func (e *Engine) runCodeAgent(ctx context.Context, req BuildRequest, issue *tracker.Issue, plan string, feedback string) error {
 	coderAgent, err := e.getAgent(e.config.CoderAgent)
 	if err != nil {
@@ -196,7 +240,7 @@ func (e *Engine) runCodeAgent(ctx context.Context, req BuildRequest, issue *trac
 		prompt += fmt.Sprintf("\n## Review Feedback\n\nThe following issues were found in your previous implementation. Fix them:\n\n%s\n", feedback)
 	}
 
-	resp, err := coderAgent.Run(ctx, agent.Request{
+	agentReq := agent.Request{
 		Prompt:  prompt,
 		WorkDir: req.WorkDir,
 		Mode:    agent.ModeCode,
@@ -207,32 +251,67 @@ func (e *Engine) runCodeAgent(ctx context.Context, req BuildRequest, issue *trac
 			Network: false,
 		},
 		OutputFormat: "text",
+	}
+
+	// Wrap the agent call with retry for transient failures (e.g., agent crash).
+	return Retry(ctx, e.config.Retry, func(ctx context.Context) error {
+		resp, err := coderAgent.Run(ctx, agentReq)
+		if err != nil {
+			return fmt.Errorf("running code agent: %w", err)
+		}
+		if resp.Error != "" {
+			return fmt.Errorf("code agent error: %s", resp.Error)
+		}
+		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("running code agent: %w", err)
-	}
-
-	if resp.Error != "" {
-		return fmt.Errorf("code agent error: %s", resp.Error)
-	}
-
-	return nil
 }
 
-// createPR creates a pull request via the tracker.
+// createPR creates a pull request via the tracker, with retry for transient
+// API failures (e.g., rate limits, network errors).
 func (e *Engine) createPR(ctx context.Context, t tracker.Tracker, issue *tracker.Issue, head, base string, ref *tracker.IssueRef) (*tracker.PullRequest, error) {
-	pr, err := t.CreatePR(ctx, &tracker.CreatePRRequest{
-		Title:    fmt.Sprintf("[Forge] %s", issue.Title),
-		Body:     fmt.Sprintf("Automated implementation for %s\n\n%s", ref.String(), issue.Body),
-		Head:     head,
-		Base:     base,
-		Repo:     issue.Repo,
-		IssueRef: ref.String(),
+	return RetryWithResult(ctx, e.config.Retry, func(ctx context.Context) (*tracker.PullRequest, error) {
+		pr, err := t.CreatePR(ctx, &tracker.CreatePRRequest{
+			Title:    fmt.Sprintf("[Forge] %s", issue.Title),
+			Body:     fmt.Sprintf("Automated implementation for %s\n\n%s", ref.String(), issue.Body),
+			Head:     head,
+			Base:     base,
+			Repo:     issue.Repo,
+			IssueRef: ref.String(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("creating pull request: %w", err)
+		}
+		return pr, nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("creating pull request: %w", err)
+}
+
+// saveCheckpoint saves a checkpoint if a checkpoint store is configured.
+// Errors are logged but do not fail the build — checkpoints are best-effort.
+func (e *Engine) saveCheckpoint(ctx context.Context, cp *Checkpoint) {
+	if e.checkpoints == nil {
+		return
 	}
-	return pr, nil
+	if err := e.checkpoints.Save(ctx, cp); err != nil {
+		slog.Warn("failed to save checkpoint",
+			"issue_ref", cp.IssueRef,
+			"phase", cp.Phase,
+			"error", err,
+		)
+	}
+}
+
+// deleteCheckpoint removes a checkpoint if a checkpoint store is configured.
+// Errors are logged but do not fail the build.
+func (e *Engine) deleteCheckpoint(ctx context.Context, issueRef string) {
+	if e.checkpoints == nil {
+		return
+	}
+	if err := e.checkpoints.Delete(ctx, issueRef); err != nil {
+		slog.Warn("failed to delete checkpoint",
+			"issue_ref", issueRef,
+			"error", err,
+		)
+	}
 }
 
 // feedbackFromLastReview extracts feedback text from the most recent review

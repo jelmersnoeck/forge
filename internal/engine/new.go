@@ -9,10 +9,20 @@ import (
 	"github.com/jelmersnoeck/forge/internal/tracker"
 )
 
+// EngineOption configures optional Engine dependencies.
+type EngineOption func(*Engine)
+
+// WithCheckpointStore sets a CheckpointStore for build loop recovery.
+func WithCheckpointStore(cs CheckpointStore) EngineOption {
+	return func(e *Engine) {
+		e.checkpoints = cs
+	}
+}
+
 // New creates a new Engine with the given dependencies.
 // It validates that the configured agent and tracker backend names
 // exist in the provided maps.
-func New(cfg *EngineConfig, agents map[string]agent.Agent, trackers map[string]tracker.Tracker, store *principles.Store) (*Engine, error) {
+func New(cfg *EngineConfig, agents map[string]agent.Agent, trackers map[string]tracker.Tracker, store *principles.Store, opts ...EngineOption) (*Engine, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("creating engine: config is required")
 	}
@@ -27,6 +37,9 @@ func New(cfg *EngineConfig, agents map[string]agent.Agent, trackers map[string]t
 	if cfg.SeverityThreshold == "" {
 		cfg.SeverityThreshold = "critical"
 	}
+
+	// Apply retry config defaults.
+	cfg.Retry = cfg.Retry.validate()
 
 	// Resolve agent role names to defaults if not set.
 	if cfg.PlannerAgent == "" {
@@ -63,12 +76,19 @@ func New(cfg *EngineConfig, agents map[string]agent.Agent, trackers map[string]t
 		"coder_agent", cfg.CoderAgent,
 		"reviewer_agent", cfg.ReviewerAgent,
 		"default_tracker", cfg.DefaultTracker,
+		"retry_max_attempts", cfg.Retry.MaxAttempts,
 	)
 
-	return &Engine{
+	e := &Engine{
 		agents:     agents,
 		trackers:   trackers,
 		principles: store,
 		config:     cfg,
-	}, nil
+	}
+
+	for _, opt := range opts {
+		opt(e)
+	}
+
+	return e, nil
 }

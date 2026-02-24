@@ -13,10 +13,11 @@ import (
 
 // Engine is the core orchestrator for governed builds.
 type Engine struct {
-	agents     map[string]agent.Agent
-	trackers   map[string]tracker.Tracker
-	principles *principles.Store
-	config     *EngineConfig
+	agents      map[string]agent.Agent
+	trackers    map[string]tracker.Tracker
+	principles  *principles.Store
+	config      *EngineConfig
+	checkpoints CheckpointStore
 }
 
 // Config returns the engine's configuration.
@@ -50,6 +51,9 @@ type EngineConfig struct {
 	PlannerAgent  string // Agent backend for planning.
 	CoderAgent    string // Agent backend for coding.
 	ReviewerAgent string // Agent backend for reviewing.
+
+	// Retry configuration for transient error recovery.
+	Retry RetryConfig
 }
 
 // BuildRequest contains everything needed to start a governed build.

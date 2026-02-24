@@ -12,6 +12,9 @@ import (
 // Plan runs the plan agent on an issue and returns a structured plan
 // for human approval. This is the first phase of the governed build loop
 // and can also be used standalone via `forge plan`.
+//
+// Tracker API calls and agent invocations are wrapped with retry logic
+// for transient error recovery.
 func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error) {
 	slog.Info("starting plan phase", "issue_ref", req.IssueRef)
 
@@ -31,8 +34,10 @@ func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error)
 		return nil, fmt.Errorf("tracker %q not configured", trackerName)
 	}
 
-	// Fetch the issue.
-	issue, err := t.GetIssue(ctx, req.IssueRef)
+	// Fetch the issue with retry — tracker APIs can be rate-limited.
+	issue, err := RetryWithResult(ctx, e.config.Retry, func(ctx context.Context) (*tracker.Issue, error) {
+		return t.GetIssue(ctx, req.IssueRef)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetching issue %s: %w", req.IssueRef, err)
 	}
@@ -77,8 +82,7 @@ func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error)
 		return nil, fmt.Errorf("getting planner agent: %w", err)
 	}
 
-	// Run the plan agent with read-only permissions.
-	resp, err := plannerAgent.Run(ctx, agent.Request{
+	agentReq := agent.Request{
 		Prompt:  prompt,
 		WorkDir: req.WorkDir,
 		Mode:    agent.ModePlan,
@@ -89,13 +93,21 @@ func (e *Engine) Plan(ctx context.Context, req PlanRequest) (*PlanResult, error)
 			Network: false,
 		},
 		OutputFormat: "text",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("running plan agent: %w", err)
 	}
 
-	if resp.Error != "" {
-		return nil, fmt.Errorf("plan agent error: %s", resp.Error)
+	// Run the plan agent with retry for transient failures.
+	resp, err := RetryWithResult(ctx, e.config.Retry, func(ctx context.Context) (*agent.Response, error) {
+		resp, err := plannerAgent.Run(ctx, agentReq)
+		if err != nil {
+			return nil, fmt.Errorf("running plan agent: %w", err)
+		}
+		if resp.Error != "" {
+			return nil, fmt.Errorf("plan agent error: %s", resp.Error)
+		}
+		return resp, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	slog.Info("plan phase complete", "issue_ref", req.IssueRef)
