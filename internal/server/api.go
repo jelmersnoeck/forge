@@ -212,7 +212,18 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 
-	jobs := s.jobs.List(limit, offset)
+	filter := JobFilter{
+		Status: JobStatus(r.URL.Query().Get("status")),
+		Type:   JobType(r.URL.Query().Get("type")),
+		Limit:  limit,
+		Offset: offset,
+	}
+
+	jobs, err := s.jobs.ListFiltered(filter)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "LIST_FAILED", "failed to list jobs")
+		return
+	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"jobs":   jobs,

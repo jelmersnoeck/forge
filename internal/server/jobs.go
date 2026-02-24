@@ -135,6 +135,11 @@ func (q *JobQueue) List(limit, offset int) []*Job {
 	return jobs
 }
 
+// ListFiltered returns jobs matching the given filter.
+func (q *JobQueue) ListFiltered(f JobFilter) ([]*Job, error) {
+	return q.store.List(context.Background(), f)
+}
+
 // Run starts the background worker that processes pending jobs.
 // It blocks until ctx is cancelled.
 func (q *JobQueue) Run(ctx context.Context) {

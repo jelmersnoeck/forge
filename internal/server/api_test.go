@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandleBuild_MissingIssue(t *testing.T) {
@@ -377,4 +379,121 @@ func TestHandlePlan_InvalidWorkDir(t *testing.T) {
 	if resp.Code != "INVALID_WORK_DIR" {
 		t.Errorf("expected code INVALID_WORK_DIR, got %q", resp.Code)
 	}
+}
+
+func TestHandleListJobs_Filtered(t *testing.T) {
+	// Build a server with a known store so we can manipulate job statuses.
+	store := NewMemoryJobStore()
+	broker := NewSSEBroker()
+	queue := NewJobQueue(store, broker)
+
+	s := newFullTestServer()
+	s.jobs = queue
+
+	ctx := context.Background()
+
+	// Create 3 jobs with different types and statuses.
+	// Job 1: build + completed
+	job1 := &Job{Type: JobTypeBuild, Request: "build1"}
+	id1 := queue.Submit(job1)
+	j1, _ := store.Get(ctx, id1)
+	j1.Status = JobStatusCompleted
+	j1.UpdatedAt = time.Now().UTC()
+	store.Update(ctx, j1)
+
+	// Job 2: review + completed
+	job2 := &Job{Type: JobTypeReview, Request: "review1"}
+	id2 := queue.Submit(job2)
+	j2, _ := store.Get(ctx, id2)
+	j2.Status = JobStatusCompleted
+	j2.UpdatedAt = time.Now().UTC()
+	store.Update(ctx, j2)
+
+	// Job 3: build + failed
+	job3 := &Job{Type: JobTypeBuild, Request: "build2"}
+	id3 := queue.Submit(job3)
+	j3, _ := store.Get(ctx, id3)
+	j3.Status = JobStatusFailed
+	j3.UpdatedAt = time.Now().UTC()
+	store.Update(ctx, j3)
+
+	// Test: filter by status=completed -> should return job1 and job2.
+	t.Run("filter by status=completed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs?status=completed", nil)
+		w := httptest.NewRecorder()
+		s.handleListJobs(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		jobs := resp["jobs"].([]interface{})
+		if len(jobs) != 2 {
+			t.Errorf("expected 2 completed jobs, got %d", len(jobs))
+		}
+		for _, j := range jobs {
+			jm := j.(map[string]interface{})
+			if jm["status"] != string(JobStatusCompleted) {
+				t.Errorf("expected status %q, got %q", JobStatusCompleted, jm["status"])
+			}
+		}
+	})
+
+	// Test: filter by type=build -> should return job1 and job3.
+	t.Run("filter by type=build", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs?type=build", nil)
+		w := httptest.NewRecorder()
+		s.handleListJobs(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		jobs := resp["jobs"].([]interface{})
+		if len(jobs) != 2 {
+			t.Errorf("expected 2 build jobs, got %d", len(jobs))
+		}
+		for _, j := range jobs {
+			jm := j.(map[string]interface{})
+			if jm["type"] != string(JobTypeBuild) {
+				t.Errorf("expected type %q, got %q", JobTypeBuild, jm["type"])
+			}
+		}
+	})
+
+	// Test: filter by status=completed AND type=build -> should return only job1.
+	t.Run("filter by status=completed and type=build", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs?status=completed&type=build", nil)
+		w := httptest.NewRecorder()
+		s.handleListJobs(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		jobs := resp["jobs"].([]interface{})
+		if len(jobs) != 1 {
+			t.Fatalf("expected 1 job, got %d", len(jobs))
+		}
+		jm := jobs[0].(map[string]interface{})
+		if jm["id"] != id1 {
+			t.Errorf("expected job ID %q, got %q", id1, jm["id"])
+		}
+		if jm["status"] != string(JobStatusCompleted) {
+			t.Errorf("expected status %q, got %q", JobStatusCompleted, jm["status"])
+		}
+		if jm["type"] != string(JobTypeBuild) {
+			t.Errorf("expected type %q, got %q", JobTypeBuild, jm["type"])
+		}
+	})
+
+	// Suppress unused variable warnings for id2 and id3.
+	_ = id2
+	_ = id3
 }
