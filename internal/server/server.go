@@ -72,6 +72,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start the background job worker.
 	go s.jobs.Run(ctx)
 
+	// Start background cleanup.
+	go RunCleanup(ctx, s.jobs.store, DefaultRetention, s.logger)
+
 	addr := fmt.Sprintf(":%d", s.config.Port)
 	srv := &http.Server{
 		Addr:         addr,
