@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -171,4 +172,14 @@ func testJobStore(t *testing.T, newStore func() JobStore) {
 
 func TestJobStoreContract_Memory(t *testing.T) {
 	testJobStore(t, func() JobStore { return NewMemoryJobStore() })
+}
+
+func TestJobStoreContract_SQLite(t *testing.T) {
+	testJobStore(t, func() JobStore {
+		store, err := NewSQLiteJobStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewSQLiteJobStore: %v", err)
+		}
+		return store
+	})
 }
