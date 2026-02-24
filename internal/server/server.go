@@ -104,6 +104,8 @@ func (s *Server) routes() http.Handler {
 
 	// Webhooks.
 	mux.HandleFunc("POST /webhooks/github", s.handleGitHubWebhook)
+	mux.HandleFunc("POST /webhooks/jira", s.handleJiraWebhook)
+	mux.HandleFunc("POST /webhooks/linear", s.handleLinearWebhook)
 
 	// Apply middleware (outermost first).
 	var handler http.Handler = mux

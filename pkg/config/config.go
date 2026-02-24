@@ -89,8 +89,9 @@ type ServerConfig struct {
 
 // WebhookConfig defines webhook endpoints.
 type WebhookConfig struct {
-	GitHub *GitHubWebhookConfig `yaml:"github" mapstructure:"github"`
-	Jira   *JiraWebhookConfig   `yaml:"jira"   mapstructure:"jira"`
+	GitHub *GitHubWebhookConfig  `yaml:"github" mapstructure:"github"`
+	Jira   *JiraWebhookConfig    `yaml:"jira"   mapstructure:"jira"`
+	Linear *LinearWebhookConfig  `yaml:"linear" mapstructure:"linear"`
 }
 
 // GitHubWebhookConfig holds GitHub webhook settings.
@@ -103,6 +104,12 @@ type GitHubWebhookConfig struct {
 type JiraWebhookConfig struct {
 	Auth     string           `yaml:"auth"     mapstructure:"auth"`
 	Triggers []WebhookTrigger `yaml:"triggers" mapstructure:"triggers"`
+}
+
+// LinearWebhookConfig holds Linear webhook settings.
+type LinearWebhookConfig struct {
+	SigningSecret string           `yaml:"signing_secret" mapstructure:"signing_secret"`
+	Triggers      []WebhookTrigger `yaml:"triggers"       mapstructure:"triggers"`
 }
 
 // WebhookTrigger maps an incoming event to a Forge action.
