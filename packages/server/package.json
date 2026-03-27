@@ -9,8 +9,9 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "latest",
     "@forge/types": "*",
+    "@forge/tools": "*",
+    "@forge/runtime": "*",
     "fastify": "^5.2.0"
   },
   "devDependencies": {

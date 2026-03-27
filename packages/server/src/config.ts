@@ -5,5 +5,6 @@ export const config = {
   },
   worker: {
     workspaceDir: process.env.WORKSPACE_DIR || "/tmp/forge/workspace",
+    sessionsDir: process.env.SESSIONS_DIR || "/tmp/forge/sessions",
   },
 } as const;

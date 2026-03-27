@@ -22,7 +22,7 @@ build-runtime: build-types build-tools
   npm run build -w @forge/runtime
 
 # Build server
-build-server: build-types
+build-server: build-types build-tools build-runtime
   npm run build -w @forge/server
 
 # Build CLI

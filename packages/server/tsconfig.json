@@ -6,6 +6,8 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../types" }
+    { "path": "../types" },
+    { "path": "../tools" },
+    { "path": "../runtime" }
   ]
 }
