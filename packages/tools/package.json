@@ -1,22 +1,24 @@
 {
-  "name": "@forge/server",
+  "name": "@forge/tools",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
     "@forge/types": "*",
-    "@forge/tools": "*",
-    "@forge/runtime": "*",
-    "fastify": "^5.2.0"
+    "fast-glob": "^3.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
 }
