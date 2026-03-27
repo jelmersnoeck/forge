@@ -4,6 +4,9 @@ import type {
   ToolResult,
   ToolContext,
 } from "@forge/types";
+import { readTool } from "./tools/read.js";
+import { writeTool } from "./tools/write.js";
+import { editTool } from "./tools/edit.js";
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
@@ -46,6 +49,8 @@ export class ToolRegistry {
 
 export function createDefaultRegistry(_cwd: string): ToolRegistry {
   const registry = new ToolRegistry();
-  // Tools registered in subsequent tasks
+  registry.register(readTool);
+  registry.register(writeTool);
+  registry.register(editTool);
   return registry;
 }
