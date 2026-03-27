@@ -7,6 +7,9 @@ import type {
 import { readTool } from "./tools/read.js";
 import { writeTool } from "./tools/write.js";
 import { editTool } from "./tools/edit.js";
+import { bashTool } from "./tools/bash.js";
+import { globTool } from "./tools/glob.js";
+import { grepTool } from "./tools/grep.js";
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
@@ -52,5 +55,8 @@ export function createDefaultRegistry(_cwd: string): ToolRegistry {
   registry.register(readTool);
   registry.register(writeTool);
   registry.register(editTool);
+  registry.register(bashTool);
+  registry.register(globTool);
+  registry.register(grepTool);
   return registry;
 }
