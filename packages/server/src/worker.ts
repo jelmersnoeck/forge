@@ -20,6 +20,15 @@ export async function startWorker(threadId: string): Promise<void> {
   const context = await contextLoader.load(["user", "project", "local"]);
   const sessionStore = new SessionStore(config.worker.sessionsDir);
 
+  // Claude Code uses model aliases like "opus[1m]" that the API doesn't
+  // understand. Only use settings.model if it looks like a real API model ID.
+  const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+  const settingsModel = context.settings.model;
+  const model =
+    settingsModel && settingsModel.startsWith("claude-")
+      ? settingsModel
+      : DEFAULT_MODEL;
+
   const meta: ThreadMeta = getThread(threadId) ?? {
     threadId,
     metadata: {},
@@ -52,7 +61,7 @@ export async function startWorker(threadId: string): Promise<void> {
         cwd,
         sessionStore,
         threadId,
-        model: context.settings.model ?? "claude-sonnet-4-5-20250929",
+        model,
       });
 
       const generator = sessionId
