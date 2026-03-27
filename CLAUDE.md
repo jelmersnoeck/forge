@@ -6,17 +6,19 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 
 ```
 packages/
-  types/     API contract: InboundMessage, OutboundEvent, ThreadMeta
-  server/    Fastify gateway + per-thread Agent SDK worker
-  cli/       Interactive REPL client (reference adapter implementation)
+  types/     shared contracts (API, tools, context, sessions)
+  tools/     tool registry + in-process implementations (Read, Write, Edit, Bash, Glob, Grep)
+  runtime/   conversation loop, context loader, LLM provider, session persistence
+  server/    Fastify gateway + per-thread worker
+  cli/       interactive REPL client (reference adapter)
 ```
 
-npm workspaces monorepo. `@forge/types` must build before server and cli.
+npm workspaces monorepo. Build order: types -> tools -> runtime -> server -> cli.
 
 ## Build & run
 
 ```bash
-just build        # build all (types → server → cli)
+just build        # build all (types -> tools -> runtime -> server -> cli)
 just dev-server   # dev server with file watching
 just dev-cli      # interactive CLI
 just check        # typecheck everything
@@ -27,9 +29,11 @@ just clean        # nuke dist/ dirs
 
 1. Gateway receives HTTP requests and enqueues messages via an in-memory bus
 2. Each thread gets its own worker (async task in the same process)
-3. Workers drive `@anthropic-ai/claude-agent-sdk` `query()` loop
-4. Output streams back via EventEmitter → SSE to HTTP clients
-5. Session IDs are persisted per-thread so `resume` rehydrates full context
+3. Workers run a ConversationLoop that drives the Anthropic Messages API directly
+4. ContextLoader discovers CLAUDE.md, skills, agents, and rules from the filesystem
+5. Tools execute in-process (file ops, bash, ripgrep)
+6. Output streams back via EventEmitter -> SSE to HTTP clients
+7. Sessions persist as JSONL for resume
 
 The bus (`bus.ts`) uses Maps + promise-based waiters for the queue and
 EventEmitter for pub/sub. Swap to Redis when workers move to separate
@@ -37,10 +41,16 @@ processes (k8s Agent Sandbox phase).
 
 ## Key files
 
+- `packages/runtime/src/loop.ts` — agentic conversation loop (replaces Agent SDK)
+- `packages/runtime/src/context.ts` — CLAUDE.md, skills, agents, rules discovery
+- `packages/runtime/src/prompt.ts` — system prompt assembly
+- `packages/runtime/src/provider/anthropic.ts` — Anthropic Messages API streaming
+- `packages/tools/src/registry.ts` — tool registry + createDefaultRegistry()
+- `packages/tools/src/tools/` — individual tool implementations
 - `packages/server/src/bus.ts` — in-memory message queue + pub/sub + thread store
-- `packages/server/src/worker.ts` — Agent SDK loop, session resume
+- `packages/server/src/worker.ts` — worker loop using ConversationLoop
 - `packages/server/src/gateway.ts` — HTTP routes, SSE streaming, worker lifecycle
-- `packages/types/src/index.ts` — shared API types (all packages import from here)
+- `packages/types/src/index.ts` — shared contracts (all packages import from here)
 
 ## Conventions
 
