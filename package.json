@@ -3,6 +3,7 @@
   "workspaces": [
     "packages/types",
     "packages/tools",
+    "packages/runtime",
     "packages/server",
     "packages/cli"
   ],

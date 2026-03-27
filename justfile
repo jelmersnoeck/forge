@@ -6,8 +6,8 @@ default:
 
 # ── Build ────────────────────────────────────────────────────
 
-# Build all packages (types → tools → server → cli)
-build: build-types build-tools build-server build-cli
+# Build all packages (types → tools → runtime → server → cli)
+build: build-types build-tools build-runtime build-server build-cli
 
 # Build shared types
 build-types:
@@ -16,6 +16,10 @@ build-types:
 # Build tools
 build-tools: build-types
   npm run build -w @forge/tools
+
+# Build runtime
+build-runtime: build-types build-tools
+  npm run build -w @forge/runtime
 
 # Build server
 build-server: build-types
@@ -27,8 +31,8 @@ build-cli: build-types
 
 # ── Dev ──────────────────────────────────────────────────────
 
-# Start server in dev mode (builds types first, watches for changes)
-dev-server: build-types
+# Start server in dev mode (builds types, tools, runtime first, watches for changes)
+dev-server: build-types build-tools build-runtime
   npm run dev -w @forge/server
 
 # Start CLI in dev mode (builds types first)

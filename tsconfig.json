@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/types" },
     { "path": "packages/tools" },
+    { "path": "packages/runtime" },
     { "path": "packages/server" },
     { "path": "packages/cli" }
   ]
