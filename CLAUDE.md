@@ -72,8 +72,40 @@ GET    /threads/:threadId/events   SSE stream of OutboundEvents
 
 1. Create `packages/<name>/` with `package.json`, `tsconfig.json`, `src/`
 2. Add to root `package.json` workspaces array
-3. Import shared types from `@forge/types`
-4. Add build/dev recipes to justfile
+3. Add `{ "path": "packages/<name>" }` to root `tsconfig.json` references
+4. Import shared types from `@forge/types`
+5. Add build recipe to justfile (with correct dependency chain)
+6. Update `build` recipe in justfile to include new package
+7. Run `npm install` to link workspace
+
+## Running
+
+```bash
+cp .env.example .env       # set ANTHROPIC_API_KEY
+just up                    # docker compose (builds first)
+just dev-server             # local dev (reads .env)
+just dev-cli                # interactive CLI (needs server running)
+just test                   # run all tests (tools + runtime)
+just logs                   # tail docker compose logs
+```
+
+## Testing
+
+- Tests use `node:test` (no framework). Run with `node --test dist/**/*.test.js`
+- All tests use real filesystem (tmpdir), real child_process — no mocks
+- Grep tests require `rg` (ripgrep) on PATH
+- 54 tests total: 32 in tools, 22 in runtime
+
+## Gotchas
+
+- `~/.claude/settings.json` contains model aliases like `opus[1m]` that the
+  Anthropic API doesn't understand. Worker filters these out — only values
+  starting with `claude-` are passed through.
+- Server loads `.env` from project root at startup (no dotenv dep, custom loader
+  in `packages/server/src/index.ts`). Explicit env vars take precedence.
+- Anthropic API requires `tool_result` blocks immediately after `tool_use` in
+  the message history. The ConversationLoop persists these to session JSONL so
+  resume reconstructs valid history.
 
 ## Test data
 
