@@ -2,6 +2,7 @@
   "private": true,
   "workspaces": [
     "packages/types",
+    "packages/tools",
     "packages/server",
     "packages/cli"
   ],

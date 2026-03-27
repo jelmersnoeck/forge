@@ -6,12 +6,16 @@ default:
 
 # ── Build ────────────────────────────────────────────────────
 
-# Build all packages (types → server → cli)
-build: build-types build-server build-cli
+# Build all packages (types → tools → server → cli)
+build: build-types build-tools build-server build-cli
 
 # Build shared types
 build-types:
   npm run build -w @forge/types
+
+# Build tools
+build-tools: build-types
+  npm run build -w @forge/tools
 
 # Build server
 build-server: build-types
