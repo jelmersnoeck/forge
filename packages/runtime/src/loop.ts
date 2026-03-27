@@ -67,7 +67,7 @@ export class ConversationLoop {
       uuid: randomUUID(),
       sessionId: this._sessionId,
       type: "user",
-      message: { role: "user", content: prompt },
+      message: { role: "user", content: [{ type: "text", text: prompt }] },
       timestamp: Date.now(),
     });
 
@@ -78,11 +78,12 @@ export class ConversationLoop {
     this._sessionId = sessionId;
     const messages = await this.sessionStore.load(sessionId);
     for (const msg of messages) {
-      const m = msg.message as { role: string; content: unknown };
+      const m = msg.message as ChatMessage;
       if (m.role === "user") {
+        // Could be a text message or a tool_result message — preserve as-is
         this.history.push({
           role: "user",
-          content: [{ type: "text", text: m.content as string }],
+          content: m.content as ChatContentBlock[],
         });
       } else if (m.role === "assistant") {
         this.history.push({
@@ -207,7 +208,15 @@ export class ConversationLoop {
       }
 
       // Add tool results as user message (Anthropic API convention)
-      this.history.push({ role: "user", content: toolResults });
+      const toolResultMessage: ChatMessage = { role: "user", content: toolResults };
+      this.history.push(toolResultMessage);
+      await this.sessionStore.append(this._sessionId, {
+        uuid: randomUUID(),
+        sessionId: this._sessionId,
+        type: "user",
+        message: toolResultMessage,
+        timestamp: Date.now(),
+      });
     }
 
     yield this.makeEvent("error", "Max turns reached");
