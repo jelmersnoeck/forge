@@ -45,6 +45,27 @@ dev-cli: build-types
 check:
   npx tsc --build
 
+# ── Docker ─────────────────────────────────────────────────
+
+# Build and start via docker compose (reads .env)
+up: build
+  docker compose up --build -d
+
+# Stop compose services
+down:
+  docker compose down
+
+# Tail server logs
+logs:
+  docker compose logs -f server
+
+# ── Test ───────────────────────────────────────────────────
+
+# Run all tests
+test: build
+  node --test packages/tools/dist/**/*.test.js
+  node --test packages/runtime/dist/**/*.test.js
+
 # ── Cleanup ──────────────────────────────────────────────────
 
 # Remove all build artifacts
