@@ -7,3 +7,4 @@ forge-agent
 /agent
 /dist/
 *.test
+docs/
