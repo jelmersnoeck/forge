@@ -52,6 +52,8 @@ type model struct {
 	renderer     *glamour.TermRenderer
 	textBuf      string
 	err          error
+	scrollOffset int  // how many lines scrolled up from bottom
+	autoScroll   bool // auto-scroll to bottom on new content
 }
 
 type serverEvent types.OutboundEvent
@@ -91,11 +93,12 @@ func main() {
 	)
 
 	m := model{
-		server:    server,
-		sessionID: sessionID,
-		output:    []string{},
-		queue:     []string{},
-		renderer:  renderer,
+		server:     server,
+		sessionID:  sessionID,
+		output:     []string{},
+		queue:      []string{},
+		renderer:   renderer,
+		autoScroll: true, // start with auto-scroll enabled
 	}
 
 	// Add welcome message
@@ -107,7 +110,7 @@ func main() {
 		"",
 	)
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Start SSE listener in background
 	go listenEvents(p, server, sessionID)
@@ -130,6 +133,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		return m, nil
 
+	case tea.MouseMsg:
+		switch msg.Type {
+		case tea.MouseWheelUp:
+			// Scroll up (like pressing up arrow)
+			outputHeight := m.getOutputHeight()
+			maxOffset := len(m.output) - outputHeight
+			if maxOffset > 0 && m.scrollOffset < maxOffset {
+				m.scrollOffset += 3 // scroll 3 lines at a time for smoother trackpad feel
+				if m.scrollOffset > maxOffset {
+					m.scrollOffset = maxOffset
+				}
+				m.autoScroll = false
+			}
+			return m, nil
+
+		case tea.MouseWheelDown:
+			// Scroll down (like pressing down arrow)
+			if m.scrollOffset > 0 {
+				m.scrollOffset -= 3 // scroll 3 lines at a time
+				if m.scrollOffset < 0 {
+					m.scrollOffset = 0
+				}
+				if m.scrollOffset == 0 {
+					m.autoScroll = true
+				}
+			}
+			return m, nil
+		}
+
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC:
@@ -149,6 +181,69 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Second exit attempt: actually quit
 			m.quitting = true
 			return m, tea.Quit
+
+		case tea.KeyUp:
+			// Scroll up one line
+			outputHeight := m.getOutputHeight()
+			maxOffset := len(m.output) - outputHeight
+			if maxOffset > 0 && m.scrollOffset < maxOffset {
+				m.scrollOffset++
+				m.autoScroll = false
+			}
+			return m, nil
+
+		case tea.KeyDown:
+			// Scroll down one line
+			if m.scrollOffset > 0 {
+				m.scrollOffset--
+				if m.scrollOffset == 0 {
+					m.autoScroll = true
+				}
+			}
+			return m, nil
+
+		case tea.KeyPgUp:
+			// Scroll up one page
+			outputHeight := m.getOutputHeight()
+			maxOffset := len(m.output) - outputHeight
+			if maxOffset > 0 {
+				m.scrollOffset += outputHeight
+				if m.scrollOffset > maxOffset {
+					m.scrollOffset = maxOffset
+				}
+				m.autoScroll = false
+			}
+			return m, nil
+
+		case tea.KeyPgDown:
+			// Scroll down one page
+			outputHeight := m.getOutputHeight()
+			if m.scrollOffset > 0 {
+				m.scrollOffset -= outputHeight
+				if m.scrollOffset < 0 {
+					m.scrollOffset = 0
+				}
+				if m.scrollOffset == 0 {
+					m.autoScroll = true
+				}
+			}
+			return m, nil
+
+		case tea.KeyHome:
+			// Jump to top
+			outputHeight := m.getOutputHeight()
+			maxOffset := len(m.output) - outputHeight
+			if maxOffset > 0 {
+				m.scrollOffset = maxOffset
+				m.autoScroll = false
+			}
+			return m, nil
+
+		case tea.KeyEnd:
+			// Jump to bottom and re-enable auto-scroll
+			m.scrollOffset = 0
+			m.autoScroll = true
+			return m, nil
 
 		case tea.KeyEnter:
 			if m.input == "" {
@@ -200,6 +295,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.working = false
 		}
 
+		// Auto-scroll to bottom on new content
+		if m.autoScroll {
+			m.scrollOffset = 0
+		}
+
 		// If done and queue has messages, send next
 		if event.Type == "done" && len(m.queue) > 0 {
 			text := m.queue[0]
@@ -219,6 +319,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) getOutputHeight() int {
+	queueHeight := 0
+	if len(m.queue) > 0 {
+		queueHeight = len(m.queue) + 2 // header + messages + separator
+	}
+	inputHeight := 3 // border + content
+	scrollIndicatorHeight := 0
+	if len(m.output) > 0 && !m.autoScroll {
+		scrollIndicatorHeight = 1 // show scroll indicator when not at bottom
+	}
+	return m.height - queueHeight - inputHeight - scrollIndicatorHeight - 1
+}
+
 func (m model) View() string {
 	if !m.ready {
 		return "Initializing..."
@@ -229,20 +342,35 @@ func (m model) View() string {
 	}
 
 	// Calculate available space
-	queueHeight := 0
-	if len(m.queue) > 0 {
-		queueHeight = len(m.queue) + 2 // header + messages + separator
-	}
-	inputHeight := 3 // border + content
-	outputHeight := m.height - queueHeight - inputHeight - 1
+	outputHeight := m.getOutputHeight()
 
 	// Build output area (scrollable)
 	var outputArea string
 	if len(m.output) > outputHeight {
-		// Show last N lines
-		outputArea = strings.Join(m.output[len(m.output)-outputHeight:], "\n")
+		// Calculate which slice of output to show based on scroll offset
+		endIdx := len(m.output) - m.scrollOffset
+		startIdx := endIdx - outputHeight
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		outputArea = strings.Join(m.output[startIdx:endIdx], "\n")
 	} else {
 		outputArea = strings.Join(m.output, "\n")
+	}
+
+	// Build scroll indicator
+	var scrollIndicator string
+	if len(m.output) > outputHeight {
+		if m.autoScroll {
+			scrollIndicator = dimStyle.Render("↓ auto-scroll [↑↓ PgUp/PgDn Home/End to navigate]")
+		} else {
+			endIdx := len(m.output) - m.scrollOffset
+			startIdx := endIdx - outputHeight
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			scrollIndicator = dimStyle.Render(fmt.Sprintf("↕ line %d-%d of %d [↑↓ PgUp/PgDn Home/End to navigate, End to auto-scroll]", startIdx+1, endIdx, len(m.output)))
+		}
 	}
 
 	// Build queue display
@@ -280,6 +408,9 @@ func (m model) View() string {
 	var parts []string
 	if outputArea != "" {
 		parts = append(parts, outputArea)
+	}
+	if scrollIndicator != "" {
+		parts = append(parts, scrollIndicator)
 	}
 	if queueArea != "" {
 		parts = append(parts, queueArea)
