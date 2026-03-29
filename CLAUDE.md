@@ -2,112 +2,156 @@
 
 Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 
+## Architecture
+
+Forge uses a 3-tier architecture:
+
+- **CLI** (`cmd/cli/`) — interactive REPL, talks to the server via HTTP
+- **Server** (`cmd/server/`) — session management, spawns agents in backends (tmux), forwards messages, relays events. Does NOT talk to Anthropic or run tools.
+- **Agent** (`cmd/agent/`) — runs inside a backend target (e.g. tmux session). Has its own HTTP server. Runs the conversation loop, tools, talks to Anthropic. Long-lived per session.
+
 ## Repository layout
 
 ```
-packages/
-  types/     shared contracts (API, tools, context, sessions)
-  tools/     tool registry + in-process implementations (Read, Write, Edit, Bash, Glob, Grep)
-  runtime/   conversation loop, context loader, LLM provider, session persistence
-  server/    Fastify gateway + per-thread worker
-  cli/       interactive REPL client (reference adapter)
+cmd/
+  server/          entry point (loads .env, starts gateway)
+  agent/           agent binary (conversation loop + tools + HTTP server)
+  cli/             interactive REPL client
+internal/
+  types/           shared contracts (messages, events, tools, context)
+  tools/           tool registry + implementations (Read, Write, Edit, Bash, Glob, Grep)
+  agent/           agent HTTP server, single-session hub, worker
+  runtime/
+    provider/      LLMProvider interface + Anthropic implementation
+    context/       ContextLoader (CLAUDE.md, skills, agents, rules)
+    prompt/        system prompt assembly
+    session/       JSONL session persistence
+    loop/          ConversationLoop (agentic loop)
+  server/
+    bus/           in-memory event pub/sub + session metadata
+    backend/       Backend interface + tmux implementation
+    gateway/       HTTP routes, SSE streaming, agent message forwarding
 ```
 
-npm workspaces monorepo. Build order: types -> tools -> runtime -> server -> cli.
+Go module: `github.com/jelmersnoeck/forge`
 
 ## Build & run
 
 ```bash
-just build        # build all (types -> tools -> runtime -> server -> cli)
-just dev-server   # dev server with file watching
-just dev-cli      # interactive CLI
-just check        # typecheck everything
-just clean        # nuke dist/ dirs
+just build              # build server + cli + agent binaries
+just build-agent        # build agent binary only
+just dev-server         # build agent + server, run server (foreground)
+just dev-server-daemon  # build agent + server, run in daemon mode
+just stop-server        # stop daemon server
+just tail-server        # tail daemon server logs
+just dev-cli            # build + run CLI
+just test               # go test ./...
+just vet                # go vet ./...
+just up                 # docker compose up --build -d
+just down               # docker compose down
+just logs               # tail server logs (docker)
+just clean              # remove binaries
 ```
-
-## How it works
-
-1. Gateway receives HTTP requests and enqueues messages via an in-memory bus
-2. Each thread gets its own worker (async task in the same process)
-3. Workers run a ConversationLoop that drives the Anthropic Messages API directly
-4. ContextLoader discovers CLAUDE.md, skills, agents, and rules from the filesystem
-5. Tools execute in-process (file ops, bash, ripgrep)
-6. Output streams back via EventEmitter -> SSE to HTTP clients
-7. Sessions persist as JSONL for resume
-
-The bus (`bus.ts`) uses Maps + promise-based waiters for the queue and
-EventEmitter for pub/sub. Swap to Redis when workers move to separate
-processes (k8s Agent Sandbox phase).
-
-## Key files
-
-- `packages/runtime/src/loop.ts` — agentic conversation loop (replaces Agent SDK)
-- `packages/runtime/src/context.ts` — CLAUDE.md, skills, agents, rules discovery
-- `packages/runtime/src/prompt.ts` — system prompt assembly
-- `packages/runtime/src/provider/anthropic.ts` — Anthropic Messages API streaming
-- `packages/tools/src/registry.ts` — tool registry + createDefaultRegistry()
-- `packages/tools/src/tools/` — individual tool implementations
-- `packages/server/src/bus.ts` — in-memory message queue + pub/sub + thread store
-- `packages/server/src/worker.ts` — worker loop using ConversationLoop
-- `packages/server/src/gateway.ts` — HTTP routes, SSE streaming, worker lifecycle
-- `packages/types/src/index.ts` — shared contracts (all packages import from here)
-
-## Conventions
-
-- TypeScript, ESM (`"type": "module"`)
-- Strict mode, Node16 module resolution
-- Platform-agnostic API: `source` is a free-form string, `metadata` is opaque
-- Adapters are external HTTP clients — the server has no platform-specific code
-
-## API endpoints
-
-```
-POST   /threads                    create thread (accepts metadata)
-GET    /threads/:threadId          get thread info
-POST   /threads/:threadId/messages send message (text, source, user, metadata)
-GET    /threads/:threadId/events   SSE stream of OutboundEvents
-```
-
-## Adding a package
-
-1. Create `packages/<name>/` with `package.json`, `tsconfig.json`, `src/`
-2. Add to root `package.json` workspaces array
-3. Add `{ "path": "packages/<name>" }` to root `tsconfig.json` references
-4. Import shared types from `@forge/types`
-5. Add build recipe to justfile (with correct dependency chain)
-6. Update `build` recipe in justfile to include new package
-7. Run `npm install` to link workspace
 
 ## Running
 
 ```bash
-cp .env.example .env       # set ANTHROPIC_API_KEY
-just up                    # docker compose (builds first)
-just dev-server             # local dev (reads .env)
+cp .env.example .env        # set ANTHROPIC_API_KEY
+just dev-server             # local dev foreground (reads .env, builds agent first)
+just dev-server-daemon      # local dev daemon mode
 just dev-cli                # interactive CLI (needs server running)
-just test                   # run all tests (tools + runtime)
-just logs                   # tail docker compose logs
+
+# Manual daemon control:
+./forge-server -daemon                           # default: /tmp/forge/sessions/forge.{pid,log}
+./forge-server -daemon -pid-file /path/to/file   # custom paths
+kill $(cat /tmp/forge/sessions/forge.pid)        # stop
+```
+
+## How it works
+
+1. CLI sends HTTP requests to the server
+2. Server creates sessions and manages metadata via an in-memory bus
+3. On first message, server spawns an agent in a tmux session via the backend
+4. Server forwards messages to the agent's HTTP API
+5. Server relays agent SSE events back to CLI subscribers via the bus
+6. Agent runs a ConversationLoop that drives the Anthropic Messages API
+7. Agent executes tools natively (file ops, exec, ripgrep)
+8. Sessions persist as JSONL for resume
+
+## Key files
+
+- `internal/agent/server.go` — agent HTTP server (health, messages, events)
+- `internal/agent/hub.go` — single-session message queue + event pub/sub
+- `internal/agent/worker.go` — conversation loop runner
+- `internal/runtime/loop/loop.go` — agentic conversation loop
+- `internal/runtime/context/loader.go` — CLAUDE.md, skills, agents, rules discovery
+- `internal/runtime/prompt/prompt.go` — system prompt assembly
+- `internal/runtime/provider/anthropic.go` — Anthropic Messages API streaming
+- `internal/tools/registry.go` — tool registry + NewDefaultRegistry()
+- `internal/tools/*.go` — individual tool implementations
+- `internal/server/backend/backend.go` — Backend interface
+- `internal/server/backend/tmux.go` — tmux backend implementation
+- `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata
+- `internal/server/gateway/gateway.go` — HTTP routes, SSE streaming, agent proxy
+- `internal/types/types.go` — shared contracts
+
+## API endpoints
+
+### Server (gateway)
+
+```
+POST   /sessions                      create session (accepts metadata)
+GET    /sessions/{sessionId}          get session info
+POST   /sessions/{sessionId}/messages send message (forwards to agent)
+GET    /sessions/{sessionId}/events   SSE stream of OutboundEvents (relayed from agent)
+```
+
+### Agent (per-session)
+
+```
+GET    /health                        health check
+POST   /messages                      receive message from server
+GET    /events                        SSE stream of OutboundEvents
 ```
 
 ## Testing
 
-- Tests use `node:test` (no framework). Run with `node --test dist/**/*.test.js`
-- All tests use real filesystem (tmpdir), real child_process — no mocks
+- Tests use `testing` + `testify/require`
+- Table-driven: `tests := map[string]struct{...}`, loop var `tc`
+- All tests use real filesystem (`t.TempDir()`), real exec — no mocks
 - Grep tests require `rg` (ripgrep) on PATH
-- 54 tests total: 32 in tools, 22 in runtime
+- Backend integration tests require `tmux` on PATH and a built `forge-agent` binary
+
+## Environment variables
+
+- `ANTHROPIC_API_KEY` — required by the agent (not the server)
+- `GATEWAY_PORT` — server listen port (default: 3000)
+- `GATEWAY_HOST` — server listen host (default: 0.0.0.0)
+- `WORKSPACE_DIR` — default working directory (default: /tmp/forge/workspace)
+- `SESSIONS_DIR` — JSONL session storage (default: /tmp/forge/sessions)
+- `AGENT_BIN` — path to forge-agent binary (default: forge-agent)
 
 ## Gotchas
 
 - `~/.claude/settings.json` contains model aliases like `opus[1m]` that the
-  Anthropic API doesn't understand. Worker filters these out — only values
+  Anthropic API doesn't understand. Agent filters these — only values
   starting with `claude-` are passed through.
-- Server loads `.env` from project root at startup (no dotenv dep, custom loader
-  in `packages/server/src/index.ts`). Explicit env vars take precedence.
+- Server loads `.env` from project root at startup (custom loader in
+  `cmd/server/main.go`). Explicit env vars take precedence.
 - Anthropic API requires `tool_result` blocks immediately after `tool_use` in
   the message history. The ConversationLoop persists these to session JSONL so
   resume reconstructs valid history.
+- The server no longer needs `ANTHROPIC_API_KEY` — the agent handles all LLM
+  communication. The key must be set in the environment where agents run.
 
 ## Test data
 
 Use TV show Community references for fake data (Troy Barnes, Greendale
 Community College, etc.).
+
+## Conventions
+
+- Go, standard library where possible
+- `internal/` for all packages (no public API yet)
+- Platform-agnostic API: `source` is a free-form string, `metadata` is opaque
+- Adapters are external HTTP clients — the server has no platform-specific code

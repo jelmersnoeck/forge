@@ -1,8 +1,6 @@
 services:
   server:
-    build:
-      context: .
-      dockerfile: packages/server/Dockerfile
+    build: .
     ports:
       - "${GATEWAY_PORT:-3000}:3000"
     env_file: .env
