@@ -1,54 +1,75 @@
 # forge — async coding agent
 
+# Go 1.26.1 toolchain auto-download needs the sum database enabled
+export GOSUMDB := "sum.golang.org"
+
 # List available recipes
 default:
   @just --list
 
 # ── Build ────────────────────────────────────────────────────
 
-# Build all packages (types → tools → runtime → server → cli)
-build: build-types build-tools build-runtime build-server build-cli
+# Build server binary
+build-server:
+  go build -o forge-server ./cmd/server
 
-# Build shared types
-build-types:
-  npm run build -w @forge/types
+# Build CLI binary
+build-cli:
+  go build -o forge-cli ./cmd/cli
 
-# Build tools
-build-tools: build-types
-  npm run build -w @forge/tools
+# Build agent binary
+build-agent:
+  go build -o forge-agent ./cmd/agent
 
-# Build runtime
-build-runtime: build-types build-tools
-  npm run build -w @forge/runtime
-
-# Build server
-build-server: build-types build-tools build-runtime
-  npm run build -w @forge/server
-
-# Build CLI
-build-cli: build-types
-  npm run build -w @forge/cli
+# Build everything
+build: build-server build-cli build-agent
 
 # ── Dev ──────────────────────────────────────────────────────
 
-# Start server in dev mode (builds types, tools, runtime first, watches for changes)
-dev-server: build-types build-tools build-runtime
-  npm run dev -w @forge/server
+# Build agent + server and run server
+dev-server: build-agent build-server
+  ./forge-server
 
-# Start CLI in dev mode (builds types first)
-dev-cli: build-types
-  npm run dev -w @forge/cli
+# Build and run server in daemon mode
+dev-server-daemon: build-agent build-server
+  ./forge-server -daemon
 
-# ── Typecheck ────────────────────────────────────────────────
+# Stop daemon server
+stop-server:
+  @if [ -f /tmp/forge/sessions/forge.pid ]; then \
+    kill $(cat /tmp/forge/sessions/forge.pid) && echo "Server stopped"; \
+  else \
+    echo "No PID file found at /tmp/forge/sessions/forge.pid"; \
+  fi
 
-# Typecheck all packages
-check:
-  npx tsc --build
+# Tail server logs (daemon mode)
+tail-server:
+  tail -f /tmp/forge/sessions/forge.log
+
+# Build and run CLI
+dev-cli: build-cli
+  ./forge-cli
+
+# ── Test ──────────────────────────────────────────────────────
+
+# Run all tests
+test:
+  go test ./...
+
+# Run tests with verbose output
+test-v:
+  go test -v ./...
+
+# ── Lint ──────────────────────────────────────────────────────
+
+# Run go vet
+vet:
+  go vet ./...
 
 # ── Docker ─────────────────────────────────────────────────
 
 # Build and start via docker compose (reads .env)
-up: build
+up:
   docker compose up --build -d
 
 # Stop compose services
@@ -59,15 +80,8 @@ down:
 logs:
   docker compose logs -f server
 
-# ── Test ───────────────────────────────────────────────────
-
-# Run all tests
-test: build
-  node --test packages/tools/dist/**/*.test.js
-  node --test packages/runtime/dist/**/*.test.js
-
 # ── Cleanup ──────────────────────────────────────────────────
 
-# Remove all build artifacts
+# Remove build artifacts
 clean:
-  rm -rf packages/*/dist packages/*/*.tsbuildinfo
+  rm -f forge-server forge-cli forge-agent

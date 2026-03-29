@@ -1,4 +1,10 @@
-node_modules/
-dist/
 .env
-*.tsbuildinfo
+forge-server
+forge-cli
+forge-agent
+/server
+/cli
+/agent
+/dist/
+*.test
+docs/
