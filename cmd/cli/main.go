@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -26,6 +27,7 @@ var (
 	promptStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
 	queueStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	queueHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
+	thinkingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Italic(true)
 	userMsgStyle     = lipgloss.NewStyle().
 				Background(lipgloss.Color("236")).
 				Foreground(lipgloss.Color("15")).
@@ -47,6 +49,8 @@ type model struct {
 	quitting     bool
 	exitAttempts int  // track number of exit attempts
 	working      bool // track if agent is currently working
+	thinking     bool // track if agent is currently thinking
+	spinnerFrame int  // spinner animation frame
 	width        int
 	height       int
 	renderer     *glamour.TermRenderer
@@ -58,6 +62,7 @@ type model struct {
 
 type serverEvent types.OutboundEvent
 type errMsg error
+type tickMsg time.Time
 
 func main() {
 	resume := flag.String("resume", "", "session ID to resume")
@@ -122,11 +127,23 @@ func main() {
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return tick()
+}
+
+func tick() tea.Cmd {
+	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tickMsg:
+		if m.thinking {
+			m.spinnerFrame++
+		}
+		return m, tick()
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -202,49 +219,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case tea.KeyPgUp:
-			// Scroll up one page
-			outputHeight := m.getOutputHeight()
-			maxOffset := len(m.output) - outputHeight
-			if maxOffset > 0 {
-				m.scrollOffset += outputHeight
-				if m.scrollOffset > maxOffset {
-					m.scrollOffset = maxOffset
-				}
-				m.autoScroll = false
-			}
-			return m, nil
-
-		case tea.KeyPgDown:
-			// Scroll down one page
-			outputHeight := m.getOutputHeight()
-			if m.scrollOffset > 0 {
-				m.scrollOffset -= outputHeight
-				if m.scrollOffset < 0 {
-					m.scrollOffset = 0
-				}
-				if m.scrollOffset == 0 {
-					m.autoScroll = true
-				}
-			}
-			return m, nil
-
-		case tea.KeyHome:
-			// Jump to top
-			outputHeight := m.getOutputHeight()
-			maxOffset := len(m.output) - outputHeight
-			if maxOffset > 0 {
-				m.scrollOffset = maxOffset
-				m.autoScroll = false
-			}
-			return m, nil
-
-		case tea.KeyEnd:
-			// Jump to bottom and re-enable auto-scroll
-			m.scrollOffset = 0
-			m.autoScroll = true
-			return m, nil
-
 		case tea.KeyEnter:
 			if m.input == "" {
 				return m, nil
@@ -288,10 +262,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Track working state
 		switch event.Type {
+		case "thinking":
+			m.thinking = true
 		case "text", "tool_use":
+			m.thinking = false
 			m.working = true
 			m.exitAttempts = 0 // reset exit attempts when work starts
 		case "done", "error":
+			m.thinking = false
 			m.working = false
 		}
 
@@ -324,12 +302,17 @@ func (m model) getOutputHeight() int {
 	if len(m.queue) > 0 {
 		queueHeight = len(m.queue) + 2 // header + messages + separator
 	}
-	inputHeight := 3 // border + content
-	scrollIndicatorHeight := 0
-	if len(m.output) > 0 && !m.autoScroll {
-		scrollIndicatorHeight = 1 // show scroll indicator when not at bottom
+	thinkingHeight := 0
+	if m.thinking {
+		thinkingHeight = 1 // thinking indicator
 	}
-	return m.height - queueHeight - inputHeight - scrollIndicatorHeight - 1
+	inputHeight := 3 // border + content
+	return m.height - queueHeight - thinkingHeight - inputHeight - 1
+}
+
+func (m model) spinner() string {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	return frames[m.spinnerFrame%len(frames)]
 }
 
 func (m model) View() string {
@@ -358,19 +341,10 @@ func (m model) View() string {
 		outputArea = strings.Join(m.output, "\n")
 	}
 
-	// Build scroll indicator
-	var scrollIndicator string
-	if len(m.output) > outputHeight {
-		if m.autoScroll {
-			scrollIndicator = dimStyle.Render("↓ auto-scroll [↑↓ PgUp/PgDn Home/End to navigate]")
-		} else {
-			endIdx := len(m.output) - m.scrollOffset
-			startIdx := endIdx - outputHeight
-			if startIdx < 0 {
-				startIdx = 0
-			}
-			scrollIndicator = dimStyle.Render(fmt.Sprintf("↕ line %d-%d of %d [↑↓ PgUp/PgDn Home/End to navigate, End to auto-scroll]", startIdx+1, endIdx, len(m.output)))
-		}
+	// Build thinking indicator
+	var thinkingIndicator string
+	if m.thinking {
+		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
 	}
 
 	// Build queue display
@@ -409,8 +383,8 @@ func (m model) View() string {
 	if outputArea != "" {
 		parts = append(parts, outputArea)
 	}
-	if scrollIndicator != "" {
-		parts = append(parts, scrollIndicator)
+	if thinkingIndicator != "" {
+		parts = append(parts, thinkingIndicator)
 	}
 	if queueArea != "" {
 		parts = append(parts, queueArea)

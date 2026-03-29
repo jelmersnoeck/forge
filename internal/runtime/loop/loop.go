@@ -143,6 +143,14 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			return nil
 		}
 
+		// Emit thinking event
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: l.sessionID,
+			Type:      "thinking",
+			Timestamp: time.Now().Unix(),
+		})
+
 		// Assemble chat request
 		req := types.ChatRequest{
 			Model:     l.model,
