@@ -11,31 +11,30 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
-// interactiveCommands maps command names to their non-interactive alternatives or flags
-var interactiveCommands = map[string]string{
-	"vim":      "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"vi":       "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"nano":     "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"emacs":    "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"less":     "Use 'cat' to read files directly.",
-	"more":     "Use 'cat' to read files directly.",
-	"top":      "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
-	"htop":     "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
-	"python":   "Use 'python script.py' to run a script, or 'python -c \"code\"' for one-liners.",
-	"python3":  "Use 'python3 script.py' to run a script, or 'python3 -c \"code\"' for one-liners.",
-	"node":     "Use 'node script.js' to run a script, or 'node -e \"code\"' for one-liners.",
-	"irb":      "Use 'ruby script.rb' to run a script, or 'ruby -e \"code\"' for one-liners.",
-	"rails":    "Use non-interactive flags like 'rails new app --api --skip-test' or 'rails generate model User name:string --no-interaction'.",
-	"npm":      "Use 'npm install' or add flags like 'npm init -y' for non-interactive mode.",
-	"yarn":     "Use 'yarn install' or add --non-interactive flag where applicable.",
-	"docker":   "Most docker commands are non-interactive, but avoid 'docker attach' or 'docker exec -it'.",
-	"ssh":      "SSH requires a TTY. Run commands remotely like: 'ssh user@host \"command\"'.",
-	"tmux":     "Tmux requires a TTY. Consider using background processes or separate sessions.",
-	"screen":   "Screen requires a TTY. Consider using background processes or separate sessions.",
-	"mysql":    "Use 'mysql -e \"SQL\"' for queries, or 'mysql < script.sql' for scripts.",
-	"psql":     "Use 'psql -c \"SQL\"' for queries, or 'psql -f script.sql' for scripts.",
-	"fzf":      "FZF requires interactive selection. Use grep, find, or other filtering tools instead.",
-	"git":      "Git commands work fine, but avoid interactive rebase or commit editors. Use 'git commit -m \"message\"'.",
+// alwaysInteractive are commands that need a TTY regardless of arguments.
+var alwaysInteractive = map[string]string{
+	"vim":    "Use 'cat' to read or the Edit tool to modify files.",
+	"vi":     "Use 'cat' to read or the Edit tool to modify files.",
+	"nano":   "Use 'cat' to read or the Edit tool to modify files.",
+	"emacs":  "Use 'cat' to read or the Edit tool to modify files.",
+	"less":   "Use 'cat' to read files directly.",
+	"more":   "Use 'cat' to read files directly.",
+	"top":    "Use 'ps aux' or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head'.",
+	"htop":   "Use 'ps aux' or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head'.",
+	"fzf":    "Use grep, find, or other filtering tools instead.",
+	"ssh":    "Run commands remotely: 'ssh user@host \"command\"'.",
+	"tmux":   "Use background processes or separate sessions.",
+	"screen": "Use background processes or separate sessions.",
+}
+
+// replCommands are only interactive when invoked without arguments.
+var replCommands = map[string]string{
+	"python":  "Use 'python script.py' or 'python -c \"code\"'.",
+	"python3": "Use 'python3 script.py' or 'python3 -c \"code\"'.",
+	"node":    "Use 'node script.js' or 'node -e \"code\"'.",
+	"irb":     "Use 'ruby script.rb' or 'ruby -e \"code\"'.",
+	"mysql":   "Use 'mysql -e \"SQL\"' or 'mysql < script.sql'.",
+	"psql":    "Use 'psql -c \"SQL\"' or 'psql -f script.sql'.",
 }
 
 // nonInteractivePatterns are command patterns that indicate non-interactive mode
@@ -149,60 +148,50 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	}, nil
 }
 
-// checkInteractiveCommand detects if a command is likely to be interactive
-// and returns a warning with suggestions, or empty string if it's safe to run
+// checkInteractiveCommand detects commands that need a TTY or start a REPL.
+// Returns a warning string, or "" if the command is safe to run.
 func checkInteractiveCommand(command string) string {
-	// Normalize command - trim and convert to lowercase for checking
 	normalized := strings.TrimSpace(command)
 	lower := strings.ToLower(normalized)
 
-	// If command has non-interactive patterns, allow it
-	for _, pattern := range nonInteractivePatterns {
-		if strings.Contains(lower, pattern) {
-			return ""
-		}
-	}
-
-	// Check for known interactive commands
-	// Extract the first command (before pipes, redirects, etc.)
 	parts := strings.Fields(normalized)
 	if len(parts) == 0 {
 		return ""
 	}
 
-	firstCmd := parts[0]
-	// Remove common prefixes
-	firstCmd = strings.TrimPrefix(firstCmd, "sudo")
-	firstCmd = strings.TrimSpace(firstCmd)
-	if len(strings.Fields(firstCmd)) > 0 {
-		firstCmd = strings.Fields(firstCmd)[0]
+	// Extract the base command name, stripping sudo and paths.
+	cmdIdx := 0
+	if parts[0] == "sudo" && len(parts) > 1 {
+		cmdIdx = 1
+	}
+	baseCmd := parts[cmdIdx]
+	if idx := strings.LastIndex(baseCmd, "/"); idx >= 0 {
+		baseCmd = baseCmd[idx+1:]
 	}
 
-	// Get base command name (strip path)
-	if idx := strings.LastIndex(firstCmd, "/"); idx >= 0 {
-		firstCmd = firstCmd[idx+1:]
+	// Always-interactive commands (vim, top, ssh, etc.) — blocked regardless of args.
+	if suggestion, ok := alwaysInteractive[baseCmd]; ok {
+		return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", baseCmd, suggestion)
 	}
 
-	// Check against known interactive commands
-	if suggestion, found := interactiveCommands[firstCmd]; found {
-		return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", firstCmd, suggestion)
-	}
-
-	// Special case: check for common interactive patterns
-	if strings.Contains(lower, "docker exec -it") || strings.Contains(lower, "docker run -it") {
-		return "Docker interactive mode (-it) requires a TTY.\n\nUse 'docker exec container_name command' without -it flag, or 'docker logs' to view output."
-	}
-
-	if strings.Contains(lower, "kubectl exec -it") {
-		return "Kubectl interactive mode (-it) requires a TTY.\n\nUse 'kubectl exec pod_name -- command' without -it flag."
-	}
-
-	// Check for bare command invocations that start REPLs
-	if len(parts) == 1 {
-		switch firstCmd {
-		case "python", "python3", "node", "irb", "ruby":
-			return fmt.Sprintf("Running '%s' without arguments starts an interactive REPL.\n\n%s", firstCmd, interactiveCommands[firstCmd])
+	// REPL commands — only blocked when invoked bare (no script/args).
+	if suggestion, ok := replCommands[baseCmd]; ok {
+		hasArgs := len(parts) > cmdIdx+1
+		if !hasArgs {
+			return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", baseCmd, suggestion)
 		}
+		// Has args — allow it (e.g. python script.py, mysql -e "...")
+		return ""
+	}
+
+	// docker exec -it / docker run -it
+	if strings.Contains(lower, "docker exec -it") || strings.Contains(lower, "docker run -it") {
+		return "Docker interactive mode (-it) requires a TTY. Use without -it flag."
+	}
+
+	// kubectl exec -it
+	if strings.Contains(lower, "kubectl exec -it") {
+		return "Kubectl interactive mode (-it) requires a TTY. Use without -it flag."
 	}
 
 	return ""

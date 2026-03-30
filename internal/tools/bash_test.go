@@ -206,10 +206,10 @@ func TestBashToolInteractiveCommands(t *testing.T) {
 			shouldBlock:  true,
 			errorMessage: "less",
 		},
-		"python REPL": {
+		"python bare blocks": {
 			command:      "python",
 			shouldBlock:  true,
-			errorMessage: "REPL",
+			errorMessage: "interactive",
 		},
 		"python script is OK": {
 			command:     "python script.py",
@@ -219,22 +219,17 @@ func TestBashToolInteractiveCommands(t *testing.T) {
 			command:     "python -c 'print(\"hello\")'",
 			shouldBlock: false,
 		},
-		"node REPL": {
+		"node bare blocks": {
 			command:      "node",
 			shouldBlock:  true,
-			errorMessage: "REPL",
+			errorMessage: "interactive",
 		},
 		"node script is OK": {
 			command:     "node script.js",
 			shouldBlock: false,
 		},
-		"npm init interactive": {
-			command:      "npm init",
-			shouldBlock:  true,
-			errorMessage: "npm",
-		},
-		"npm init -y is OK": {
-			command:     "npm init -y",
+		"npm install is OK": {
+			command:     "npm install",
 			shouldBlock: false,
 		},
 		"docker exec -it": {
@@ -258,14 +253,20 @@ func TestBashToolInteractiveCommands(t *testing.T) {
 			command:     "mysql -e 'SELECT * FROM users'",
 			shouldBlock: false,
 		},
+		"mysql bare blocks": {
+			command:      "mysql",
+			shouldBlock:  true,
+			errorMessage: "interactive",
+		},
 		"top command": {
 			command:      "top",
 			shouldBlock:  true,
-			errorMessage: "top",
+			errorMessage: "interactive",
 		},
-		"piped command is OK": {
-			command:     "vim file.txt | cat",
-			shouldBlock: false,
+		"vim always blocks": {
+			command:      "vim file.txt",
+			shouldBlock:  true,
+			errorMessage: "interactive",
 		},
 		"redirected input is OK": {
 			command:     "python < script.py",
@@ -276,32 +277,26 @@ func TestBashToolInteractiveCommands(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			dir := t.TempDir()
-			tool := BashTool()
 
-			result, err := tool.Handler(
-				map[string]any{"command": tc.command},
-				types.ToolContext{
-					Ctx: context.Background(),
-					CWD: dir,
-				},
-			)
-
-			r.NoError(err)
+			warning := checkInteractiveCommand(tc.command)
 
 			if tc.shouldBlock {
-				r.True(result.IsError, "Expected command '%s' to be blocked", tc.command)
-				r.Contains(result.Content[0].Text, "Interactive command detected")
+				r.NotEmpty(warning, "Command '%s' should be blocked", tc.command)
 				if tc.errorMessage != "" {
-					r.Contains(strings.ToLower(result.Content[0].Text), strings.ToLower(tc.errorMessage))
+					r.Contains(strings.ToLower(warning), strings.ToLower(tc.errorMessage))
 				}
+
+				// Also verify the handler actually returns an error
+				dir := t.TempDir()
+				tool := BashTool()
+				result, err := tool.Handler(
+					map[string]any{"command": tc.command},
+					types.ToolContext{Ctx: context.Background(), CWD: dir},
+				)
+				r.NoError(err)
+				r.True(result.IsError, "Handler should block command '%s'", tc.command)
 			} else {
-				// Non-interactive commands may fail for other reasons (file not found, etc.)
-				// but should not be blocked by interactive detection
-				if result.IsError {
-					r.NotContains(result.Content[0].Text, "Interactive command detected",
-						"Command '%s' should not be blocked as interactive", tc.command)
-				}
+				r.Empty(warning, "Command '%s' should not be blocked but got: %s", tc.command, warning)
 			}
 		})
 	}
@@ -322,8 +317,7 @@ func TestCheckInteractiveCommand(t *testing.T) {
 		"python -c":                 {command: "python -c 'print(1)'", isValid: true},
 		"node REPL":                 {command: "node", isValid: false},
 		"node script":               {command: "node app.js", isValid: true},
-		"npm init":                  {command: "npm init", isValid: false},
-		"npm init -y":               {command: "npm init -y", isValid: true},
+		"npm init":                  {command: "npm init", isValid: true},
 		"npm install":               {command: "npm install", isValid: true},
 		"docker exec -it":           {command: "docker exec -it container bash", isValid: false},
 		"docker exec":               {command: "docker exec container ls", isValid: true},
@@ -332,11 +326,12 @@ func TestCheckInteractiveCommand(t *testing.T) {
 		"echo":                      {command: "echo hello", isValid: true},
 		"git commit -m":             {command: "git commit -m 'msg'", isValid: true},
 		"mysql -e":                  {command: "mysql -e 'SELECT 1'", isValid: true},
-		"piped vim":                 {command: "echo test | vim -", isValid: true},
+		"mysql bare":                {command: "mysql", isValid: false},
+		"piped echo":                {command: "echo test | vim -", isValid: true},
 		"redirected python":         {command: "python < script.py", isValid: true},
 		"background python":         {command: "python script.py &", isValid: true},
-		"force flag":                {command: "vim -f file.txt", isValid: true},
-		"batch mode":                {command: "rails new app --batch", isValid: true},
+		"vim with flags still blocks": {command: "vim -f file.txt", isValid: false},
+		"rails is OK":               {command: "rails new app", isValid: true},
 		"kubectl exec -it":          {command: "kubectl exec -it pod -- bash", isValid: false},
 		"kubectl exec":              {command: "kubectl exec pod -- ls", isValid: true},
 		"empty":                     {command: "", isValid: true},
