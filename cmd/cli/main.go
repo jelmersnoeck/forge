@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jelmersnoeck/forge/internal/runtime/cost"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
@@ -61,6 +62,9 @@ type model struct {
 	err             error
 	scrollOffset    int  // how many lines scrolled up from bottom
 	autoScroll      bool // auto-scroll to bottom on new content
+	modelName       string
+	totalUsage      types.TokenUsage
+	totalCost       float64
 }
 
 type serverEvent types.OutboundEvent
@@ -340,8 +344,9 @@ func (m model) getOutputHeight() int {
 	if m.thinking {
 		thinkingHeight = 1 // thinking indicator
 	}
-	inputHeight := 3 // border + content
-	return m.height - queueHeight - thinkingHeight - inputHeight - 1
+	inputHeight := 3   // border + content
+	costHeight := 1    // cost tracker line
+	return m.height - queueHeight - thinkingHeight - inputHeight - costHeight - 1
 }
 
 func (m model) spinner() string {
@@ -412,6 +417,17 @@ func (m model) View() string {
 	// Make input area full width (accounting for border and padding)
 	inputArea := inputBorderStyle.Width(m.width - 4).Render(inputContent)
 
+	// Build cost tracker (below input, transparent)
+	costTrackerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8")).
+		Faint(true)
+	var costTracker string
+	if m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0 {
+		tokens := fmt.Sprintf("in: %d | out: %d", m.totalUsage.InputTokens, m.totalUsage.OutputTokens)
+		costStr := cost.FormatCost(m.totalCost)
+		costTracker = costTrackerStyle.Render(fmt.Sprintf("  %s | %s", tokens, costStr))
+	}
+
 	// Combine all areas
 	var parts []string
 	if outputArea != "" {
@@ -424,12 +440,18 @@ func (m model) View() string {
 		parts = append(parts, queueArea)
 	}
 	parts = append(parts, inputArea)
+	if costTracker != "" {
+		parts = append(parts, costTracker)
+	}
 
 	return strings.Join(parts, "\n")
 }
 
 func (m *model) handleEvent(event types.OutboundEvent) {
 	switch event.Type {
+	case "model":
+		m.modelName = event.Content
+
 	case "text":
 		m.textBuf += event.Content
 
@@ -456,6 +478,12 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 	case "queue_on_complete":
 		m.flushText()
 		m.output = append(m.output, queueStyle.Render("  ⏱  Queued on complete: ")+dimStyle.Render(event.Content))
+
+	case "usage":
+		if event.Usage != nil {
+			m.totalUsage = *event.Usage
+			m.totalCost = cost.Calculate(m.modelName, m.totalUsage)
+		}
 
 	case "error":
 		m.flushText()

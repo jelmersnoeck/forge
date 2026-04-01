@@ -25,12 +25,13 @@ type InboundMessage struct {
 // "compact", "retry", "usage", "queued_task_result", "queued_task_error",
 // "queue_immediate", "queue_on_complete".
 type OutboundEvent struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId"`
-	Type      string `json:"type"`
-	Content   string `json:"content,omitempty"`
-	ToolName  string `json:"toolName,omitempty"`
-	Timestamp int64  `json:"timestamp"`
+	ID        string      `json:"id"`
+	SessionID string      `json:"sessionId"`
+	Type      string      `json:"type"`
+	Content   string      `json:"content,omitempty"`
+	ToolName  string      `json:"toolName,omitempty"`
+	Usage     *TokenUsage `json:"usage,omitempty"`
+	Timestamp int64       `json:"timestamp"`
 }
 
 // SessionMeta is stored per conversation session.

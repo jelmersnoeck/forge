@@ -136,6 +136,17 @@ func (l *Loop) Resume(ctx context.Context, historyID string, promptText string, 
 func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) error {
 	turnCount := 0
 
+	// Emit model info at the start
+	if turnCount == 0 {
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: l.sessionID,
+			Type:      "model",
+			Content:   l.model,
+			Timestamp: time.Now().Unix(),
+		})
+	}
+
 	for {
 		turnCount++
 
@@ -354,6 +365,7 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 						SessionID: l.sessionID,
 						Type:      "usage",
 						Content:   fmt.Sprintf("tokens: in=%d out=%d (session total: in=%d out=%d)", delta.Usage.InputTokens, delta.Usage.OutputTokens, l.totalUsage.InputTokens, l.totalUsage.OutputTokens),
+						Usage:     &l.totalUsage,
 						Timestamp: time.Now().Unix(),
 					})
 				}
