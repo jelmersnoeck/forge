@@ -91,12 +91,14 @@ func (t *Tracker) Track(sessionID, model string, inputTokens, outputTokens, cach
 
 // DailySummary aggregates costs by day.
 type DailySummary struct {
-	Date         time.Time
-	TotalCost    float64
-	SessionCount int
-	CallCount    int
-	InputTokens  int
-	OutputTokens int
+	Date                time.Time
+	TotalCost           float64
+	SessionCount        int
+	CallCount           int
+	InputTokens         int
+	OutputTokens        int
+	CacheCreationTokens int
+	CacheReadTokens     int
 }
 
 // GetDailySummaries returns daily cost summaries for the given time range.
@@ -108,7 +110,9 @@ func (t *Tracker) GetDailySummaries(start, end time.Time) ([]DailySummary, error
 		COUNT(DISTINCT session_id) as session_count,
 		COUNT(*) as call_count,
 		SUM(input_tokens) as input_tokens,
-		SUM(output_tokens) as output_tokens
+		SUM(output_tokens) as output_tokens,
+		SUM(cache_creation_tokens) as cache_creation_tokens,
+		SUM(cache_read_tokens) as cache_read_tokens
 	FROM cost_records
 	WHERE timestamp >= ? AND timestamp < ?
 	GROUP BY DATE(timestamp)
@@ -125,7 +129,7 @@ func (t *Tracker) GetDailySummaries(start, end time.Time) ([]DailySummary, error
 	for rows.Next() {
 		var s DailySummary
 		var dateStr string
-		if err := rows.Scan(&dateStr, &s.TotalCost, &s.SessionCount, &s.CallCount, &s.InputTokens, &s.OutputTokens); err != nil {
+		if err := rows.Scan(&dateStr, &s.TotalCost, &s.SessionCount, &s.CallCount, &s.InputTokens, &s.OutputTokens, &s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
@@ -156,13 +160,15 @@ func (t *Tracker) MonthlyTotal(year int, month time.Month) (float64, error) {
 
 // SessionBreakdown returns per-session cost breakdown for a time range.
 type SessionBreakdown struct {
-	SessionID    string
-	TotalCost    float64
-	CallCount    int
-	InputTokens  int
-	OutputTokens int
-	FirstCall    time.Time
-	LastCall     time.Time
+	SessionID           string
+	TotalCost           float64
+	CallCount           int
+	InputTokens         int
+	OutputTokens        int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	FirstCall           time.Time
+	LastCall            time.Time
 }
 
 func (t *Tracker) GetSessionBreakdown(start, end time.Time) ([]SessionBreakdown, error) {
@@ -173,6 +179,8 @@ func (t *Tracker) GetSessionBreakdown(start, end time.Time) ([]SessionBreakdown,
 		COUNT(*) as call_count,
 		SUM(input_tokens) as input_tokens,
 		SUM(output_tokens) as output_tokens,
+		SUM(cache_creation_tokens) as cache_creation_tokens,
+		SUM(cache_read_tokens) as cache_read_tokens,
 		MIN(timestamp) as first_call,
 		MAX(timestamp) as last_call
 	FROM cost_records
@@ -191,7 +199,7 @@ func (t *Tracker) GetSessionBreakdown(start, end time.Time) ([]SessionBreakdown,
 	for rows.Next() {
 		var b SessionBreakdown
 		var firstCallStr, lastCallStr string
-		if err := rows.Scan(&b.SessionID, &b.TotalCost, &b.CallCount, &b.InputTokens, &b.OutputTokens, &firstCallStr, &lastCallStr); err != nil {
+		if err := rows.Scan(&b.SessionID, &b.TotalCost, &b.CallCount, &b.InputTokens, &b.OutputTokens, &b.CacheCreationTokens, &b.CacheReadTokens, &firstCallStr, &lastCallStr); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 

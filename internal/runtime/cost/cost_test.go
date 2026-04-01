@@ -106,3 +106,58 @@ func TestFormatCost(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatNumber(t *testing.T) {
+	tests := map[string]struct {
+		num  int
+		want string
+	}{
+		"zero": {
+			num:  0,
+			want: "0",
+		},
+		"single digit": {
+			num:  5,
+			want: "5",
+		},
+		"two digits": {
+			num:  42,
+			want: "42",
+		},
+		"three digits": {
+			num:  999,
+			want: "999",
+		},
+		"thousand": {
+			num:  1000,
+			want: "1,000",
+		},
+		"four digits": {
+			num:  1234,
+			want: "1,234",
+		},
+		"five digits": {
+			num:  12345,
+			want: "12,345",
+		},
+		"six digits": {
+			num:  123456,
+			want: "123,456",
+		},
+		"million": {
+			num:  1234567,
+			want: "1,234,567",
+		},
+		"ten million": {
+			num:  12345678,
+			want: "12,345,678",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := FormatNumber(tc.num)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}

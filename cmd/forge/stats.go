@@ -86,18 +86,20 @@ func runStats(args []string) int {
 
 		fmt.Println(tableHeaderStyle.Render("Daily Breakdown:"))
 		fmt.Println()
-		fmt.Printf("%-12s %12s %10s %10s %15s %15s\n",
-			"Date", "Cost", "Sessions", "Calls", "Input Tokens", "Output Tokens")
-		fmt.Println(dimStyle.Render("────────────────────────────────────────────────────────────────────────────"))
+		fmt.Printf("%-12s %12s %8s %7s %15s %15s %15s %15s\n",
+			"Date", "Cost", "Sessions", "Calls", "Input Tokens", "Output Tokens", "Cache Write", "Cache Read")
+		fmt.Println(dimStyle.Render("────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"))
 
 		for _, s := range summaries {
-			fmt.Printf("%-12s %12s %10d %10d %15d %15d\n",
+			fmt.Printf("%-12s %12s %8d %7d %15s %15s %15s %15s\n",
 				s.Date.Format("Jan 2"),
 				cost.FormatCost(s.TotalCost),
 				s.SessionCount,
 				s.CallCount,
-				s.InputTokens,
-				s.OutputTokens,
+				cost.FormatNumber(s.InputTokens),
+				cost.FormatNumber(s.OutputTokens),
+				cost.FormatNumber(s.CacheCreationTokens),
+				cost.FormatNumber(s.CacheReadTokens),
 			)
 		}
 		fmt.Println()
@@ -118,20 +120,22 @@ func runStats(args []string) int {
 
 		fmt.Println(tableHeaderStyle.Render("Session Breakdown:"))
 		fmt.Println()
-		fmt.Printf("%-38s %12s %8s %15s %15s %19s\n",
-			"Session ID", "Cost", "Calls", "Input Tokens", "Output Tokens", "Duration")
-		fmt.Println(dimStyle.Render("────────────────────────────────────────────────────────────────────────────────────────────────────────────────"))
+		fmt.Printf("%-38s %12s %7s %15s %15s %15s %15s %12s\n",
+			"Session ID", "Cost", "Calls", "Input Tokens", "Output Tokens", "Cache Write", "Cache Read", "Duration")
+		fmt.Println(dimStyle.Render("────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"))
 
 		for _, b := range breakdowns {
 			duration := b.LastCall.Sub(b.FirstCall)
 			durationStr := formatDuration(duration)
 
-			fmt.Printf("%-38s %12s %8d %15d %15d %19s\n",
+			fmt.Printf("%-38s %12s %7d %15s %15s %15s %15s %12s\n",
 				truncate(b.SessionID, 36),
 				cost.FormatCost(b.TotalCost),
 				b.CallCount,
-				b.InputTokens,
-				b.OutputTokens,
+				cost.FormatNumber(b.InputTokens),
+				cost.FormatNumber(b.OutputTokens),
+				cost.FormatNumber(b.CacheCreationTokens),
+				cost.FormatNumber(b.CacheReadTokens),
 				durationStr,
 			)
 		}
