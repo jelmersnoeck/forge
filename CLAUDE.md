@@ -39,8 +39,8 @@ cmd/
   agent/           agent binary (still needed by server backend)
   cli/             legacy CLI binary (use 'forge' instead)
 internal/
-  types/           shared contracts (messages, events, tools, context)
-  tools/           tool registry + implementations (Read, Write, Edit, Bash, Glob, Grep)
+  types/           shared contracts (messages, events, tools, context, tasks)
+  tools/           tool registry + implementations
   agent/           agent HTTP server, single-session hub, worker
   runtime/
     provider/      LLMProvider interface + Anthropic implementation
@@ -49,6 +49,7 @@ internal/
     session/       JSONL session persistence
     loop/          ConversationLoop (agentic loop)
     cost/          cost calculation + SQLite tracker
+    task/          background task & sub-agent management
   server/
     bus/           in-memory event pub/sub + session metadata
     backend/       Backend interface + tmux implementation
@@ -136,13 +137,15 @@ forge stats --sessions         # per-session breakdown
 - `internal/runtime/context/loader.go` — CLAUDE.md, AGENTS.md, skills, agents, rules discovery
 - `internal/runtime/prompt/prompt.go` — system prompt assembly
 - `internal/runtime/provider/anthropic.go` — Anthropic Messages API streaming
+- `internal/runtime/task/manager.go` — background task & sub-agent manager
 - `internal/tools/registry.go` — tool registry + NewDefaultRegistry()
-- `internal/tools/*.go` — individual tool implementations (Read, Write, Edit, Bash, Grep, Glob, WebSearch, Reflect)
+- `internal/tools/*.go` — tool implementations (Read, Write, Edit, Bash, Grep, Glob, WebSearch, Reflect, TaskCreate, TaskGet, TaskList, TaskStop, TaskOutput, Agent, AgentGet, AgentList, AgentStop)
 - `internal/server/backend/backend.go` — Backend interface
 - `internal/server/backend/tmux.go` — tmux backend implementation
 - `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata
 - `internal/server/gateway/gateway.go` — HTTP routes, SSE streaming, agent proxy
 - `internal/types/types.go` — shared contracts
+- `internal/types/task.go` — task & sub-agent types
 
 ## Self-Improvement Loop
 

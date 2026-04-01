@@ -93,95 +93,74 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		})
 	}
 
-	// 4. AGENTS.md learnings wrapped in <system-reminder> tags
+	// 4. Bundle: AGENTS.md + Rules + Skills + Agent definitions (cached together)
+	// This keeps us under the 4 cache control block limit while still caching everything
+	var bundledContent strings.Builder
+	hasContent := false
+
+	// AGENTS.md learnings
 	if len(bundle.AgentsMD) > 0 {
-		var agentsContent strings.Builder
-		agentsContent.WriteString("<system-reminder>\n")
-		agentsContent.WriteString("Self-improvement learnings from previous sessions:\n\n")
-
+		bundledContent.WriteString("<system-reminder>\n")
+		bundledContent.WriteString("Self-improvement learnings from previous sessions:\n\n")
 		for _, entry := range bundle.AgentsMD {
-			agentsContent.WriteString(fmt.Sprintf("## From %s (%s)\n\n", entry.Path, entry.Level))
-			agentsContent.WriteString(entry.Content)
-			agentsContent.WriteString("\n\n")
+			bundledContent.WriteString(fmt.Sprintf("## From %s (%s)\n\n", entry.Path, entry.Level))
+			bundledContent.WriteString(entry.Content)
+			bundledContent.WriteString("\n\n")
 		}
-
-		agentsContent.WriteString("</system-reminder>")
-
-		blocks = append(blocks, types.SystemBlock{
-			Type: "text",
-			Text: agentsContent.String(),
-			CacheControl: &types.CacheControl{
-				Type: "ephemeral",
-			},
-		})
+		bundledContent.WriteString("</system-reminder>\n\n")
+		hasContent = true
 	}
 
-	// 5. Rules wrapped in <system-reminder> tags (cached - rarely changes)
+	// Rules
 	if len(bundle.Rules) > 0 {
-		var rulesContent strings.Builder
-		rulesContent.WriteString("<system-reminder>\n")
-		rulesContent.WriteString("Additional rules and guidelines:\n\n")
-
+		bundledContent.WriteString("<system-reminder>\n")
+		bundledContent.WriteString("Additional rules and guidelines:\n\n")
 		for _, rule := range bundle.Rules {
-			rulesContent.WriteString(fmt.Sprintf("## Rule: %s\n\n", rule.Path))
-			rulesContent.WriteString(rule.Content)
-			rulesContent.WriteString("\n\n")
+			bundledContent.WriteString(fmt.Sprintf("## Rule: %s\n\n", rule.Path))
+			bundledContent.WriteString(rule.Content)
+			bundledContent.WriteString("\n\n")
 		}
-
-		rulesContent.WriteString("</system-reminder>")
-
-		blocks = append(blocks, types.SystemBlock{
-			Type: "text",
-			Text: rulesContent.String(),
-			CacheControl: &types.CacheControl{
-				Type: "ephemeral",
-			},
-		})
+		bundledContent.WriteString("</system-reminder>\n\n")
+		hasContent = true
 	}
 
-	// 6. Skill descriptions (cached - rarely changes)
+	// Skills
 	if len(bundle.SkillDescriptions) > 0 {
-		var skillsContent strings.Builder
-		skillsContent.WriteString("Available Skills:\n\n")
-
+		bundledContent.WriteString("Available Skills:\n\n")
 		for _, skill := range bundle.SkillDescriptions {
 			invocable := "system-only"
 			if skill.IsUserInvocable {
 				invocable = "user-invocable"
 			}
-			skillsContent.WriteString(fmt.Sprintf("- **%s** (%s): %s\n", skill.Name, invocable, skill.Description))
+			bundledContent.WriteString(fmt.Sprintf("- **%s** (%s): %s\n", skill.Name, invocable, skill.Description))
 		}
-
-		blocks = append(blocks, types.SystemBlock{
-			Type: "text",
-			Text: skillsContent.String(),
-			CacheControl: &types.CacheControl{
-				Type: "ephemeral",
-			},
-		})
+		bundledContent.WriteString("\n")
+		hasContent = true
 	}
 
-	// 7. Agent descriptions (cached - rarely changes)
+	// Agent definitions
 	if len(bundle.AgentDefinitions) > 0 {
-		var agentsContent strings.Builder
-		agentsContent.WriteString("Available Agents:\n\n")
-
+		bundledContent.WriteString("Available Agents:\n\n")
 		for name, agent := range bundle.AgentDefinitions {
-			agentsContent.WriteString(fmt.Sprintf("- **%s**: %s\n", name, agent.Description))
+			bundledContent.WriteString(fmt.Sprintf("- **%s**: %s\n", name, agent.Description))
 			if agent.Model != "" {
-				agentsContent.WriteString(fmt.Sprintf("  Model: %s\n", agent.Model))
+				bundledContent.WriteString(fmt.Sprintf("  Model: %s\n", agent.Model))
 			}
 			if len(agent.Tools) > 0 {
-				agentsContent.WriteString(fmt.Sprintf("  Tools: %s\n", strings.Join(agent.Tools, ", ")))
+				bundledContent.WriteString(fmt.Sprintf("  Tools: %s\n", strings.Join(agent.Tools, ", ")))
 			}
 			if agent.MaxTurns > 0 {
-				agentsContent.WriteString(fmt.Sprintf("  Max turns: %d\n", agent.MaxTurns))
+				bundledContent.WriteString(fmt.Sprintf("  Max turns: %d\n", agent.MaxTurns))
 			}
 		}
+		hasContent = true
+	}
 
+	// Add bundled block with cache control if we have any content
+	if hasContent {
 		blocks = append(blocks, types.SystemBlock{
 			Type: "text",
-			Text: agentsContent.String(),
+			Text: strings.TrimSpace(bundledContent.String()),
 			CacheControl: &types.CacheControl{
 				Type: "ephemeral",
 			},
