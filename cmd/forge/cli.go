@@ -64,9 +64,10 @@ type model struct {
 	autoScroll      bool // auto-scroll to bottom on new content
 
 	// Cost tracking
-	totalUsage  types.TokenUsage // session total usage
-	modelName   string           // model name for cost calculation
-	costTracker *cost.Tracker    // persistent cost tracker
+	totalUsage   types.TokenUsage // session total usage
+	lastTracked  types.TokenUsage // last tracked usage (for delta calculation)
+	modelName    string           // model name for cost calculation
+	costTracker  *cost.Tracker    // persistent cost tracker
 }
 
 type serverEvent types.OutboundEvent
@@ -506,20 +507,36 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 			m.modelName = event.Model
 		}
 
-		// Track cost persistently
+		// Track cost persistently (only the delta since last track)
 		if m.costTracker != nil && event.Usage != nil && event.Model != "" {
-			callCost := cost.Calculate(event.Model, *event.Usage)
-			if err := m.costTracker.Track(
-				m.sessionID,
-				event.Model,
-				event.Usage.InputTokens,
-				event.Usage.OutputTokens,
-				event.Usage.CacheCreationTokens,
-				event.Usage.CacheReadTokens,
-				callCost,
-			); err != nil {
-				// Don't fail the session, just log
-				m.output = append(m.output, dimStyle.Render("  ⚠  cost tracking error: "+err.Error()))
+			// Calculate delta from last tracked usage
+			deltaUsage := types.TokenUsage{
+				InputTokens:         event.Usage.InputTokens - m.lastTracked.InputTokens,
+				OutputTokens:        event.Usage.OutputTokens - m.lastTracked.OutputTokens,
+				CacheCreationTokens: event.Usage.CacheCreationTokens - m.lastTracked.CacheCreationTokens,
+				CacheReadTokens:     event.Usage.CacheReadTokens - m.lastTracked.CacheReadTokens,
+			}
+
+			// Only track if there's a non-zero delta
+			if deltaUsage.InputTokens > 0 || deltaUsage.OutputTokens > 0 ||
+				deltaUsage.CacheCreationTokens > 0 || deltaUsage.CacheReadTokens > 0 {
+				
+				callCost := cost.Calculate(event.Model, deltaUsage)
+				if err := m.costTracker.Track(
+					m.sessionID,
+					event.Model,
+					deltaUsage.InputTokens,
+					deltaUsage.OutputTokens,
+					deltaUsage.CacheCreationTokens,
+					deltaUsage.CacheReadTokens,
+					callCost,
+				); err != nil {
+					// Don't fail the session, just log
+					m.output = append(m.output, dimStyle.Render("  ⚠  cost tracking error: "+err.Error()))
+				}
+
+				// Update lastTracked to current usage
+				m.lastTracked = *event.Usage
 			}
 		}
 
@@ -653,23 +670,29 @@ func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool
 	}
 }
 
-// spawnLocalAgent starts a forge-agent process and returns (sessionID, serverURL, cleanup, error).
+// spawnLocalAgent starts a forge agent subprocess and returns (sessionID, serverURL, cleanup, error).
 // The agent runs on a random port and auto-terminates when cleanup is called.
 func spawnLocalAgent(cwd string) (string, string, func(), error) {
-	// Find forge-agent binary (prefer same dir as CLI, fallback to PATH)
-	agentBin := "forge-agent"
+	// Find forge binary (prefer same dir as CLI, fallback to PATH)
+	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "forge-agent")
-		if _, err := os.Stat(candidate); err == nil {
-			agentBin = candidate
+		// If we're already the forge binary, use ourselves
+		if filepath.Base(exe) == "forge" || strings.HasPrefix(filepath.Base(exe), "forge.") {
+			forgeBin = exe
+		} else {
+			// Look for forge in same directory
+			candidate := filepath.Join(filepath.Dir(exe), "forge")
+			if _, err := os.Stat(candidate); err == nil {
+				forgeBin = candidate
+			}
 		}
 	}
 
 	// Generate session ID
 	sessionID := "cli-" + time.Now().Format("20060102-150405")
 
-	// Spawn agent on random port (0 = OS picks)
-	cmd := exec.Command(agentBin,
+	// Spawn agent subcommand on random port (0 = OS picks)
+	cmd := exec.Command(forgeBin, "agent",
 		"--port", "0",
 		"--cwd", cwd,
 		"--session-id", sessionID,

@@ -31,7 +31,7 @@ func main() {
 	host := envStr("GATEWAY_HOST", "0.0.0.0")
 	workspaceDir := envStr("WORKSPACE_DIR", "/tmp/forge/workspace")
 	sessionsDir := envStr("SESSIONS_DIR", "/tmp/forge/sessions")
-	agentBin := envStr("AGENT_BIN", "forge-agent")
+	forgeBin := envStr("FORGE_BIN", "forge")
 
 	// Handle daemon mode by re-executing in background
 	if *daemon && os.Getenv("FORGE_DAEMON_CHILD") != "1" {
@@ -64,7 +64,7 @@ func main() {
 	}
 
 	serverID := uuid.New().String()[:8]
-	be := backend.NewTmux(agentBin, serverID, workspaceDir)
+	be := backend.NewTmux(forgeBin, serverID, workspaceDir)
 
 	// Clean up agent sessions on shutdown.
 	sigCh := make(chan os.Signal, 1)
@@ -83,7 +83,7 @@ func main() {
 	log.Printf("  server id: %s", serverID)
 	log.Printf("  workspace: %s", workspaceDir)
 	log.Printf("  sessions:  %s", sessionsDir)
-	log.Printf("  agent bin: %s", agentBin)
+	log.Printf("  forge bin: %s", forgeBin)
 
 	cfg := gateway.Config{
 		Port:         port,

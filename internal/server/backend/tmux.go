@@ -16,7 +16,7 @@ import (
 type TmuxBackend struct {
 	mu              sync.Mutex
 	agents          map[string]*agentInfo // sessionID -> info
-	agentBin        string                // absolute path to forge-agent binary
+	forgeBin        string                // absolute path to forge binary
 	tmuxSessionName string                // unique tmux session name per server
 	sessionReady    bool                  // whether the tmux session has been created
 	worktreeMgr     *WorktreeManager      // manages git worktrees for session isolation
@@ -33,15 +33,15 @@ type agentInfo struct {
 // don't collide.
 // baseWorkspace is the default workspace directory; if it's in a git repo,
 // sessions will use git worktrees for isolation.
-func NewTmux(agentBin string, serverID string, baseWorkspace string) *TmuxBackend {
+func NewTmux(forgeBin string, serverID string, baseWorkspace string) *TmuxBackend {
 	// Resolve to absolute path so tmux sessions can find it.
-	if abs, err := filepath.Abs(agentBin); err == nil {
-		agentBin = abs
+	if abs, err := filepath.Abs(forgeBin); err == nil {
+		forgeBin = abs
 	}
 	// If it's a bare name (no slashes), try to find it on PATH.
-	if filepath.Base(agentBin) == agentBin {
-		if resolved, err := exec.LookPath(agentBin); err == nil {
-			agentBin = resolved
+	if filepath.Base(forgeBin) == forgeBin {
+		if resolved, err := exec.LookPath(forgeBin); err == nil {
+			forgeBin = resolved
 		}
 	}
 
@@ -50,7 +50,7 @@ func NewTmux(agentBin string, serverID string, baseWorkspace string) *TmuxBacken
 
 	return &TmuxBackend{
 		agents:          make(map[string]*agentInfo),
-		agentBin:        agentBin,
+		forgeBin:        forgeBin,
 		tmuxSessionName: "forge-" + serverID,
 		worktreeMgr:     worktreeMgr,
 	}
@@ -121,9 +121,9 @@ func (b *TmuxBackend) EnsureAgent(ctx context.Context, sessionID string, opts Ag
 
 	wName := windowName(sessionID)
 
-	// Build the agent command. Quote paths to handle spaces.
-	command := fmt.Sprintf("%q --port %d --cwd %q --session-id %s --sessions-dir %q",
-		b.agentBin, port, cwd, sessionID, opts.SessionsDir)
+	// Build the agent command. Use 'forge agent' subcommand. Quote paths to handle spaces.
+	command := fmt.Sprintf("%q agent --port %d --cwd %q --session-id %s --sessions-dir %q",
+		b.forgeBin, port, cwd, sessionID, opts.SessionsDir)
 
 	// Create a new window inside the shared tmux session.
 	cmd := exec.CommandContext(ctx, "tmux", "new-window",

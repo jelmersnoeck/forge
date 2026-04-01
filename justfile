@@ -21,7 +21,7 @@ build-server:
 build-cli:
   go build -o forge-cli ./cmd/cli
 
-# Build agent binary (legacy - still needed by server backend)
+# Build agent binary (legacy - deprecated, use 'forge agent' instead)
 build-agent:
   go build -o forge-agent ./cmd/agent
 
@@ -39,11 +39,11 @@ dev: build
   ./forge
 
 # Build and run server (unified binary)
-dev-server: build build-agent
+dev-server: build
   ./forge server
 
 # Build and run server in daemon mode (unified binary)
-dev-server-daemon: build build-agent
+dev-server-daemon: build
   ./forge server -daemon
 
 # Stop daemon server
