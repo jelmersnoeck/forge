@@ -61,6 +61,7 @@ func (r *Registry) All() []types.ToolDefinition {
 }
 
 // Schemas returns schemas for all registered tools.
+// Tool schemas are marked with 1h cache control since they rarely change.
 func (r *Registry) Schemas() []types.ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -70,6 +71,10 @@ func (r *Registry) Schemas() []types.ToolSchema {
 			Name:        def.Name,
 			Description: def.Description,
 			InputSchema: def.InputSchema,
+			CacheControl: &types.CacheControl{
+				Type: "ephemeral",
+				TTL:  "1h",
+			},
 		})
 	}
 	return schemas

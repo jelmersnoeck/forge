@@ -73,6 +73,13 @@ func TestRegistry(t *testing.T) {
 				}
 				r.True(names["greendale_tool"])
 				r.True(names["chang_tool"])
+
+				// All schemas should have cache control with 1h TTL
+				for _, schema := range schemas {
+					r.NotNil(schema.CacheControl, "tool %s missing cache control", schema.Name)
+					r.Equal("ephemeral", schema.CacheControl.Type, "tool %s wrong cache type", schema.Name)
+					r.Equal("1h", schema.CacheControl.TTL, "tool %s wrong TTL", schema.Name)
+				}
 			},
 		},
 		"execute tool": {

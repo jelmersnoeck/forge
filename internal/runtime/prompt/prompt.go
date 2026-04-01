@@ -163,6 +163,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 			Text: strings.TrimSpace(bundledContent.String()),
 			CacheControl: &types.CacheControl{
 				Type: "ephemeral",
+				TTL:  "1h",
 			},
 		})
 	}
