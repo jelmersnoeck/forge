@@ -157,6 +157,45 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 
 ---
 
+### 5. Add Automatic Worktree Isolation
+
+**File:** `cmd/agent/main.go`
+
+**Added worktree setup:**
+```go
+// Setup git worktree isolation unless explicitly disabled
+worktreePath := absCwd
+var worktreeMgr *backend.WorktreeManager
+
+if !*noWorktree {
+    worktreeDir := filepath.Join(filepath.Dir(absCwd), "forge-worktrees")
+    worktreeMgr = backend.NewWorktreeManager(absCwd, worktreeDir)
+    
+    isolatedPath, err := worktreeMgr.EnsureWorktree(*sessionID)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "fatal: create worktree: %v\n", err)
+        os.Exit(1)
+    }
+    worktreePath = isolatedPath
+    
+    // Register cleanup on exit
+    defer func() {
+        if err := worktreeMgr.RemoveWorktree(*sessionID); err != nil {
+            fmt.Fprintf(os.Stderr, "warning: cleanup worktree: %v\n", err)
+        }
+    }()
+}
+```
+
+**Impact:** 
+- Standalone agents now use worktrees automatically (same as server mode)
+- Each session isolated in `../forge-worktrees/{session-id}/`
+- Prevents sessions from interfering with each other
+- Automatic cleanup on agent exit
+- Can be disabled with `--no-worktree` flag if needed
+
+---
+
 ## Testing
 
 Run the test script:
@@ -327,11 +366,12 @@ See `docs/token-optimization-implementation.md` for full Phase 2 & 3 guides.
 - `internal/runtime/prompt/prompt.go` - Enabled 1h TTL on CLAUDE.md
 - `internal/runtime/provider/anthropic.go` - Map TTL to SDK
 - `internal/runtime/loop/loop.go` - Add cache break detection
+- `cmd/agent/main.go` - Add automatic worktree isolation
 - `test-caching.sh` - Test script (new)
 - `docs/IMPLEMENTATION-SUMMARY.md` - This file (new)
 
 ---
 
-**Implementation Time:** ~30 minutes
+**Implementation Time:** ~45 minutes
 **Expected Savings:** 50-80% token cost reduction
 **Status:** ✅ Ready to test

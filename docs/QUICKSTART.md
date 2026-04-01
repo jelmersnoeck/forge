@@ -49,7 +49,7 @@ just build-agent
 ./test-caching.sh
 
 # Or manually:
-./forge-agent --port 8080 &
+./forge-agent --port 8080 --session-id my-session &
 
 # First message - creates cache
 curl -X POST http://localhost:8080/messages \
@@ -60,6 +60,15 @@ curl -X POST http://localhost:8080/messages \
 curl -X POST http://localhost:8080/messages \
   -d '{"sessionId":"test","text":"What files are here?"}'
 # Look for: cache_read_tokens > 0 (not cache_creation!)
+```
+
+**Note:** The agent automatically creates a git worktree for isolation. Each session
+runs in its own worktree at `../forge-worktrees/{session-id}`. This prevents sessions
+from interfering with each other and matches the behavior of server mode.
+
+To disable worktree isolation (not recommended):
+```bash
+./forge-agent --port 8080 --session-id my-session --no-worktree
 ```
 
 ---

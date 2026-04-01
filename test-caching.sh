@@ -8,7 +8,7 @@ just build-agent
 
 echo ""
 echo "=== Starting agent ==="
-./forge-agent --port 8080 &
+./forge-agent --port 8080 --session-id test-cache-session &
 AGENT_PID=$!
 
 # Wait for agent to start
@@ -43,9 +43,14 @@ echo ""
 echo "=== Stopping agent ==="
 kill $AGENT_PID 2>/dev/null || true
 
+# Wait for agent to cleanup worktree
+sleep 1
+
 echo ""
 echo "=== Test complete! ==="
 echo "Look for:"
 echo "  - cache_creation_tokens > 0 on first call"
 echo "  - cache_read_tokens > 0 on subsequent calls"
 echo "  - NO 'CACHE BREAK' warnings (unless system changed)"
+echo ""
+echo "Note: Agent automatically created a git worktree for isolation"
