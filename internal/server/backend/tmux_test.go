@@ -18,17 +18,22 @@ func TestTmuxBackend_Integration(t *testing.T) {
 		t.Skip("tmux not found on PATH, skipping integration test")
 	}
 
-	// Skip if the agent binary isn't built.
-	agentBin := "./forge-agent"
-	if _, err := exec.LookPath(agentBin); err != nil {
-		t.Skip("forge-agent binary not found, skipping integration test")
+	// Skip if the forge binary isn't built.
+	forgeBin := "./forge"
+	if _, err := os.Stat(forgeBin); err != nil {
+		// Try to find it on PATH
+		if resolved, err := exec.LookPath("forge"); err != nil {
+			t.Skip("forge binary not found, skipping integration test")
+		} else {
+			forgeBin = resolved
+		}
 	}
 
 	r := require.New(t)
 	ctx := context.Background()
 
 	workspace := t.TempDir()
-	b := NewTmux(agentBin, "test", workspace)
+	b := NewTmux(forgeBin, "test", workspace)
 	defer b.Close()
 
 	// Troy Barnes' enrollment session at Greendale Community College.
@@ -86,10 +91,15 @@ func TestTmuxBackend_WithGitWorktrees(t *testing.T) {
 		t.Skip("git not found on PATH, skipping integration test")
 	}
 
-	// Skip if the agent binary isn't built.
-	agentBin := "./forge-agent"
-	if _, err := exec.LookPath(agentBin); err != nil {
-		t.Skip("forge-agent binary not found, skipping integration test")
+	// Skip if the forge binary isn't built.
+	forgeBin := "./forge"
+	if _, err := os.Stat(forgeBin); err != nil {
+		// Try to find it on PATH
+		if resolved, err := exec.LookPath("forge"); err != nil {
+			t.Skip("forge binary not found, skipping integration test")
+		} else {
+			forgeBin = resolved
+		}
 	}
 
 	r := require.New(t)
@@ -111,7 +121,7 @@ func TestTmuxBackend_WithGitWorktrees(t *testing.T) {
 	cmd.Dir = workspace
 	r.NoError(cmd.Run())
 
-	b := NewTmux(agentBin, "test-git", workspace)
+	b := NewTmux(forgeBin, "test-git", workspace)
 	defer b.Close()
 
 	r.True(b.worktreeMgr.enabled, "worktree manager should be enabled")

@@ -4,16 +4,14 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 
 ## Architecture
 
-Forge uses a flexible 2-mode architecture with a unified CLI:
+Forge uses a unified binary architecture with subcommands:
 
 - **Unified Binary** (`cmd/forge/`) — single entry point with subcommands:
-  - **`forge` (default)** — interactive REPL with two modes:
-    - **Interactive mode (default):** spawns local agent, talks directly via HTTP
-    - **Server mode (`--server`):** connects to gateway server via HTTP for persistent sessions
-  - **`forge agent`** — run agent server (spawned by server backend or standalone)
-  - **`forge server`** — session management, spawns agents in backends (tmux), forwards messages, relays events
+  - **`forge` (default)** — interactive REPL (spawns agent subprocess)
+  - **`forge agent`** — run agent server (spawned by interactive mode or server mode)
+  - **`forge server`** — session management gateway (spawns agents via `forge agent`)
   - **`forge stats`** — cost analytics (daily/monthly/session breakdowns)
-- **Legacy binaries** (`cmd/{cli,agent,server}/`) — still exist for backward compatibility, but unified binary is preferred
+- **Legacy binaries** (`cmd/{cli,agent,server}/`) — deprecated, for backward compatibility only
 
 ## Cost Tracking
 
@@ -64,7 +62,6 @@ Go module: `github.com/jelmersnoeck/forge`
 ```bash
 just build              # build unified forge binary
 just build-all          # build forge + legacy binaries
-just build-agent        # build agent binary only (needed by server backend)
 just dev                # build + run interactive CLI
 just dev-server         # build + run server (foreground)
 just dev-server-daemon  # build + run server daemon
@@ -113,23 +110,22 @@ forge stats --sessions         # per-session breakdown
 ## How it works
 
 ### Interactive Mode (default)
-1. CLI spawns agent as background process (`forge-agent --port 0`)
+1. CLI spawns agent as subprocess: `forge agent --port 0`
 2. Agent emits `{"port": 12345}` to stdout
 3. CLI parses port, connects directly via HTTP
 4. CLI sends messages to agent's `/messages` endpoint
 5. CLI subscribes to agent's `/events` SSE stream
 6. Agent runs ConversationLoop, executes tools, talks to Anthropic
-7. On CLI exit, agent process is killed (ephemeral session)
+7. On CLI exit, agent subprocess is terminated (ephemeral session)
 
 ### Server Mode (persistent)
-1. CLI sends HTTP requests to the server (`--server` flag)
+1. CLI sends HTTP requests to the gateway server (`--server` flag)
 2. Server creates sessions and manages metadata via an in-memory bus
-3. On first message, server spawns an agent in a tmux session via the backend
+3. On first message, server spawns agent in tmux: `forge agent --port X`
 4. Server forwards messages to the agent's HTTP API
 5. Server relays agent SSE events back to CLI subscribers via the bus
-6. Agent runs a ConversationLoop that drives the Anthropic Messages API
-7. Agent executes tools natively (file ops, exec, ripgrep)
-8. Sessions persist as JSONL for resume
+6. Agent runs ConversationLoop, executes tools, talks to Anthropic
+7. Sessions persist as JSONL for resume
 
 ## Key files
 
@@ -215,7 +211,7 @@ POST   /interrupt                     interrupt current work
 - `GATEWAY_HOST` — server listen host (default: 0.0.0.0)
 - `WORKSPACE_DIR` — default working directory (default: /tmp/forge/workspace)
 - `SESSIONS_DIR` — JSONL session storage (default: /tmp/forge/sessions)
-- `AGENT_BIN` — path to forge-agent binary (default: forge-agent)
+- `FORGE_BIN` — path to forge binary (default: forge)
 
 ## Gotchas
 
@@ -223,12 +219,12 @@ POST   /interrupt                     interrupt current work
   Anthropic API doesn't understand. Agent filters these — only values
   starting with `claude-` are passed through.
 - Server loads `.env` from project root at startup (custom loader in
-  `cmd/server/main.go`). Explicit env vars take precedence.
+  `cmd/forge/server.go`). Explicit env vars take precedence.
 - Anthropic API requires `tool_result` blocks immediately after `tool_use` in
   the message history. The ConversationLoop persists these to session JSONL so
   resume reconstructs valid history.
-- The server no longer needs `ANTHROPIC_API_KEY` — the agent handles all LLM
-  communication. The key must be set in the environment where agents run.
+- The server spawns agents using the unified `forge agent` subcommand. The
+  binary path can be customized via `FORGE_BIN` env var.
 
 ## Test data
 
