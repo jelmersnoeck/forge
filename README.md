@@ -13,21 +13,43 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 
 ## Quick Start
 
+### Interactive Mode (Default)
+
+The simplest way to use Forge — everything runs locally in a single command:
+
 ```bash
-# Install dependencies
-go mod download
+# Set your API key
+export ANTHROPIC_API_KEY=sk-...
 
-# Start the server
-just dev-server
-
-# In another terminal, start the CLI
+# Run interactive CLI (spawns agent automatically)
 just dev-cli
 
 # Or build and run manually
 just build
-./forge-server &
 ./forge-cli
 ```
+
+The CLI automatically spawns a background agent process and connects directly to it. Sessions are ephemeral (no persistence between runs).
+
+### Server Mode (Multi-Session)
+
+For persistent sessions and multi-user deployments:
+
+```bash
+# Terminal 1: Start the server
+just dev-server
+
+# Terminal 2: Connect CLI to server
+./forge-cli --server http://localhost:3000
+
+# Resume a session later
+./forge-cli --server http://localhost:3000 --resume <session-id>
+```
+
+Server mode gives you:
+- Session persistence (resume anytime)
+- Multiple concurrent sessions
+- Remote server support
 
 ## CLI Usage
 
@@ -63,12 +85,25 @@ The Forge CLI is a full-screen TUI (Terminal User Interface):
 
 - **Enter** - Queue/send message
 - **Backspace** - Delete character
-- **Ctrl+C** - Exit (shows resume command)
+- **Ctrl+C** (once) - Interrupt running work
+- **Ctrl+C** (twice) - Exit CLI
+- **Up/Down or Mouse Wheel** - Scroll output
 
-### Resume a Session
+### CLI Modes
 
+#### Interactive Mode (Default)
 ```bash
-forge-cli --resume <session-id>
+./forge-cli
+# Spawns local agent, ephemeral session
+```
+
+#### Server Mode (Persistent Sessions)
+```bash
+./forge-cli --server http://localhost:3000
+# Connect to remote server, persistent sessions
+
+./forge-cli --server http://localhost:3000 --resume <session-id>
+# Resume a previous session
 ```
 
 ## Agent Queue System
@@ -118,8 +153,20 @@ Claude uses these tools automatically based on natural language:
 
 ## Architecture
 
-Forge uses a 3-tier architecture:
+Forge supports two deployment modes:
 
+### Interactive Mode (Local)
+```
+┌──────────┐
+│   CLI    │ ──spawns──→ ┌──────────┐
+│  (TUI)   │ ←──HTTP──── │  Agent   │
+└──────────┘             │ (process)│
+                         └──────────┘
+```
+
+CLI spawns agent as background process, connects directly via HTTP. Ephemeral sessions.
+
+### Server Mode (Gateway)
 ```
 ┌──────────┐         ┌──────────┐         ┌──────────┐
 │   CLI    │ ──HTTP─→│  Server  │ ──HTTP─→│  Agent   │
@@ -127,9 +174,7 @@ Forge uses a 3-tier architecture:
 └──────────┘         └──────────┘         └──────────┘
 ```
 
-- **CLI** - Interactive TUI, queues messages, displays events
-- **Server** - Session management, spawns agents, forwards messages
-- **Agent** - Conversation loop, tool execution, LLM interaction
+Server manages multiple sessions, spawns agents in tmux, persists history.
 
 ## Project Structure
 
@@ -191,22 +236,19 @@ GET    /events                        SSE event stream
 ## Environment Variables
 
 ```bash
-# Server
+# Required (for agent)
+ANTHROPIC_API_KEY=sk-...    # Anthropic API key
+
+# Server Mode Only
 GATEWAY_PORT=3000           # Server listen port
 GATEWAY_HOST=0.0.0.0        # Server listen host
 WORKSPACE_DIR=/tmp/forge/workspace  # Working directory
 SESSIONS_DIR=/tmp/forge/sessions    # Session storage
 AGENT_BIN=forge-agent       # Agent binary path
 
-# Agent (required)
-ANTHROPIC_API_KEY=sk-...    # Anthropic API key
-
-# Web Search (optional)
-SEARCH_PROVIDER=duckduckgo  # Search provider: "duckduckgo" or "brave"
+# Optional Features
+SEARCH_PROVIDER=duckduckgo  # Web search: "duckduckgo" or "brave"
 BRAVE_API_KEY=your_key      # Required if using Brave Search
-
-# CLI
-FORGE_URL=http://localhost:3000  # Server URL
 ```
 
 ## Development
@@ -254,9 +296,9 @@ The agent loads context from `CLAUDE.md` files:
 
 ## Examples
 
-### Example 1: Rapid Task Queuing
+### Example 1: Rapid Task Queuing (Interactive Mode)
 ```bash
-forge-cli
+./forge-cli
 
 > Create user authentication module
 > Add tests for auth
@@ -353,4 +395,4 @@ This is a personal project, but issues and PRs are welcome.
 
 ---
 
-**Tip:** Start with `just dev-server` in one terminal and `just dev-cli` in another for the best development experience.
+**Quick Start:** Run `./forge-cli` for instant local development, or `just dev-server` + `./forge-cli --server http://localhost:3000` for persistent sessions.

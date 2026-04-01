@@ -4,11 +4,13 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 
 ## Architecture
 
-Forge uses a 3-tier architecture:
+Forge uses a flexible 2-mode architecture:
 
-- **CLI** (`cmd/cli/`) — interactive REPL, talks to the server via HTTP
-- **Server** (`cmd/server/`) — session management, spawns agents in backends (tmux), forwards messages, relays events. Does NOT talk to Anthropic or run tools.
-- **Agent** (`cmd/agent/`) — runs inside a backend target (e.g. tmux session). Has its own HTTP server. Runs the conversation loop, tools, talks to Anthropic. Long-lived per session.
+- **CLI** (`cmd/cli/`) — interactive REPL with two modes:
+  - **Interactive mode (default):** spawns local agent, talks directly via HTTP
+  - **Server mode:** connects to gateway server via HTTP for persistent sessions
+- **Server** (`cmd/server/`) — session management, spawns agents in backends (tmux), forwards messages, relays events. Optional for multi-session deployments.
+- **Agent** (`cmd/agent/`) — runs inside a backend target (e.g. tmux session) or as local process. Has its own HTTP server. Runs the conversation loop, tools, talks to Anthropic. Long-lived per session.
 
 ## Repository layout
 
@@ -44,7 +46,7 @@ just dev-server         # build agent + server, run server (foreground)
 just dev-server-daemon  # build agent + server, run in daemon mode
 just stop-server        # stop daemon server
 just tail-server        # tail daemon server logs
-just dev-cli            # build + run CLI
+just dev-cli            # build + run CLI (interactive mode)
 just test               # go test ./...
 just vet                # go vet ./...
 just up                 # docker compose up --build -d
@@ -55,11 +57,21 @@ just clean              # remove binaries
 
 ## Running
 
+### Interactive mode (default)
+```bash
+export ANTHROPIC_API_KEY=sk-...
+./forge-cli   # spawns local agent, ephemeral session
+```
+
+### Server mode (persistent sessions)
 ```bash
 cp .env.example .env        # set ANTHROPIC_API_KEY
 just dev-server             # local dev foreground (reads .env, builds agent first)
 just dev-server-daemon      # local dev daemon mode
-just dev-cli                # interactive CLI (needs server running)
+
+# In another terminal
+./forge-cli --server http://localhost:3000
+./forge-cli --server http://localhost:3000 --resume <session-id>
 
 # Manual daemon control:
 ./forge-server -daemon                           # default: /tmp/forge/sessions/forge.{pid,log}
@@ -69,7 +81,17 @@ kill $(cat /tmp/forge/sessions/forge.pid)        # stop
 
 ## How it works
 
-1. CLI sends HTTP requests to the server
+### Interactive Mode (default)
+1. CLI spawns agent as background process (`forge-agent --port 0`)
+2. Agent emits `{"port": 12345}` to stdout
+3. CLI parses port, connects directly via HTTP
+4. CLI sends messages to agent's `/messages` endpoint
+5. CLI subscribes to agent's `/events` SSE stream
+6. Agent runs ConversationLoop, executes tools, talks to Anthropic
+7. On CLI exit, agent process is killed (ephemeral session)
+
+### Server Mode (persistent)
+1. CLI sends HTTP requests to the server (`--server` flag)
 2. Server creates sessions and manages metadata via an in-memory bus
 3. On first message, server spawns an agent in a tmux session via the backend
 4. Server forwards messages to the agent's HTTP API
@@ -97,7 +119,7 @@ kill $(cat /tmp/forge/sessions/forge.pid)        # stop
 
 ## API endpoints
 
-### Server (gateway)
+### Server (gateway) — server mode only
 
 ```
 POST   /sessions                      create session (accepts metadata)
@@ -106,12 +128,13 @@ POST   /sessions/{sessionId}/messages send message (forwards to agent)
 GET    /sessions/{sessionId}/events   SSE stream of OutboundEvents (relayed from agent)
 ```
 
-### Agent (per-session)
+### Agent (per-session) — both modes
 
 ```
 GET    /health                        health check
-POST   /messages                      receive message from server
+POST   /messages                      receive message (from CLI or server)
 GET    /events                        SSE stream of OutboundEvents
+POST   /interrupt                     interrupt current work
 ```
 
 ## Testing
