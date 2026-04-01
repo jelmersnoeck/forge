@@ -419,8 +419,15 @@ func TestLoop_UsageTracking(t *testing.T) {
 	}
 
 	r.GreaterOrEqual(len(usageEvents), 1)
-	// Session totals should be accumulated.
-	r.Contains(usageEvents[len(usageEvents)-1].Content, "session total")
+	// Usage should include token data across events
+	var totalInput, totalOutput int
+	for _, e := range usageEvents {
+		r.NotNil(e.Usage)
+		totalInput += e.Usage.InputTokens
+		totalOutput += e.Usage.OutputTokens
+	}
+	r.Greater(totalInput, 0)
+	r.Greater(totalOutput, 0)
 }
 
 func TestLoop_RetryOnTransientError(t *testing.T) {

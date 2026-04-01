@@ -25,12 +25,14 @@ type InboundMessage struct {
 // "compact", "retry", "usage", "queued_task_result", "queued_task_error",
 // "queue_immediate", "queue_on_complete".
 type OutboundEvent struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId"`
-	Type      string `json:"type"`
-	Content   string `json:"content,omitempty"`
-	ToolName  string `json:"toolName,omitempty"`
-	Timestamp int64  `json:"timestamp"`
+	ID        string      `json:"id"`
+	SessionID string      `json:"sessionId"`
+	Type      string      `json:"type"`
+	Content   string      `json:"content,omitempty"`
+	ToolName  string      `json:"toolName,omitempty"`
+	Timestamp int64       `json:"timestamp"`
+	Usage     *TokenUsage `json:"usage,omitempty"` // for "usage" events
+	Model     string      `json:"model,omitempty"` // for "usage" events
 }
 
 // SessionMeta is stored per conversation session.
@@ -97,8 +99,10 @@ type ChatDelta struct {
 
 // TokenUsage tracks token consumption for a single LLM call.
 type TokenUsage struct {
-	InputTokens  int `json:"inputTokens"`
-	OutputTokens int `json:"outputTokens"`
+	InputTokens         int `json:"inputTokens"`
+	OutputTokens        int `json:"outputTokens"`
+	CacheCreationTokens int `json:"cacheCreationTokens,omitempty"`
+	CacheReadTokens     int `json:"cacheReadTokens,omitempty"`
 }
 
 // LLMProvider abstracts the LLM API.
@@ -179,6 +183,7 @@ type AuditLogger interface {
 // ContextBundle holds all discovered project context.
 type ContextBundle struct {
 	ClaudeMD          []ClaudeMDEntry
+	AgentsMD          []AgentsMDEntry
 	Rules             []RuleEntry
 	SkillDescriptions []SkillDescription
 	AgentDefinitions  map[string]AgentDefinition
@@ -187,6 +192,13 @@ type ContextBundle struct {
 
 // ClaudeMDEntry is a single CLAUDE.md file.
 type ClaudeMDEntry struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Level   string `json:"level"` // "user", "project", "local", "parent"
+}
+
+// AgentsMDEntry is a single AGENTS.md file for self-improvement learnings.
+type AgentsMDEntry struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
 	Level   string `json:"level"` // "user", "project", "local", "parent"
@@ -235,10 +247,19 @@ type PermissionConfig struct {
 
 // SessionMessage is a single entry in the session JSONL.
 type SessionMessage struct {
-	UUID       string `json:"uuid"`
-	ParentUUID string `json:"parentUuid,omitempty"`
-	SessionID  string `json:"sessionId"`
-	Type       string `json:"type"` // "user", "assistant", "system"
-	Message    any    `json:"message"`
-	Timestamp  int64  `json:"timestamp"`
+	UUID       string             `json:"uuid"`
+	ParentUUID string             `json:"parentUuid,omitempty"`
+	SessionID  string             `json:"sessionId"`
+	Type       string             `json:"type"` // "user", "assistant", "system", "reflection"
+	Message    any                `json:"message"`
+	Timestamp  int64              `json:"timestamp"`
+	Reflection *SessionReflection `json:"reflection,omitempty"` // Metadata for self-improvement
+}
+
+// SessionReflection tracks learnings from a session for self-improvement.
+type SessionReflection struct {
+	Summary     string   `json:"summary"`     // Brief summary of what was accomplished
+	Mistakes    []string `json:"mistakes"`    // Things that went wrong or could be better
+	Successes   []string `json:"successes"`   // Patterns that worked well
+	Suggestions []string `json:"suggestions"` // Ideas for future improvement
 }

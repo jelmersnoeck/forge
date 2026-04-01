@@ -112,8 +112,10 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 				ch <- types.ChatDelta{
 					Type: "usage",
 					Usage: &types.TokenUsage{
-						InputTokens:  int(usage.InputTokens),
-						OutputTokens: int(usage.OutputTokens),
+						InputTokens:         int(usage.InputTokens),
+						OutputTokens:        int(usage.OutputTokens),
+						CacheCreationTokens: int(usage.CacheCreationInputTokens),
+						CacheReadTokens:     int(usage.CacheReadInputTokens),
 					},
 				}
 
