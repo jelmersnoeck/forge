@@ -31,7 +31,6 @@ var (
 	queueStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	queueHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
 	thinkingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Italic(true)
-	costStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	userMsgStyle     = lipgloss.NewStyle().
 				Background(lipgloss.Color("236")).
 				Foreground(lipgloss.Color("15")).
@@ -347,8 +346,8 @@ func (m model) getOutputHeight() int {
 		thinkingHeight = 1 // thinking indicator
 	}
 	costHeight := 0
-	if m.modelName != "" && (m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0) {
-		costHeight = 1 // cost tracker line
+	if m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0 {
+		costHeight = 1 // cost tracker line (below input)
 	}
 	inputHeight := 3 // border + content
 	return m.height - queueHeight - thinkingHeight - costHeight - inputHeight - 1
@@ -391,26 +390,7 @@ func (m model) View() string {
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
 	}
 
-	// Build cost status bar
-	var costStatusBar string
-	if m.modelName != "" && (m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0) {
-		sessionCost := cost.Calculate(m.modelName, m.totalUsage)
 
-		// Build token breakdown
-		parts := []string{
-			fmt.Sprintf("in:%d", m.totalUsage.InputTokens),
-			fmt.Sprintf("out:%d", m.totalUsage.OutputTokens),
-		}
-		if m.totalUsage.CacheCreationTokens > 0 {
-			parts = append(parts, fmt.Sprintf("cache_w:%d", m.totalUsage.CacheCreationTokens))
-		}
-		if m.totalUsage.CacheReadTokens > 0 {
-			parts = append(parts, fmt.Sprintf("cache_r:%d", m.totalUsage.CacheReadTokens))
-		}
-
-		tokenBreakdown := strings.Join(parts, " ")
-		costStatusBar = costStyle.Render(fmt.Sprintf("💰 session: %s (%s)", cost.FormatCost(sessionCost), tokenBreakdown))
-	}
 
 	// Build queue display
 	var queueArea string
@@ -459,9 +439,6 @@ func (m model) View() string {
 	var parts []string
 	if outputArea != "" {
 		parts = append(parts, outputArea)
-	}
-	if costStatusBar != "" {
-		parts = append(parts, costStatusBar)
 	}
 	if thinkingIndicator != "" {
 		parts = append(parts, thinkingIndicator)

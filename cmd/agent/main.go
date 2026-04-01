@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/jelmersnoeck/forge/internal/agent"
+	"github.com/jelmersnoeck/forge/internal/server/backend"
 )
 
 func main() {
@@ -18,26 +19,58 @@ func main() {
 	cwd := flag.String("cwd", ".", "working directory for the agent")
 	sessionID := flag.String("session-id", "", "session ID (required)")
 	sessionsDir := flag.String("sessions-dir", "/tmp/forge/sessions", "directory for session JSONL files")
+	noWorktree := flag.Bool("no-worktree", false, "disable automatic git worktree isolation (not recommended)")
 	flag.Parse()
 
-	// Change to the working directory and load .env from there.
-	if err := os.Chdir(*cwd); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: chdir %s: %v\n", *cwd, err)
-		os.Exit(1)
-	}
-	loadEnv(*cwd)
-
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		fmt.Fprintln(os.Stderr, "warning: ANTHROPIC_API_KEY not set — agent will start but cannot connect to Anthropic")
-	}
 	if *sessionID == "" {
 		fmt.Fprintln(os.Stderr, "fatal: --session-id is required")
 		os.Exit(1)
 	}
 
+	// Resolve absolute path for CWD
+	absCwd, err := filepath.Abs(*cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: resolve cwd %s: %v\n", *cwd, err)
+		os.Exit(1)
+	}
+
+	// Setup git worktree isolation unless explicitly disabled
+	worktreePath := absCwd
+	var worktreeMgr *backend.WorktreeManager
+	
+	if !*noWorktree {
+		worktreeDir := filepath.Join(filepath.Dir(absCwd), "forge-worktrees")
+		worktreeMgr = backend.NewWorktreeManager(absCwd, worktreeDir)
+		
+		isolatedPath, err := worktreeMgr.EnsureWorktree(*sessionID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fatal: create worktree: %v\n", err)
+			os.Exit(1)
+		}
+		worktreePath = isolatedPath
+		
+		// Register cleanup on exit
+		defer func() {
+			if err := worktreeMgr.RemoveWorktree(*sessionID); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: cleanup worktree: %v\n", err)
+			}
+		}()
+	}
+
+	// Change to the working directory and load .env from there.
+	if err := os.Chdir(worktreePath); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: chdir %s: %v\n", worktreePath, err)
+		os.Exit(1)
+	}
+	loadEnv(worktreePath)
+
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		fmt.Fprintln(os.Stderr, "warning: ANTHROPIC_API_KEY not set — agent will start but cannot connect to Anthropic")
+	}
+
 	cfg := agent.Config{
 		Port:        *port,
-		CWD:         *cwd,
+		CWD:         worktreePath,
 		SessionID:   *sessionID,
 		SessionsDir: *sessionsDir,
 	}

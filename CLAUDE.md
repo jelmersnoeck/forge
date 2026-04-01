@@ -46,7 +46,7 @@ internal/
   agent/           agent HTTP server, single-session hub, worker
   runtime/
     provider/      LLMProvider interface + Anthropic implementation
-    context/       ContextLoader (CLAUDE.md, skills, agents, rules)
+    context/       ContextLoader (CLAUDE.md, AGENTS.md, skills, agents, rules)
     prompt/        system prompt assembly
     session/       JSONL session persistence
     loop/          ConversationLoop (agentic loop)
@@ -137,16 +137,48 @@ forge stats --sessions         # per-session breakdown
 - `internal/agent/hub.go` — single-session message queue + event pub/sub
 - `internal/agent/worker.go` — conversation loop runner
 - `internal/runtime/loop/loop.go` — agentic conversation loop
-- `internal/runtime/context/loader.go` — CLAUDE.md, skills, agents, rules discovery
+- `internal/runtime/context/loader.go` — CLAUDE.md, AGENTS.md, skills, agents, rules discovery
 - `internal/runtime/prompt/prompt.go` — system prompt assembly
 - `internal/runtime/provider/anthropic.go` — Anthropic Messages API streaming
 - `internal/tools/registry.go` — tool registry + NewDefaultRegistry()
-- `internal/tools/*.go` — individual tool implementations
+- `internal/tools/*.go` — individual tool implementations (Read, Write, Edit, Bash, Grep, Glob, WebSearch, Reflect)
 - `internal/server/backend/backend.go` — Backend interface
 - `internal/server/backend/tmux.go` — tmux backend implementation
 - `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata
 - `internal/server/gateway/gateway.go` — HTTP routes, SSE streaming, agent proxy
 - `internal/types/types.go` — shared contracts
+
+## Self-Improvement Loop
+
+Forge includes a built-in self-improvement mechanism:
+
+1. **AGENTS.md Support**: The agent loads `AGENTS.md` files (similar to `CLAUDE.md`) from:
+   - `~/AGENTS.md` (user-level learnings)
+   - `$PROJECT/AGENTS.md` or `$PROJECT/.claude/AGENTS.md` (project-level)
+   - Parent directories (inheritable learnings)
+   - `$PROJECT/AGENTS.local.md` (session-specific)
+
+2. **Reflect Tool**: Agents can use the `Reflect` tool to capture session learnings:
+   ```json
+   {
+     "summary": "What was accomplished",
+     "mistakes": ["Things that went wrong"],
+     "successes": ["Patterns that worked well"],
+     "suggestions": ["Ideas for future improvement"]
+   }
+   ```
+
+3. **Automatic Loading**: Learnings from `AGENTS.md` are injected into the system prompt with cache control, so the agent remembers and applies lessons from previous sessions.
+
+4. **Continuous Learning**: Each reflection is appended to `AGENTS.md`, creating a growing knowledge base that improves agent behavior over time.
+
+Example workflow:
+- Agent completes a task
+- Agent calls `Reflect` tool with session summary
+- Learnings are saved to `AGENTS.md`
+- Next session loads `AGENTS.md` and applies learnings
+
+The system prompt encourages agents to reflect at the end of sessions.
 
 ## API endpoints
 
