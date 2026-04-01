@@ -14,11 +14,12 @@ import (
 
 // TmuxBackend runs each agent as a window inside a single tmux session.
 type TmuxBackend struct {
-	mu               sync.Mutex
-	agents           map[string]*agentInfo // sessionID -> info
-	agentBin         string                // absolute path to forge-agent binary
-	tmuxSessionName  string                // unique tmux session name per server
-	sessionReady     bool                  // whether the tmux session has been created
+	mu              sync.Mutex
+	agents          map[string]*agentInfo // sessionID -> info
+	agentBin        string                // absolute path to forge-agent binary
+	tmuxSessionName string                // unique tmux session name per server
+	sessionReady    bool                  // whether the tmux session has been created
+	worktreeMgr     *WorktreeManager      // manages git worktrees for session isolation
 }
 
 type agentInfo struct {
@@ -30,7 +31,9 @@ type agentInfo struct {
 // The binary path is resolved to an absolute path at creation time.
 // serverID is used to create a unique tmux session name so multiple servers
 // don't collide.
-func NewTmux(agentBin string, serverID string) *TmuxBackend {
+// baseWorkspace is the default workspace directory; if it's in a git repo,
+// sessions will use git worktrees for isolation.
+func NewTmux(agentBin string, serverID string, baseWorkspace string) *TmuxBackend {
 	// Resolve to absolute path so tmux sessions can find it.
 	if abs, err := filepath.Abs(agentBin); err == nil {
 		agentBin = abs
@@ -42,10 +45,14 @@ func NewTmux(agentBin string, serverID string) *TmuxBackend {
 		}
 	}
 
+	worktreeDir := filepath.Join(filepath.Dir(baseWorkspace), "worktrees")
+	worktreeMgr := NewWorktreeManager(baseWorkspace, worktreeDir)
+
 	return &TmuxBackend{
 		agents:          make(map[string]*agentInfo),
 		agentBin:        agentBin,
 		tmuxSessionName: "forge-" + serverID,
+		worktreeMgr:     worktreeMgr,
 	}
 }
 
@@ -95,6 +102,15 @@ func (b *TmuxBackend) EnsureAgent(ctx context.Context, sessionID string, opts Ag
 	}
 	b.mu.Unlock()
 
+	// Create or reuse a git worktree for this session
+	worktreePath, err := b.worktreeMgr.EnsureWorktree(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create worktree: %w", err)
+	}
+
+	// Use the worktree path as CWD instead of opts.CWD
+	cwd := worktreePath
+
 	// Find a free port.
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -107,13 +123,13 @@ func (b *TmuxBackend) EnsureAgent(ctx context.Context, sessionID string, opts Ag
 
 	// Build the agent command. Quote paths to handle spaces.
 	command := fmt.Sprintf("%q --port %d --cwd %q --session-id %s --sessions-dir %q",
-		b.agentBin, port, opts.CWD, sessionID, opts.SessionsDir)
+		b.agentBin, port, cwd, sessionID, opts.SessionsDir)
 
 	// Create a new window inside the shared tmux session.
 	cmd := exec.CommandContext(ctx, "tmux", "new-window",
 		"-t", b.tmuxSessionName,
 		"-n", wName,
-		"-c", opts.CWD,
+		"-c", cwd,
 		command)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("tmux new-window: %w: %s", err, out)
@@ -167,6 +183,13 @@ func (b *TmuxBackend) StopAgent(ctx context.Context, sessionID string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux kill-window: %w: %s", err, out)
 	}
+
+	// Clean up the worktree
+	if err := b.worktreeMgr.RemoveWorktree(sessionID); err != nil {
+		log.Printf("[tmux] failed to remove worktree for session %s: %v", sessionID, err)
+		// Non-fatal, continue
+	}
+
 	return nil
 }
 
@@ -186,7 +209,12 @@ func (b *TmuxBackend) Close() error {
 	defer b.mu.Unlock()
 
 	log.Printf("[tmux] closing session %s (%d agents)", b.tmuxSessionName, len(b.agents))
+
+	// Clean up worktrees for all sessions
 	for sessionID := range b.agents {
+		if err := b.worktreeMgr.RemoveWorktree(sessionID); err != nil {
+			log.Printf("[tmux] failed to remove worktree for session %s: %v", sessionID, err)
+		}
 		delete(b.agents, sessionID)
 	}
 	b.sessionReady = false
