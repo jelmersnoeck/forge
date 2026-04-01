@@ -4,21 +4,42 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 
 ## Architecture
 
-Forge uses a flexible 2-mode architecture:
+Forge uses a flexible 2-mode architecture with a unified CLI:
 
-- **CLI** (`cmd/cli/`) — interactive REPL with two modes:
-  - **Interactive mode (default):** spawns local agent, talks directly via HTTP
-  - **Server mode:** connects to gateway server via HTTP for persistent sessions
-- **Server** (`cmd/server/`) — session management, spawns agents in backends (tmux), forwards messages, relays events. Optional for multi-session deployments.
-- **Agent** (`cmd/agent/`) — runs inside a backend target (e.g. tmux session) or as local process. Has its own HTTP server. Runs the conversation loop, tools, talks to Anthropic. Long-lived per session.
+- **Unified Binary** (`cmd/forge/`) — single entry point with subcommands:
+  - **`forge` (default)** — interactive REPL with two modes:
+    - **Interactive mode (default):** spawns local agent, talks directly via HTTP
+    - **Server mode (`--server`):** connects to gateway server via HTTP for persistent sessions
+  - **`forge agent`** — run agent server (spawned by server backend or standalone)
+  - **`forge server`** — session management, spawns agents in backends (tmux), forwards messages, relays events
+  - **`forge stats`** — cost analytics (daily/monthly/session breakdowns)
+- **Legacy binaries** (`cmd/{cli,agent,server}/`) — still exist for backward compatibility, but unified binary is preferred
+
+## Cost Tracking
+
+All API usage is tracked to `~/.forge/costs.db` (SQLite):
+- Every API call records: timestamp, session_id, model, tokens, cost
+- Query historical costs by day/week/month
+- Per-session breakdowns with duration tracking
+- Zero overhead — failures don't block sessions
+
+Usage:
+```bash
+forge stats                    # current month summary + daily breakdown
+forge stats --month 2026-04    # specific month
+forge stats --week             # current week
+forge stats --sessions         # per-session breakdown
+forge stats --daily --sessions # both views
+```
 
 ## Repository layout
 
 ```
 cmd/
-  server/          entry point (loads .env, starts gateway)
-  agent/           agent binary (conversation loop + tools + HTTP server)
-  cli/             interactive REPL client
+  forge/           unified binary (cli + server + agent + stats)
+  server/          legacy server binary (use 'forge server' instead)
+  agent/           agent binary (still needed by server backend)
+  cli/             legacy CLI binary (use 'forge' instead)
 internal/
   types/           shared contracts (messages, events, tools, context)
   tools/           tool registry + implementations (Read, Write, Edit, Bash, Glob, Grep)
@@ -29,6 +50,7 @@ internal/
     prompt/        system prompt assembly
     session/       JSONL session persistence
     loop/          ConversationLoop (agentic loop)
+    cost/          cost calculation + SQLite tracker
   server/
     bus/           in-memory event pub/sub + session metadata
     backend/       Backend interface + tmux implementation
@@ -40,13 +62,14 @@ Go module: `github.com/jelmersnoeck/forge`
 ## Build & run
 
 ```bash
-just build              # build server + cli + agent binaries
-just build-agent        # build agent binary only
-just dev-server         # build agent + server, run server (foreground)
-just dev-server-daemon  # build agent + server, run in daemon mode
+just build              # build unified forge binary
+just build-all          # build forge + legacy binaries
+just build-agent        # build agent binary only (needed by server backend)
+just dev                # build + run interactive CLI
+just dev-server         # build + run server (foreground)
+just dev-server-daemon  # build + run server daemon
 just stop-server        # stop daemon server
 just tail-server        # tail daemon server logs
-just dev-cli            # build + run CLI (interactive mode)
 just test               # go test ./...
 just vet                # go vet ./...
 just up                 # docker compose up --build -d
@@ -60,7 +83,7 @@ just clean              # remove binaries
 ### Interactive mode (default)
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-./forge-cli   # spawns local agent, ephemeral session
+forge                    # spawns local agent, ephemeral session
 ```
 
 ### Server mode (persistent sessions)
@@ -70,13 +93,21 @@ just dev-server             # local dev foreground (reads .env, builds agent fir
 just dev-server-daemon      # local dev daemon mode
 
 # In another terminal
-./forge-cli --server http://localhost:3000
-./forge-cli --server http://localhost:3000 --resume <session-id>
+forge --server http://localhost:3000
+forge --server http://localhost:3000 --resume <session-id>
 
 # Manual daemon control:
-./forge-server -daemon                           # default: /tmp/forge/sessions/forge.{pid,log}
-./forge-server -daemon -pid-file /path/to/file   # custom paths
-kill $(cat /tmp/forge/sessions/forge.pid)        # stop
+forge server -daemon                           # default: /tmp/forge/sessions/forge.{pid,log}
+forge server -daemon -pid-file /path/to/file   # custom paths
+kill $(cat /tmp/forge/sessions/forge.pid)      # stop
+```
+
+### Cost analytics
+```bash
+forge stats                    # current month
+forge stats --month 2026-04    # specific month
+forge stats --week             # current week
+forge stats --sessions         # per-session breakdown
 ```
 
 ## How it works

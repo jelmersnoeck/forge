@@ -9,30 +9,38 @@ default:
 
 # ── Build ────────────────────────────────────────────────────
 
-# Build server binary
+# Build unified forge binary
+build:
+  go build -o forge ./cmd/forge
+
+# Build server binary (legacy)
 build-server:
   go build -o forge-server ./cmd/server
 
-# Build CLI binary
+# Build CLI binary (legacy)
 build-cli:
   go build -o forge-cli ./cmd/cli
 
-# Build agent binary
+# Build agent binary (legacy - still needed by server backend)
 build-agent:
   go build -o forge-agent ./cmd/agent
 
-# Build everything
-build: build-server build-cli build-agent
+# Build everything (new + legacy)
+build-all: build build-agent build-server build-cli
 
 # ── Dev ──────────────────────────────────────────────────────
 
-# Build agent + server and run server
-dev-server: build-agent build-server
-  ./forge-server
+# Run interactive CLI (unified binary)
+dev: build
+  ./forge
 
-# Build and run server in daemon mode
-dev-server-daemon: build-agent build-server
-  ./forge-server -daemon
+# Build and run server (unified binary)
+dev-server: build build-agent
+  ./forge server
+
+# Build and run server in daemon mode (unified binary)
+dev-server-daemon: build build-agent
+  ./forge server -daemon
 
 # Stop daemon server
 stop-server:
@@ -47,8 +55,8 @@ tail-server:
   tail -f /tmp/forge/sessions/forge.log
 
 # Build and run CLI
-dev-cli: build-cli
-  ./forge-cli
+dev-cli: build
+  ./forge
 
 # ── Test ──────────────────────────────────────────────────────
 
@@ -84,4 +92,4 @@ logs:
 
 # Remove build artifacts
 clean:
-  rm -f forge-server forge-cli forge-agent
+  rm -f forge forge-server forge-cli forge-agent
