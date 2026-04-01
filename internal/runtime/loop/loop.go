@@ -35,6 +35,10 @@ type Loop struct {
 
 	// Cumulative token usage across all turns in this session.
 	totalUsage types.TokenUsage
+	
+	// Cache tracking for break detection
+	lastCacheRead int
+	callCount     int
 }
 
 // Options configures the conversation loop.
@@ -375,6 +379,9 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 					if delta.Usage.CacheReadTokens > 0 {
 						l.totalUsage.CacheReadTokens += delta.Usage.CacheReadTokens
 					}
+					
+					// Check for cache breaks (simple detection)
+					l.checkCacheHealth(delta.Usage, emit)
 
 				emit(types.OutboundEvent{
 					ID:        uuid.New().String(),
@@ -539,4 +546,40 @@ func (l *Loop) persistMessage(msgType string, msg types.ChatMessage) error {
 	}
 
 	return l.sessionStore.Append(l.historyID, sessionMsg)
+}
+
+// checkCacheHealth detects unexpected cache invalidation.
+// Logs a warning when cache_read_tokens drops significantly (>5% and >2K tokens).
+func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.OutboundEvent)) {
+	l.callCount++
+	
+	// First call - just record baseline
+	if l.lastCacheRead == 0 {
+		l.lastCacheRead = usage.CacheReadTokens
+		return
+	}
+	
+	// Check for cache break (>5% drop and >2K tokens)
+	tokenDrop := l.lastCacheRead - usage.CacheReadTokens
+	percentDrop := float64(l.lastCacheRead-usage.CacheReadTokens) / float64(l.lastCacheRead)
+	
+	if percentDrop > 0.05 && tokenDrop > 2000 {
+		// Cache broke unexpectedly
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: l.sessionID,
+			Type:      "warning",
+			Content: fmt.Sprintf(
+				"[CACHE BREAK] Call #%d: %d → %d tokens (-%d, -%.0f%%) - Check for system prompt or tool schema changes",
+				l.callCount,
+				l.lastCacheRead,
+				usage.CacheReadTokens,
+				tokenDrop,
+				percentDrop*100,
+			),
+			Timestamp: time.Now().Unix(),
+		})
+	}
+	
+	l.lastCacheRead = usage.CacheReadTokens
 }
