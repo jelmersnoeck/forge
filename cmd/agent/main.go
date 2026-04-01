@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 8080, "HTTP port to listen on")
+	port := flag.Int("port", 8080, "HTTP port to listen on (0 for random free port)")
 	cwd := flag.String("cwd", ".", "working directory for the agent")
 	sessionID := flag.String("session-id", "", "session ID (required)")
 	sessionsDir := flag.String("sessions-dir", "/tmp/forge/sessions", "directory for session JSONL files")

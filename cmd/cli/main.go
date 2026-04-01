@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -40,24 +42,25 @@ var (
 )
 
 type model struct {
-	server       string
-	sessionID    string
-	input        string
-	queue        []string
-	output       []string
-	ready        bool
-	quitting     bool
-	exitAttempts int  // track number of exit attempts
-	working      bool // track if agent is currently working
-	thinking     bool // track if agent is currently thinking
-	spinnerFrame int  // spinner animation frame
-	width        int
-	height       int
-	renderer     *glamour.TermRenderer
-	textBuf      string
-	err          error
-	scrollOffset int  // how many lines scrolled up from bottom
-	autoScroll   bool // auto-scroll to bottom on new content
+	server          string
+	sessionID       string
+	interactiveMode bool // true if talking directly to agent, false if via gateway
+	input           string
+	queue           []string
+	output          []string
+	ready           bool
+	quitting        bool
+	exitAttempts    int  // track number of exit attempts
+	working         bool // track if agent is currently working
+	thinking        bool // track if agent is currently thinking
+	spinnerFrame    int  // spinner animation frame
+	width           int
+	height          int
+	renderer        *glamour.TermRenderer
+	textBuf         string
+	err             error
+	scrollOffset    int  // how many lines scrolled up from bottom
+	autoScroll      bool // auto-scroll to bottom on new content
 }
 
 type serverEvent types.OutboundEvent
@@ -66,12 +69,8 @@ type tickMsg time.Time
 
 func main() {
 	resume := flag.String("resume", "", "session ID to resume")
+	server := flag.String("server", "", "connect to remote forge server (e.g. http://localhost:3000)")
 	flag.Parse()
-
-	server := os.Getenv("FORGE_URL")
-	if server == "" {
-		server = "http://localhost:3000"
-	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -79,17 +78,42 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Determine mode: interactive (default) or remote server
 	var sessionID string
-	if *resume != "" {
-		sessionID = *resume
+	var serverURL string
+	var agentCleanup func()
+
+	if *server != "" {
+		// Remote server mode
+		serverURL = *server
+		if *resume != "" {
+			sessionID = *resume
+		} else {
+			sid, err := createSession(serverURL, cwd)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, errorStyle.Render("could not connect to forge server at "+serverURL))
+				fmt.Fprintf(os.Stderr, "  %v\n\nhint: start the server with `just dev-server`\n", err)
+				os.Exit(1)
+			}
+			sessionID = sid
+		}
 	} else {
-		sid, err := createSession(server, cwd)
+		// Interactive mode (default) - spawn local agent
+		if *resume != "" {
+			fmt.Fprintln(os.Stderr, errorStyle.Render("cannot resume in interactive mode"))
+			fmt.Fprintln(os.Stderr, "  hint: use --server to connect to a persistent server")
+			os.Exit(1)
+		}
+
+		sid, url, cleanup, err := spawnLocalAgent(cwd)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, errorStyle.Render("could not connect to forge server at "+server))
-			fmt.Fprintf(os.Stderr, "  %v\n\nhint: start the server with `just dev-server`\n", err)
+			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
 		}
 		sessionID = sid
+		serverURL = url
+		agentCleanup = cleanup
+		defer agentCleanup()
 	}
 
 	renderer, _ := glamour.NewTermRenderer(
@@ -98,27 +122,37 @@ func main() {
 	)
 
 	m := model{
-		server:     server,
-		sessionID:  sessionID,
-		output:     []string{},
-		queue:      []string{},
-		renderer:   renderer,
-		autoScroll: true, // start with auto-scroll enabled
+		server:          serverURL,
+		sessionID:       sessionID,
+		interactiveMode: (*server == ""),
+		output:          []string{},
+		queue:           []string{},
+		renderer:        renderer,
+		autoScroll:      true, // start with auto-scroll enabled
 	}
 
 	// Add welcome message
+	modeDesc := "interactive"
+	resumeHint := ""
+	if *server != "" {
+		modeDesc = "remote"
+		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge-cli --server "+*server+" --resume "+sessionID)
+	} else {
+		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. (ephemeral session)")
+	}
+
 	m.output = append(m.output,
-		headerStyle.Render("forge cli")+" "+dimStyle.Render("— session "+sessionID),
-		dimStyle.Render("server: "+server),
+		headerStyle.Render("forge cli")+" "+dimStyle.Render("— "+modeDesc+" — session "+sessionID),
+		dimStyle.Render("server: "+serverURL),
 		"",
-		dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Session: forge-cli --resume "+sessionID),
+		resumeHint,
 		"",
 	)
 
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Start SSE listener in background
-	go listenEvents(p, server, sessionID)
+	go listenEvents(p, serverURL, sessionID, m.interactiveMode)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -454,11 +488,15 @@ func (m *model) flushText() {
 func (m model) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
 		body, _ := json.Marshal(map[string]string{"text": text})
-		resp, err := http.Post(
-			fmt.Sprintf("%s/sessions/%s/messages", m.server, m.sessionID),
-			"application/json",
-			bytes.NewReader(body),
-		)
+		
+		var url string
+		if m.interactiveMode {
+			url = fmt.Sprintf("%s/messages", m.server)
+		} else {
+			url = fmt.Sprintf("%s/sessions/%s/messages", m.server, m.sessionID)
+		}
+		
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			return errMsg(err)
 		}
@@ -475,11 +513,15 @@ func (m model) sendMessage(text string) tea.Cmd {
 func (m model) sendInterrupt() tea.Cmd {
 	return func() tea.Msg {
 		body, _ := json.Marshal(map[string]string{"interrupt": "true"})
-		resp, err := http.Post(
-			fmt.Sprintf("%s/sessions/%s/interrupt", m.server, m.sessionID),
-			"application/json",
-			bytes.NewReader(body),
-		)
+		
+		var url string
+		if m.interactiveMode {
+			url = fmt.Sprintf("%s/interrupt", m.server)
+		} else {
+			url = fmt.Sprintf("%s/sessions/%s/interrupt", m.server, m.sessionID)
+		}
+		
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			return errMsg(err)
 		}
@@ -510,8 +552,15 @@ func createSession(server, cwd string) (string, error) {
 	return result.SessionID, nil
 }
 
-func listenEvents(p *tea.Program, server, sessionID string) {
-	resp, err := http.Get(fmt.Sprintf("%s/sessions/%s/events", server, sessionID))
+func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool) {
+	var url string
+	if interactiveMode {
+		url = fmt.Sprintf("%s/events", server)
+	} else {
+		url = fmt.Sprintf("%s/sessions/%s/events", server, sessionID)
+	}
+	
+	resp, err := http.Get(url)
 	if err != nil {
 		p.Send(errMsg(err))
 		return
@@ -536,4 +585,86 @@ func listenEvents(p *tea.Program, server, sessionID string) {
 	if err := scanner.Err(); err != nil {
 		p.Send(errMsg(err))
 	}
+}
+
+// spawnLocalAgent starts a forge-agent process and returns (sessionID, serverURL, cleanup, error).
+// The agent runs on a random port and auto-terminates when cleanup is called.
+func spawnLocalAgent(cwd string) (string, string, func(), error) {
+	// Find forge-agent binary (prefer same dir as CLI, fallback to PATH)
+	agentBin := "forge-agent"
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "forge-agent")
+		if _, err := os.Stat(candidate); err == nil {
+			agentBin = candidate
+		}
+	}
+
+	// Generate session ID
+	sessionID := "cli-" + time.Now().Format("20060102-150405")
+
+	// Spawn agent on random port (0 = OS picks)
+	cmd := exec.Command(agentBin,
+		"--port", "0",
+		"--cwd", cwd,
+		"--session-id", sessionID,
+	)
+
+	// Capture stdout to read the port
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("create stdout pipe: %w", err)
+	}
+
+	// Send stderr to /dev/null (agent logs are noise in interactive mode)
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		return "", "", nil, fmt.Errorf("start agent: %w", err)
+	}
+
+	// Read port from first line of stdout (JSON: {"port": 12345})
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		cmd.Process.Kill()
+		return "", "", nil, fmt.Errorf("agent did not emit port")
+	}
+
+	var portMsg struct {
+		Port int `json:"port"`
+	}
+	if err := json.Unmarshal(scanner.Bytes(), &portMsg); err != nil {
+		cmd.Process.Kill()
+		return "", "", nil, fmt.Errorf("parse agent port: %w", err)
+	}
+
+	serverURL := fmt.Sprintf("http://localhost:%d", portMsg.Port)
+
+	// Wait for agent to be ready (health check with retries)
+	ready := false
+	for i := 0; i < 10; i++ {
+		resp, err := http.Get(serverURL + "/health")
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			ready = true
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !ready {
+		cmd.Process.Kill()
+		return "", "", nil, fmt.Errorf("agent did not become healthy")
+	}
+
+	cleanup := func() {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}
+
+	return sessionID, serverURL, cleanup, nil
 }

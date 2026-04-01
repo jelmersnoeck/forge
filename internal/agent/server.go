@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -21,6 +23,9 @@ type Config struct {
 
 // Start creates a Hub, starts the Worker in a background goroutine,
 // and runs the HTTP server. It blocks until the server exits.
+//
+// On successful listen, emits JSON to stdout: {"port": actual_port}
+// This allows parent processes to discover the port when using port 0.
 func Start(cfg Config) error {
 	hub := NewHub()
 
@@ -34,8 +39,22 @@ func Start(cfg Config) error {
 	mux.HandleFunc("GET /events", handleSSE(hub))
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	log.Printf("[agent] listening on %s (session=%s)", addr, cfg.SessionID)
-	return http.ListenAndServe(addr, mux)
+	
+	// Start listener to discover actual port (when cfg.Port == 0)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", addr, err)
+	}
+	
+	actualPort := listener.Addr().(*net.TCPAddr).Port
+	
+	// Emit port to stdout for parent process discovery
+	portJSON, _ := json.Marshal(map[string]int{"port": actualPort})
+	fmt.Fprintf(os.Stdout, "%s\n", portJSON)
+	os.Stdout.Sync()
+	
+	log.Printf("[agent] listening on %s (session=%s)", listener.Addr(), cfg.SessionID)
+	return http.Serve(listener, mux)
 }
 
 func handleHealth(sessionID string) http.HandlerFunc {
