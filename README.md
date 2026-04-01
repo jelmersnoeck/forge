@@ -8,6 +8,7 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 - **Message Queuing** - Queue multiple messages while agent is working
 - **Task Queues** - Agent can queue commands to run after each tool or on completion
 - **Session Persistence** - Resume conversations anytime
+- **Cost Tracking** - Automatic API cost tracking with analytics (daily/monthly/session breakdowns)
 - **Streaming** - Real-time event stream via Server-Sent Events (SSE)
 - **Tool Execution** - Read, Write, Edit, Bash, Glob, Grep, and Queue tools
 
@@ -22,11 +23,11 @@ The simplest way to use Forge — everything runs locally in a single command:
 export ANTHROPIC_API_KEY=sk-...
 
 # Run interactive CLI (spawns agent automatically)
-just dev-cli
+just dev
 
 # Or build and run manually
 just build
-./forge-cli
+./forge
 ```
 
 The CLI automatically spawns a background agent process and connects directly to it. Sessions are ephemeral (no persistence between runs).
@@ -40,16 +41,39 @@ For persistent sessions and multi-user deployments:
 just dev-server
 
 # Terminal 2: Connect CLI to server
-./forge-cli --server http://localhost:3000
+./forge --server http://localhost:3000
 
 # Resume a session later
-./forge-cli --server http://localhost:3000 --resume <session-id>
+./forge --server http://localhost:3000 --resume <session-id>
 ```
 
 Server mode gives you:
 - Session persistence (resume anytime)
 - Multiple concurrent sessions
 - Remote server support
+
+### Cost Analytics
+
+Track your API usage across all sessions:
+
+```bash
+# Current month summary
+./forge stats
+
+# Specific month
+./forge stats --month 2026-04
+
+# Current week
+./forge stats --week
+
+# Per-session breakdown
+./forge stats --sessions
+
+# Both daily and session views
+./forge stats --daily --sessions
+```
+
+Cost data is stored in `~/.forge/costs.db` and tracked automatically for every API call.
 
 ## CLI Usage
 
@@ -93,16 +117,16 @@ The Forge CLI is a full-screen TUI (Terminal User Interface):
 
 #### Interactive Mode (Default)
 ```bash
-./forge-cli
+./forge
 # Spawns local agent, ephemeral session
 ```
 
 #### Server Mode (Persistent Sessions)
 ```bash
-./forge-cli --server http://localhost:3000
+./forge --server http://localhost:3000
 # Connect to remote server, persistent sessions
 
-./forge-cli --server http://localhost:3000 --resume <session-id>
+./forge --server http://localhost:3000 --resume <session-id>
 # Resume a previous session
 ```
 
@@ -180,9 +204,10 @@ Server manages multiple sessions, spawns agents in tmux, persists history.
 
 ```
 cmd/
-  server/          Server entry point
-  agent/           Agent binary (runs in tmux)
-  cli/             Interactive TUI client
+  forge/           Unified binary (cli + server + agent + stats)
+  server/          Legacy server (use 'forge server')
+  agent/           Agent binary (still used by server backend)
+  cli/             Legacy CLI (use 'forge')
 internal/
   agent/           Agent HTTP server, hub, worker
   runtime/
@@ -191,6 +216,7 @@ internal/
     prompt/        System prompt assembly
     session/       JSONL persistence
     loop/          Conversation loop
+    cost/          Cost tracking + SQLite database
   server/
     bus/           Event pub/sub
     backend/       Backend interface (tmux)
@@ -254,26 +280,28 @@ BRAVE_API_KEY=your_key      # Required if using Brave Search
 ## Development
 
 ```bash
-# Build all binaries
+# Build unified binary
 just build
 
+# Build all binaries (including legacy)
+just build-all
+
 # Build specific binary
-just build-server
-just build-agent
-just build-cli
+just build-agent       # Still needed by server backend
 
 # Run in development mode
-just dev-server    # Build agent + server, run server
-just dev-cli       # Build + run CLI
+just dev               # Interactive CLI
+just dev-server        # Server mode
+just dev-server-daemon # Server daemon mode
 
 # Tests
-just test          # Run all tests
-just vet           # Run go vet
+just test              # Run all tests
+just vet               # Run go vet
 
 # Docker
-just up            # Start with docker-compose
-just down          # Stop containers
-just logs          # Tail logs
+just up                # Start with docker-compose
+just down              # Stop containers
+just logs              # Tail logs
 ```
 
 ## Configuration
@@ -298,7 +326,7 @@ The agent loads context from `CLAUDE.md` files:
 
 ### Example 1: Rapid Task Queuing (Interactive Mode)
 ```bash
-./forge-cli
+./forge
 
 > Create user authentication module
 > Add tests for auth
@@ -395,4 +423,6 @@ This is a personal project, but issues and PRs are welcome.
 
 ---
 
-**Quick Start:** Run `./forge-cli` for instant local development, or `just dev-server` + `./forge-cli --server http://localhost:3000` for persistent sessions.
+**Quick Start:** Run `forge` for instant local development, or `just dev-server` + `forge --server http://localhost:3000` for persistent sessions.
+
+**Cost Tracking:** Use `forge stats` to see your API usage and costs.

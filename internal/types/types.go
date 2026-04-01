@@ -56,7 +56,9 @@ type SystemBlock struct {
 
 // CacheControl sets caching behavior on a system block.
 type CacheControl struct {
-	Type string `json:"type"` // "ephemeral"
+	Type  string `json:"type"`            // "ephemeral"
+	TTL   string `json:"ttl,omitempty"`   // "1h" for extended cache lifetime
+	Scope string `json:"scope,omitempty"` // "global" for cross-session caching
 }
 
 // ChatRequest is sent to the LLM provider.
