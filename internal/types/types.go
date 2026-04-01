@@ -90,13 +90,14 @@ type ChatContentBlock struct {
 
 // ChatDelta is a streaming event from the LLM.
 type ChatDelta struct {
-	Type        string      `json:"type"` // "text_delta", "tool_use_start", "tool_use_delta", "tool_use_end", "message_stop"
+	Type        string      `json:"type"` // "text_delta", "tool_use_start", "tool_use_delta", "tool_use_end", "message_stop", "error"
 	Text        string      `json:"text,omitempty"`
 	ID          string      `json:"id,omitempty"`
 	Name        string      `json:"name,omitempty"`
 	PartialJSON string      `json:"partialJson,omitempty"`
 	StopReason  string      `json:"stopReason,omitempty"`
 	Usage       *TokenUsage `json:"usage,omitempty"`
+	StatusCode  int         `json:"statusCode,omitempty"` // HTTP status from API errors (e.g. 429, 529)
 }
 
 // TokenUsage tracks token consumption for a single LLM call.

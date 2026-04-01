@@ -41,11 +41,15 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var blocks []types.SystemBlock
 
 	// 1. Base coding agent prompt (cached - never changes)
+	// Uses 1h TTL because this content is completely static.
+	// API requires TTL ordering: 1h blocks must come before 5m blocks
+	// across tools → system → messages.
 	blocks = append(blocks, types.SystemBlock{
 		Type: "text",
 		Text: basePrompt,
 		CacheControl: &types.CacheControl{
 			Type: "ephemeral",
+			TTL:  "1h",
 		},
 	})
 
@@ -60,6 +64,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		Text: envInfo,
 		CacheControl: &types.CacheControl{
 			Type: "ephemeral",
+			TTL:  "1h",
 		},
 	})
 

@@ -4,6 +4,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -185,9 +186,15 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		}
 
 		if err := stream.Err(); err != nil {
+			statusCode := 0
+			var apiErr *anthropic.Error
+			if errors.As(err, &apiErr) {
+				statusCode = apiErr.StatusCode
+			}
 			ch <- types.ChatDelta{
-				Type: "error",
-				Text: err.Error(),
+				Type:       "error",
+				Text:       err.Error(),
+				StatusCode: statusCode,
 			}
 		}
 	}()
