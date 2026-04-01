@@ -1,5 +1,7 @@
 # Forge
 
+[![Test](https://github.com/jelmersnoeck/forge/actions/workflows/test.yml/badge.svg)](https://github.com/jelmersnoeck/forge/actions/workflows/test.yml)
+
 Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 
 ## Features

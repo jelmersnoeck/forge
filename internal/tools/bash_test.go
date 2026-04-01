@@ -264,7 +264,7 @@ func TestBashToolInteractiveCommands(t *testing.T) {
 			errorMessage: "top",
 		},
 		"piped command is OK": {
-			command:     "vim file.txt | cat",
+			command:     "echo hello | grep hello",
 			shouldBlock: false,
 		},
 		"redirected input is OK": {

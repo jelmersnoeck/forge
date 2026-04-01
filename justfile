@@ -64,13 +64,34 @@ dev-cli: build
 
 # ── Test ──────────────────────────────────────────────────────
 
-# Run all tests
+# Run all tests (unit + integration + e2e)
 test:
-  go test ./...
+  go test -race -timeout 5m ./...
 
 # Run tests with verbose output
 test-v:
-  go test -v ./...
+  go test -v -race -timeout 5m ./...
+
+# Run only unit tests (exclude integration and e2e)
+test-unit:
+  go test -race -timeout 5m $(go list ./... | grep -v '/test/')
+
+# Run integration tests
+test-integration: build
+  go test -v -race -timeout 10m -tags=integration ./test/integration/...
+
+# Run E2E tests
+test-e2e: build
+  go test -v -race -timeout 10m -tags=e2e ./test/e2e/...
+
+# Run all test suites (unit + integration + e2e)
+test-all: test-unit test-integration test-e2e
+
+# Run tests with coverage
+test-coverage:
+  go test -race -coverprofile=coverage.out -covermode=atomic ./...
+  go tool cover -html=coverage.out -o coverage.html
+  @echo "Coverage report: coverage.html"
 
 # ── Lint ──────────────────────────────────────────────────────
 

@@ -1,0 +1,88 @@
+# golangci-lint configuration
+# See: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - integration
+    - e2e
+
+linters:
+  enable:
+    - errcheck      # check for unchecked errors
+    - gofmt         # check formatting
+    - goimports     # check imports
+    - gosimple      # simplify code
+    - govet         # go vet
+    - ineffassign   # detect ineffectual assignments
+    - misspell      # check for misspellings
+    - staticcheck   # static analysis
+    - unused        # check for unused code
+    - unconvert     # remove unnecessary type conversions
+    - unparam       # detect unused function parameters
+    - revive        # general linter (replaces golint)
+    - bodyclose     # check HTTP response body is closed
+    - noctx         # detect sending http requests without context
+    - exportloopref # detect loop variable capture issues
+    - gocritic      # comprehensive linter
+    - gosec         # security checks
+    
+linters-settings:
+  errcheck:
+    # Check for blank assignments to errors
+    check-blank: true
+  
+  revive:
+    # Minimal rules to start
+    rules:
+      - name: exported
+        disabled: true # too noisy initially
+      - name: package-comments
+        disabled: true # too noisy initially
+      - name: unexported-return
+        disabled: true
+  
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+    disabled-checks:
+      - commentFormatting # conflicts with our style
+      - whyNoLint        # we don't require why comments on nolint
+  
+  gosec:
+    excludes:
+      - G104 # duplicates errcheck
+      - G304 # file path provided as taint input (too many false positives)
+
+issues:
+  # Don't fail on todos/fixmes
+  exclude-rules:
+    - linters:
+        - godot
+      text: "^Comment should end in a period"
+    
+    # Exclude some staticcheck messages
+    - linters:
+        - staticcheck
+      text: "SA1019:" # deprecation warnings
+    
+    # Exclude test files from certain checks
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+        - gocritic
+        - unparam
+        - funlen
+  
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+# Output configuration
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true

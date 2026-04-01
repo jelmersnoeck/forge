@@ -21,9 +21,9 @@ var interactiveCommands = map[string]string{
 	"more":     "Use 'cat' to read files directly.",
 	"top":      "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
 	"htop":     "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
-	"python":   "Use 'python script.py' to run a script, or 'python -c \"code\"' for one-liners.",
-	"python3":  "Use 'python3 script.py' to run a script, or 'python3 -c \"code\"' for one-liners.",
-	"node":     "Use 'node script.js' to run a script, or 'node -e \"code\"' for one-liners.",
+	"python":   "Python REPL requires interactive input. Use 'python script.py' to run a script, or 'python -c \"code\"' for one-liners.",
+	"python3":  "Python REPL requires interactive input. Use 'python3 script.py' to run a script, or 'python3 -c \"code\"' for one-liners.",
+	"node":     "Node REPL requires interactive input. Use 'node script.js' to run a script, or 'node -e \"code\"' for one-liners.",
 	"irb":      "Use 'ruby script.rb' to run a script, or 'ruby -e \"code\"' for one-liners.",
 	"rails":    "Use non-interactive flags like 'rails new app --api --skip-test' or 'rails generate model User name:string --no-interaction'.",
 	"npm":      "Use 'npm install' or add flags like 'npm init -y' for non-interactive mode.",
@@ -171,8 +171,11 @@ func checkInteractiveCommand(command string) string {
 	}
 
 	firstCmd := parts[0]
-	// Remove common prefixes
-	firstCmd = strings.TrimPrefix(firstCmd, "sudo")
+	// Remove common prefixes like sudo
+	if firstCmd == "sudo" && len(parts) > 1 {
+		parts = parts[1:] // skip sudo
+		firstCmd = parts[0]
+	}
 	firstCmd = strings.TrimSpace(firstCmd)
 	if len(strings.Fields(firstCmd)) > 0 {
 		firstCmd = strings.Fields(firstCmd)[0]
@@ -185,14 +188,58 @@ func checkInteractiveCommand(command string) string {
 
 	// Check against known interactive commands
 	if suggestion, found := interactiveCommands[firstCmd]; found {
+		// Special case: check for docker/kubectl -it BEFORE allowing
+		if firstCmd == "docker" {
+			if strings.Contains(lower, "docker exec -it") || strings.Contains(lower, "docker run -it") {
+				return "Docker interactive mode (-it) requires a TTY.\n\nUse 'docker exec container_name command' without -it flag, or 'docker logs' to view output."
+			}
+			// Other docker commands are fine
+			return ""
+		}
+
+		// Special cases: allow if command has arguments that indicate non-interactive use
+		switch firstCmd {
+		case "python", "python3":
+			// Allow if there's a script file or -c flag
+			if len(parts) > 1 {
+				arg := parts[1]
+				// Check if it's a flag (-c, -m, etc.) or a .py file
+				if strings.HasPrefix(arg, "-") || strings.HasSuffix(arg, ".py") {
+					return ""
+				}
+			}
+		case "node":
+			// Allow if there's a script file or -e flag
+			if len(parts) > 1 {
+				arg := parts[1]
+				if strings.HasPrefix(arg, "-") || strings.HasSuffix(arg, ".js") || strings.HasSuffix(arg, ".mjs") {
+					return ""
+				}
+			}
+		case "git":
+			// Allow git commands - they're generally fine
+			return ""
+		case "npm":
+			// Allow npm with subcommands (install, test, run, etc.)
+			// Block bare "npm init" without flags
+			if len(parts) > 1 {
+				subcommand := parts[1]
+				// npm init without -y flag is interactive
+				if subcommand == "init" && !strings.Contains(lower, "-y") {
+					return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", firstCmd, suggestion)
+				}
+				// Other npm commands are fine
+				return ""
+			}
+		case "mysql", "psql":
+			// Already handled by nonInteractivePatterns check above
+			return ""
+		}
+
 		return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", firstCmd, suggestion)
 	}
 
-	// Special case: check for common interactive patterns
-	if strings.Contains(lower, "docker exec -it") || strings.Contains(lower, "docker run -it") {
-		return "Docker interactive mode (-it) requires a TTY.\n\nUse 'docker exec container_name command' without -it flag, or 'docker logs' to view output."
-	}
-
+	// Special case: check for kubectl -it
 	if strings.Contains(lower, "kubectl exec -it") {
 		return "Kubectl interactive mode (-it) requires a TTY.\n\nUse 'kubectl exec pod_name -- command' without -it flag."
 	}

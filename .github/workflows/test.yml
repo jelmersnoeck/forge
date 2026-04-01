@@ -1,0 +1,91 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          # Install ripgrep for Grep tool tests
+          sudo apt-get update
+          sudo apt-get install -y ripgrep tmux
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test -v -race -timeout 5m ./...
+
+      - name: Build binaries
+        run: |
+          go build -o forge ./cmd/forge
+          chmod +x forge
+
+      - name: Run integration tests
+        run: go test -v -race -timeout 10m -tags=integration ./test/integration/...
+
+      - name: Run E2E tests
+        run: go test -v -race -timeout 10m -tags=e2e ./test/e2e/...
+        env:
+          # Use a dummy API key for E2E tests that don't call Anthropic
+          ANTHROPIC_API_KEY: sk-ant-test-dummy-key-for-ci
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  auto-merge:
+    name: Auto-merge
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{github.event.pull_request.html_url}}
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
