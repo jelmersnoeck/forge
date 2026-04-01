@@ -91,6 +91,16 @@ func (l *Loop) HistoryID() string {
 	return l.historyID
 }
 
+// TotalUsage returns the cumulative token usage for this session.
+func (l *Loop) TotalUsage() types.TokenUsage {
+	return l.totalUsage
+}
+
+// Model returns the model being used.
+func (l *Loop) Model() string {
+	return l.model
+}
+
 // Send processes a user prompt and runs the agentic loop.
 func (l *Loop) Send(ctx context.Context, promptText string, emit func(types.OutboundEvent)) error {
 	userMsg := types.ChatMessage{
@@ -359,15 +369,21 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 					if delta.Usage.OutputTokens > 0 {
 						l.totalUsage.OutputTokens += delta.Usage.OutputTokens
 					}
+					if delta.Usage.CacheCreationTokens > 0 {
+						l.totalUsage.CacheCreationTokens += delta.Usage.CacheCreationTokens
+					}
+					if delta.Usage.CacheReadTokens > 0 {
+						l.totalUsage.CacheReadTokens += delta.Usage.CacheReadTokens
+					}
 
-					emit(types.OutboundEvent{
-						ID:        uuid.New().String(),
-						SessionID: l.sessionID,
-						Type:      "usage",
-						Content:   fmt.Sprintf("tokens: in=%d out=%d (session total: in=%d out=%d)", delta.Usage.InputTokens, delta.Usage.OutputTokens, l.totalUsage.InputTokens, l.totalUsage.OutputTokens),
-						Usage:     &l.totalUsage,
-						Timestamp: time.Now().Unix(),
-					})
+				emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: l.sessionID,
+					Type:      "usage",
+					Usage:     &l.totalUsage,
+					Model:     l.model,
+					Timestamp: time.Now().Unix(),
+				})
 				}
 
 			case "message_stop":

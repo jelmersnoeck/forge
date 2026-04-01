@@ -31,6 +31,7 @@ var (
 	queueStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	queueHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
 	thinkingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Italic(true)
+	costStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	userMsgStyle     = lipgloss.NewStyle().
 				Background(lipgloss.Color("236")).
 				Foreground(lipgloss.Color("15")).
@@ -62,9 +63,10 @@ type model struct {
 	err             error
 	scrollOffset    int  // how many lines scrolled up from bottom
 	autoScroll      bool // auto-scroll to bottom on new content
-	modelName       string
-	totalUsage      types.TokenUsage
-	totalCost       float64
+
+	// Cost tracking
+	totalUsage types.TokenUsage // session total usage
+	modelName  string           // model name for cost calculation
 }
 
 type serverEvent types.OutboundEvent
@@ -140,7 +142,7 @@ func main() {
 	resumeHint := ""
 	if *server != "" {
 		modeDesc = "remote"
-		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge-cli --server "+*server+" --resume "+sessionID)
+		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge-cli --server " + *server + " --resume " + sessionID)
 	} else {
 		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. (ephemeral session)")
 	}
@@ -262,16 +264,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			text := m.input
-			m.input = "" // Clear input immediately
+			m.input = ""       // Clear input immediately
 			m.exitAttempts = 0 // Reset exit attempts on new message
-			
+
 			// If nothing in queue and not working, send immediately without queuing
 			if len(m.queue) == 0 && !m.working {
 				// Display the user's message in the output with distinct styling
 				m.output = append(m.output, "", userMsgStyle.Render("You: ")+text)
 				return m, m.sendMessage(text)
 			}
-			
+
 			// Otherwise, add to queue (will be sent when current work completes)
 			m.queue = append(m.queue, text)
 			return m, nil
@@ -344,9 +346,12 @@ func (m model) getOutputHeight() int {
 	if m.thinking {
 		thinkingHeight = 1 // thinking indicator
 	}
-	inputHeight := 3   // border + content
-	costHeight := 1    // cost tracker line
-	return m.height - queueHeight - thinkingHeight - inputHeight - costHeight - 1
+	costHeight := 0
+	if m.modelName != "" && (m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0) {
+		costHeight = 1 // cost tracker line
+	}
+	inputHeight := 3 // border + content
+	return m.height - queueHeight - thinkingHeight - costHeight - inputHeight - 1
 }
 
 func (m model) spinner() string {
@@ -384,6 +389,27 @@ func (m model) View() string {
 	var thinkingIndicator string
 	if m.thinking {
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
+	}
+
+	// Build cost status bar
+	var costStatusBar string
+	if m.modelName != "" && (m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0) {
+		sessionCost := cost.Calculate(m.modelName, m.totalUsage)
+
+		// Build token breakdown
+		parts := []string{
+			fmt.Sprintf("in:%d", m.totalUsage.InputTokens),
+			fmt.Sprintf("out:%d", m.totalUsage.OutputTokens),
+		}
+		if m.totalUsage.CacheCreationTokens > 0 {
+			parts = append(parts, fmt.Sprintf("cache_w:%d", m.totalUsage.CacheCreationTokens))
+		}
+		if m.totalUsage.CacheReadTokens > 0 {
+			parts = append(parts, fmt.Sprintf("cache_r:%d", m.totalUsage.CacheReadTokens))
+		}
+
+		tokenBreakdown := strings.Join(parts, " ")
+		costStatusBar = costStyle.Render(fmt.Sprintf("💰 session: %s (%s)", cost.FormatCost(sessionCost), tokenBreakdown))
 	}
 
 	// Build queue display
@@ -424,7 +450,8 @@ func (m model) View() string {
 	var costTracker string
 	if m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0 {
 		tokens := fmt.Sprintf("in: %d | out: %d", m.totalUsage.InputTokens, m.totalUsage.OutputTokens)
-		costStr := cost.FormatCost(m.totalCost)
+		totalCost := cost.Calculate(m.modelName, m.totalUsage)
+		costStr := cost.FormatCost(totalCost)
 		costTracker = costTrackerStyle.Render(fmt.Sprintf("  %s | %s", tokens, costStr))
 	}
 
@@ -432,6 +459,9 @@ func (m model) View() string {
 	var parts []string
 	if outputArea != "" {
 		parts = append(parts, outputArea)
+	}
+	if costStatusBar != "" {
+		parts = append(parts, costStatusBar)
 	}
 	if thinkingIndicator != "" {
 		parts = append(parts, thinkingIndicator)
@@ -480,9 +510,13 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		m.output = append(m.output, queueStyle.Render("  ⏱  Queued on complete: ")+dimStyle.Render(event.Content))
 
 	case "usage":
+		// Loop sends cumulative totalUsage
 		if event.Usage != nil {
 			m.totalUsage = *event.Usage
-			m.totalCost = cost.Calculate(m.modelName, m.totalUsage)
+		}
+		// Track model name for cost calculation
+		if event.Model != "" {
+			m.modelName = event.Model
 		}
 
 	case "error":
@@ -516,14 +550,14 @@ func (m *model) flushText() {
 func (m model) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
 		body, _ := json.Marshal(map[string]string{"text": text})
-		
+
 		var url string
 		if m.interactiveMode {
 			url = fmt.Sprintf("%s/messages", m.server)
 		} else {
 			url = fmt.Sprintf("%s/sessions/%s/messages", m.server, m.sessionID)
 		}
-		
+
 		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			return errMsg(err)
@@ -541,14 +575,14 @@ func (m model) sendMessage(text string) tea.Cmd {
 func (m model) sendInterrupt() tea.Cmd {
 	return func() tea.Msg {
 		body, _ := json.Marshal(map[string]string{"interrupt": "true"})
-		
+
 		var url string
 		if m.interactiveMode {
 			url = fmt.Sprintf("%s/interrupt", m.server)
 		} else {
 			url = fmt.Sprintf("%s/sessions/%s/interrupt", m.server, m.sessionID)
 		}
-		
+
 		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			return errMsg(err)
@@ -587,7 +621,7 @@ func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool
 	} else {
 		url = fmt.Sprintf("%s/sessions/%s/events", server, sessionID)
 	}
-	
+
 	resp, err := http.Get(url)
 	if err != nil {
 		p.Send(errMsg(err))
