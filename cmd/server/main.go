@@ -64,7 +64,7 @@ func main() {
 	}
 
 	serverID := uuid.New().String()[:8]
-	be := backend.NewTmux(agentBin, serverID)
+	be := backend.NewTmux(agentBin, serverID, workspaceDir)
 
 	// Clean up agent sessions on shutdown.
 	sigCh := make(chan os.Signal, 1)
