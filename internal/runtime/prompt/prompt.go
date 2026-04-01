@@ -40,13 +40,16 @@ Always explain what you're doing and why.`
 func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var blocks []types.SystemBlock
 
-	// 1. Base coding agent prompt
+	// 1. Base coding agent prompt (cached - never changes)
 	blocks = append(blocks, types.SystemBlock{
 		Type: "text",
 		Text: basePrompt,
+		CacheControl: &types.CacheControl{
+			Type: "ephemeral",
+		},
 	})
 
-	// 2. Environment info
+	// 2. Environment info (cached - only changes daily when date changes)
 	envInfo := fmt.Sprintf(`Environment Information:
 - Working directory: %s
 - Platform: %s
@@ -55,6 +58,9 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	blocks = append(blocks, types.SystemBlock{
 		Type: "text",
 		Text: envInfo,
+		CacheControl: &types.CacheControl{
+			Type: "ephemeral",
+		},
 	})
 
 	// 3. CLAUDE.md content wrapped in <system-reminder> tags
@@ -105,7 +111,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		})
 	}
 
-	// 5. Rules wrapped in <system-reminder> tags
+	// 5. Rules wrapped in <system-reminder> tags (cached - rarely changes)
 	if len(bundle.Rules) > 0 {
 		var rulesContent strings.Builder
 		rulesContent.WriteString("<system-reminder>\n")
@@ -122,10 +128,13 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		blocks = append(blocks, types.SystemBlock{
 			Type: "text",
 			Text: rulesContent.String(),
+			CacheControl: &types.CacheControl{
+				Type: "ephemeral",
+			},
 		})
 	}
 
-	// 6. Skill descriptions
+	// 6. Skill descriptions (cached - rarely changes)
 	if len(bundle.SkillDescriptions) > 0 {
 		var skillsContent strings.Builder
 		skillsContent.WriteString("Available Skills:\n\n")
@@ -141,10 +150,13 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		blocks = append(blocks, types.SystemBlock{
 			Type: "text",
 			Text: skillsContent.String(),
+			CacheControl: &types.CacheControl{
+				Type: "ephemeral",
+			},
 		})
 	}
 
-	// 7. Agent descriptions
+	// 7. Agent descriptions (cached - rarely changes)
 	if len(bundle.AgentDefinitions) > 0 {
 		var agentsContent strings.Builder
 		agentsContent.WriteString("Available Agents:\n\n")
@@ -165,6 +177,9 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		blocks = append(blocks, types.SystemBlock{
 			Type: "text",
 			Text: agentsContent.String(),
+			CacheControl: &types.CacheControl{
+				Type: "ephemeral",
+			},
 		})
 	}
 

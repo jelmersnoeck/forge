@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -39,10 +40,10 @@ func TestAssemble_ClaudeMD(t *testing.T) {
 
 	blocks := Assemble(bundle, "/home/troy/greendale")
 
-	// Find the CLAUDE.md block
+	// Find the CLAUDE.md block (contains system-reminder and CLAUDE.md content)
 	var claudeBlock *types.SystemBlock
 	for _, block := range blocks {
-		if block.CacheControl != nil {
+		if block.CacheControl != nil && strings.Contains(block.Text, "Troy Barnes Rules") {
 			claudeBlock = &block
 			break
 		}
