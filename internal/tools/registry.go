@@ -8,16 +8,22 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
+// MaxResultChars is the default cap on tool result text size.
+// Results exceeding this get head+tail truncated. ~7500 tokens at 4 bytes/token.
+const MaxResultChars = 30_000
+
 // Registry holds registered tools and dispatches execution.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]types.ToolDefinition
+	mu             sync.RWMutex
+	tools          map[string]types.ToolDefinition
+	maxResultChars int
 }
 
 // NewRegistry creates an empty tool registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		tools: make(map[string]types.ToolDefinition),
+		tools:          make(map[string]types.ToolDefinition),
+		maxResultChars: MaxResultChars,
 	}
 }
 
@@ -34,6 +40,13 @@ func (r *Registry) Get(name string) (types.ToolDefinition, bool) {
 	defer r.mu.RUnlock()
 	def, ok := r.tools[name]
 	return def, ok
+}
+
+// IsReadOnly returns true if the named tool is marked read-only.
+// Returns false for unknown tools.
+func (r *Registry) IsReadOnly(name string) bool {
+	def, ok := r.Get(name)
+	return ok && def.ReadOnly
 }
 
 // All returns all registered tool definitions.
@@ -63,12 +76,48 @@ func (r *Registry) Schemas() []types.ToolSchema {
 }
 
 // Execute runs a tool by name with the given input.
+// Results exceeding MaxResultChars are truncated (head+tail).
 func (r *Registry) Execute(name string, input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
 	def, ok := r.Get(name)
 	if !ok {
 		return types.ToolResult{}, fmt.Errorf("tool not found: %s", name)
 	}
-	return def.Handler(input, ctx)
+
+	result, err := def.Handler(input, ctx)
+	if err != nil {
+		return result, err
+	}
+
+	// Don't truncate errors — they're usually short and always important.
+	if result.IsError {
+		return result, nil
+	}
+
+	r.truncateResult(&result)
+	return result, nil
+}
+
+// truncateResult caps text content blocks that exceed maxResultChars.
+// Keeps 40% from the head and 40% from the tail with a marker in between.
+func (r *Registry) truncateResult(result *types.ToolResult) {
+	for i, block := range result.Content {
+		switch block.Type {
+		case "text":
+			if len(block.Text) <= r.maxResultChars {
+				continue
+			}
+			headSize := r.maxResultChars * 2 / 5
+			tailSize := r.maxResultChars * 2 / 5
+			omitted := len(block.Text) - headSize - tailSize
+
+			result.Content[i].Text = block.Text[:headSize] +
+				fmt.Sprintf("\n\n... [truncated: %d characters omitted] ...\n\n", omitted) +
+				block.Text[len(block.Text)-tailSize:]
+
+		case "image":
+			// Images are passed through — the API handles them separately.
+		}
+	}
 }
 
 // NewDefaultRegistry creates a registry with all built-in tools.

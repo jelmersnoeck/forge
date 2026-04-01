@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -125,4 +126,134 @@ func TestNewDefaultRegistry(t *testing.T) {
 		_, ok := reg.Get(name)
 		r.True(ok, "expected tool %s to be registered", name)
 	}
+}
+
+func TestIsReadOnly(t *testing.T) {
+	tests := map[string]struct {
+		tools    []types.ToolDefinition
+		query    string
+		wantRead bool
+	}{
+		"read-only tool": {
+			tools: []types.ToolDefinition{
+				{Name: "Glob", ReadOnly: true, Handler: func(map[string]any, types.ToolContext) (types.ToolResult, error) { return types.ToolResult{}, nil }},
+			},
+			query:    "Glob",
+			wantRead: true,
+		},
+		"mutating tool": {
+			tools: []types.ToolDefinition{
+				{Name: "Bash", ReadOnly: false, Handler: func(map[string]any, types.ToolContext) (types.ToolResult, error) { return types.ToolResult{}, nil }},
+			},
+			query:    "Bash",
+			wantRead: false,
+		},
+		"unknown tool": {
+			tools:    nil,
+			query:    "DeanPeltonTool",
+			wantRead: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			reg := NewRegistry()
+			for _, tool := range tc.tools {
+				reg.Register(tool)
+			}
+			r.Equal(tc.wantRead, reg.IsReadOnly(tc.query))
+		})
+	}
+}
+
+func TestTruncateResult(t *testing.T) {
+	tests := map[string]struct {
+		maxChars   int
+		inputLen   int
+		wantTrunc  bool
+		isError    bool
+	}{
+		"under limit": {
+			maxChars:  1000,
+			inputLen:  500,
+			wantTrunc: false,
+		},
+		"at limit": {
+			maxChars:  1000,
+			inputLen:  1000,
+			wantTrunc: false,
+		},
+		"over limit": {
+			maxChars:  1000,
+			inputLen:  5000,
+			wantTrunc: true,
+		},
+		"error results not truncated": {
+			maxChars:  100,
+			inputLen:  500,
+			wantTrunc: false,
+			isError:   true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			reg := NewRegistry()
+			reg.maxResultChars = tc.maxChars
+
+			text := strings.Repeat("E Pluribus Anus ", tc.inputLen/16+1)
+			text = text[:tc.inputLen]
+
+			reg.Register(types.ToolDefinition{
+				Name: "test_tool",
+				Handler: func(map[string]any, types.ToolContext) (types.ToolResult, error) {
+					return types.ToolResult{
+						Content: []types.ToolResultContent{{Type: "text", Text: text}},
+						IsError: tc.isError,
+					}, nil
+				},
+			})
+
+			result, err := reg.Execute("test_tool", map[string]any{}, types.ToolContext{})
+			r.NoError(err)
+
+			switch {
+			case tc.wantTrunc:
+				r.Less(len(result.Content[0].Text), tc.inputLen)
+				r.Contains(result.Content[0].Text, "truncated")
+				// Head and tail should be present.
+				r.True(strings.HasPrefix(result.Content[0].Text, text[:100]))
+				r.True(strings.HasSuffix(result.Content[0].Text, text[len(text)-100:]))
+			default:
+				r.Equal(text, result.Content[0].Text)
+			}
+		})
+	}
+}
+
+func TestTruncateResult_ImagePassthrough(t *testing.T) {
+	r := require.New(t)
+
+	reg := NewRegistry()
+	reg.maxResultChars = 10 // very small limit
+
+	reg.Register(types.ToolDefinition{
+		Name: "img_tool",
+		Handler: func(map[string]any, types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{
+					Type:   "image",
+					Source: &types.ImageSource{Type: "base64", MediaType: "image/png", Data: strings.Repeat("A", 10000)},
+				}},
+			}, nil
+		},
+	})
+
+	result, err := reg.Execute("img_tool", map[string]any{}, types.ToolContext{})
+	r.NoError(err)
+	r.Equal("image", result.Content[0].Type)
+	r.Equal(10000, len(result.Content[0].Source.Data)) // untouched
 }

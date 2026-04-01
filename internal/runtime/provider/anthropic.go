@@ -25,7 +25,6 @@ func NewAnthropic(apiKey string) *AnthropicProvider {
 
 // Chat creates a streaming messages request and returns a channel of deltas.
 func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
-	// Convert types.ChatRequest to Anthropic SDK format
 	system := make([]anthropic.TextBlockParam, len(req.System))
 	for i, block := range req.System {
 		textBlock := anthropic.TextBlockParam{
@@ -49,7 +48,6 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 			case "tool_use":
 				content[j] = anthropic.NewToolUseBlock(block.ID, block.Input, block.Name)
 			case "tool_result":
-				// Serialize tool result content to JSON
 				resultJSON, err := json.Marshal(block.Content)
 				if err != nil {
 					return nil, fmt.Errorf("marshal tool result: %w", err)
@@ -66,7 +64,6 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 
 	tools := make([]anthropic.ToolUnionParam, len(req.Tools))
 	for i, tool := range req.Tools {
-		// Convert input schema to ToolInputSchemaParam
 		schemaBytes, err := json.Marshal(tool.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("marshal tool input schema: %w", err)
@@ -84,7 +81,6 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		tools[i] = toolUnion
 	}
 
-	// Create streaming request
 	streamParams := anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
 		MaxTokens: int64(req.MaxTokens),
@@ -98,22 +94,30 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 
 	stream := p.client.Messages.NewStreaming(ctx, streamParams)
 
-	// Create channel and spawn goroutine to read stream
 	ch := make(chan types.ChatDelta, 16)
 
 	go func() {
 		defer close(ch)
 		defer stream.Close()
 
-		// Track active tool use for assembling the JSON input
 		var activeToolUse *types.ChatDelta
 
 		for stream.Next() {
 			event := stream.Current()
 
 			switch event.Type {
+			case "message_start":
+				// Extract input token usage from the initial message.
+				usage := event.Message.Usage
+				ch <- types.ChatDelta{
+					Type: "usage",
+					Usage: &types.TokenUsage{
+						InputTokens:  int(usage.InputTokens),
+						OutputTokens: int(usage.OutputTokens),
+					},
+				}
+
 			case "content_block_start":
-				// Check if it's a tool use block
 				if event.ContentBlock.Type == "tool_use" {
 					activeToolUse = &types.ChatDelta{
 						Type: "tool_use_start",
@@ -134,7 +138,6 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 
 				case "input_json_delta":
 					if activeToolUse != nil {
-						// The PartialJSON field contains the delta
 						ch <- types.ChatDelta{
 							Type:        "tool_use_delta",
 							PartialJSON: event.Delta.PartialJSON,
@@ -150,6 +153,15 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 					activeToolUse = nil
 				}
 
+			case "message_delta":
+				// Extract final output token count from message_delta.
+				ch <- types.ChatDelta{
+					Type: "usage",
+					Usage: &types.TokenUsage{
+						OutputTokens: int(event.Usage.OutputTokens),
+					},
+				}
+
 			case "message_stop":
 				stopReason := string(event.Message.StopReason)
 				ch <- types.ChatDelta{
@@ -160,7 +172,6 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		}
 
 		if err := stream.Err(); err != nil {
-			// Can't return error from goroutine, so we'll emit an error delta
 			ch <- types.ChatDelta{
 				Type: "error",
 				Text: err.Error(),
