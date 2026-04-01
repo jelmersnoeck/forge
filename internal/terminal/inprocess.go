@@ -108,7 +108,7 @@ func (t *InProcessTerminal) CreatePane(ctx context.Context, window WindowID, tit
 }
 
 func (t *InProcessTerminal) RunInPane(ctx context.Context, pane PaneID, command string, cwd string) (string, int, error) {
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd := exec.CommandContext(ctx, "bash", "-l", "-c", command)
 	cmd.Dir = cwd
 
 	var stdout, stderr bytes.Buffer

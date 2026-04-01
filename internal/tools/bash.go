@@ -103,7 +103,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	execCtx, cancel := context.WithTimeout(ctx.Ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "bash", "-c", command)
+	cmd := exec.CommandContext(execCtx, "bash", "-l", "-c", command)
 	cmd.Dir = ctx.CWD
 
 	var stdout, stderr bytes.Buffer
