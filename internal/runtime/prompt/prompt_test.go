@@ -175,6 +175,12 @@ func TestAssemble_AllFeatures(t *testing.T) {
 
 	blocks := Assemble(bundle, "/test")
 
-	// Should have: base prompt, env info, CLAUDE.md, rules, skills, agents = 6 blocks
-	r.Equal(6, len(blocks))
+	// Should have: base prompt, env info, CLAUDE.md, bundled (rules+skills+agents) = 4 blocks
+	r.Equal(4, len(blocks))
+	
+	// Verify bundled content contains all sections
+	bundledBlock := blocks[3]
+	r.Contains(bundledBlock.Text, "Test rule")
+	r.Contains(bundledBlock.Text, "test-skill")
+	r.Contains(bundledBlock.Text, "test-agent")
 }
