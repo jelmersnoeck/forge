@@ -593,3 +593,221 @@ func TestLoop_CompactLargeHistory(t *testing.T) {
 
 	r.GreaterOrEqual(compactEvents, 1)
 }
+
+// ── Stream error mock providers ──────────────────────────────
+
+// MockStreamErrorProvider sends error deltas through the channel (like the real SDK).
+// Fails failCount times via channel error, then succeeds.
+type MockStreamErrorProvider struct {
+	failCount  int
+	errorText  string
+	statusCode int
+	callCount  int
+	mu         sync.Mutex
+}
+
+func (m *MockStreamErrorProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu.Unlock()
+
+	ch := make(chan types.ChatDelta, 4)
+	go func() {
+		defer close(ch)
+		if count <= m.failCount {
+			ch <- types.ChatDelta{
+				Type:       "error",
+				Text:       m.errorText,
+				StatusCode: m.statusCode,
+			}
+			return
+		}
+		ch <- types.ChatDelta{Type: "text_delta", Text: "Cool. Cool cool cool."}
+		ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+	}()
+	return ch, nil
+}
+
+// MockAlwaysStreamErrorProvider always sends the same error delta. Never succeeds.
+type MockAlwaysStreamErrorProvider struct {
+	errorText  string
+	statusCode int
+}
+
+func (m *MockAlwaysStreamErrorProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	ch := make(chan types.ChatDelta, 1)
+	go func() {
+		defer close(ch)
+		ch <- types.ChatDelta{
+			Type:       "error",
+			Text:       m.errorText,
+			StatusCode: m.statusCode,
+		}
+	}()
+	return ch, nil
+}
+
+// ── Stream error tests ──────────────────────────────────────
+
+func TestLoop_StreamError_PromptTooLong_Compacts(t *testing.T) {
+	r := require.New(t)
+
+	// First call: prompt-too-long error via channel. Second call: success.
+	provider := &MockStreamErrorProvider{
+		failCount:  1,
+		errorText:  "prompt is too long: 250000 tokens > 200000",
+		statusCode: 400,
+	}
+
+	// Need some history so compact has something to remove.
+	registry := tools.NewRegistry()
+	l := makeLoop(t, provider, registry, func(o *Options) {
+		fastRetry := retry.Policy{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
+		o.RetryPolicy = &fastRetry
+	})
+
+	// Seed history with several messages so compact can drop some.
+	for i := 0; i < 10; i++ {
+		l.history = append(l.history,
+			types.ChatMessage{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: strings.Repeat("Señor Chang teaches Spanish at Greendale ", 20)}}},
+			types.ChatMessage{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: strings.Repeat("That's a normal amount of Spanish ", 20)}}},
+		)
+	}
+
+	var events []types.OutboundEvent
+	var mu sync.Mutex
+	emit := func(e types.OutboundEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+
+	err := l.Send(context.Background(), "Tell me about Greendale", emit)
+	r.NoError(err)
+
+	var compactCount int
+	var hasText bool
+	for _, e := range events {
+		switch e.Type {
+		case "compact":
+			compactCount++
+		case "text":
+			hasText = true
+		}
+	}
+
+	r.GreaterOrEqual(compactCount, 1, "should have compacted on prompt-too-long")
+	r.True(hasText, "should have succeeded after compaction")
+	r.Equal(2, provider.callCount, "should have called provider twice (fail + success)")
+}
+
+func TestLoop_StreamError_Retryable_Retries(t *testing.T) {
+	r := require.New(t)
+
+	provider := &MockStreamErrorProvider{
+		failCount:  2,
+		errorText:  "529: overloaded",
+		statusCode: 529,
+	}
+
+	fastRetry := retry.Policy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
+	l := makeLoop(t, provider, tools.NewRegistry(), func(o *Options) {
+		o.RetryPolicy = &fastRetry
+	})
+
+	var events []types.OutboundEvent
+	var mu sync.Mutex
+	emit := func(e types.OutboundEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+
+	err := l.Send(context.Background(), "Pop pop!", emit)
+	r.NoError(err)
+
+	var retryCount int
+	var hasText bool
+	for _, e := range events {
+		switch e.Type {
+		case "retry":
+			retryCount++
+		case "text":
+			hasText = true
+		}
+	}
+
+	r.Equal(2, retryCount, "should have retried twice")
+	r.True(hasText, "should have succeeded after retries")
+	r.Equal(3, provider.callCount, "2 failures + 1 success")
+}
+
+func TestLoop_StreamError_Fatal_Returns(t *testing.T) {
+	r := require.New(t)
+
+	provider := &MockAlwaysStreamErrorProvider{
+		errorText:  "invalid api key",
+		statusCode: 401,
+	}
+
+	l := makeLoop(t, provider, tools.NewRegistry())
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "Should fail immediately", emit)
+
+	r.Error(err)
+	r.Contains(err.Error(), "invalid api key")
+}
+
+func TestLoop_StreamError_MaxRetries(t *testing.T) {
+	r := require.New(t)
+
+	provider := &MockAlwaysStreamErrorProvider{
+		errorText:  "529: overloaded",
+		statusCode: 529,
+	}
+
+	fastRetry := retry.Policy{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
+	l := makeLoop(t, provider, tools.NewRegistry(), func(o *Options) {
+		o.RetryPolicy = &fastRetry
+	})
+
+	var events []types.OutboundEvent
+	var mu sync.Mutex
+	emit := func(e types.OutboundEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+
+	err := l.Send(context.Background(), "Never gonna work", emit)
+	r.Error(err)
+	r.Contains(err.Error(), "stream error after 3 retries")
+
+	var retryCount int
+	for _, e := range events {
+		if e.Type == "retry" {
+			retryCount++
+		}
+	}
+	r.Equal(3, retryCount, "should have retried max times before bailing")
+}
+
+func TestLoop_StreamError_MaxCompact(t *testing.T) {
+	r := require.New(t)
+
+	// Always returns prompt-too-long — compaction can't help because history is tiny.
+	provider := &MockAlwaysStreamErrorProvider{
+		errorText:  "prompt is too long: 250000 tokens > 200000",
+		statusCode: 400,
+	}
+
+	l := makeLoop(t, provider, tools.NewRegistry())
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "This will never fit", emit)
+
+	r.Error(err)
+	r.Contains(err.Error(), "prompt too long after 3 compaction attempts")
+}

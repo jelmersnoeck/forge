@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	classifyerr "github.com/jelmersnoeck/forge/internal/runtime/errors"
 	"github.com/jelmersnoeck/forge/internal/runtime/prompt"
 	"github.com/jelmersnoeck/forge/internal/runtime/retry"
 	"github.com/jelmersnoeck/forge/internal/runtime/session"
@@ -147,8 +148,12 @@ func (l *Loop) Resume(ctx context.Context, historyID string, promptText string, 
 	return l.Send(ctx, promptText, emit)
 }
 
+const maxCompactRetries = 3
+
 func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) error {
 	turnCount := 0
+	streamRetries := 0
+	compactRetries := 0
 
 	// Emit model info at the start
 	if turnCount == 0 {
@@ -246,8 +251,66 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		// Collect assistant message from deltas.
 		assistantMsg, err := l.collectAssistantMessage(ctx, deltaChan, emit)
 		if err != nil {
-			return fmt.Errorf("collect assistant message: %w", err)
+			// ── Stream error classification ────────────────────
+			// Errors from the delta channel carry HTTP status codes.
+			// Classify them to decide: compact, retry, or bail.
+			var se *streamError
+			if !isStreamError(err, &se) {
+				return fmt.Errorf("collect assistant message: %w", err)
+			}
+
+			classified := classifyerr.Classify(se, se.statusCode)
+
+			switch {
+			case classified.ShouldCompact:
+				compactRetries++
+				if compactRetries > maxCompactRetries {
+					return fmt.Errorf("prompt too long after %d compaction attempts: %w", maxCompactRetries, err)
+				}
+
+				compacted, removed := tokens.Compact(l.history, l.budget, systemTokens, toolTokens)
+				l.history = compacted
+				emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: l.sessionID,
+					Type:      "compact",
+					Content:   fmt.Sprintf("Prompt too long — compacted: removed %d messages (attempt %d/%d)", removed, compactRetries, maxCompactRetries),
+					Timestamp: time.Now().Unix(),
+				})
+				turnCount-- // don't count failed turn
+				continue
+
+			case classified.IsRetryable:
+				streamRetries++
+				if streamRetries > l.retryPolicy.MaxRetries {
+					return fmt.Errorf("stream error after %d retries: %w", l.retryPolicy.MaxRetries, err)
+				}
+
+				delay := retry.Backoff(streamRetries-1, l.retryPolicy.BaseDelay, l.retryPolicy.MaxDelay)
+				emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: l.sessionID,
+					Type:      "retry",
+					Content:   fmt.Sprintf("Stream error (%s), retrying in %s (attempt %d/%d)", classified.Message, delay.Round(time.Millisecond), streamRetries, l.retryPolicy.MaxRetries),
+					Timestamp: time.Now().Unix(),
+				})
+
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(delay):
+				}
+				turnCount-- // don't count failed turn
+				continue
+
+			default:
+				return fmt.Errorf("API error: %w", err)
+			}
 		}
+
+		// Success — reset stream retry counters.
+		streamRetries = 0
+		compactRetries = 0
 
 		l.history = append(l.history, assistantMsg)
 
@@ -280,6 +343,24 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			return fmt.Errorf("persist tool result message: %w", err)
 		}
 	}
+}
+
+// streamError carries an API error surfaced through the delta channel.
+// Wraps the error message with the HTTP status code so the loop can classify it.
+type streamError struct {
+	message    string
+	statusCode int
+}
+
+func (e *streamError) Error() string { return e.message }
+
+// isStreamError checks if err is a *streamError and assigns it to target.
+func isStreamError(err error, target **streamError) bool {
+	se, ok := err.(*streamError)
+	if ok {
+		*target = se
+	}
+	return ok
 }
 
 func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan types.ChatDelta, emit func(types.OutboundEvent)) (types.ChatMessage, error) {
@@ -407,7 +488,10 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 				}, nil
 
 			case "error":
-				return types.ChatMessage{}, fmt.Errorf("stream error: %s", delta.Text)
+				return types.ChatMessage{}, &streamError{
+					message:    delta.Text,
+					statusCode: delta.StatusCode,
+				}
 			}
 		}
 	}

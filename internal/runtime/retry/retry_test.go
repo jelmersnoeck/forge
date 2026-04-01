@@ -139,7 +139,7 @@ func TestBackoff(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			delay := backoff(tc.attempt, tc.base, tc.max)
+			delay := Backoff(tc.attempt, tc.base, tc.max)
 			r.LessOrEqual(delay, tc.max)
 			r.Greater(delay, time.Duration(0))
 		})

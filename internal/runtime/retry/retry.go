@@ -111,7 +111,7 @@ func Do[T any](ctx context.Context, policy Policy, onRetry func(Attempt), fn fun
 			return zero, err
 		}
 
-		delay := backoff(attempt, policy.BaseDelay, policy.MaxDelay)
+		delay := Backoff(attempt, policy.BaseDelay, policy.MaxDelay)
 
 		if onRetry != nil {
 			onRetry(Attempt{
@@ -130,10 +130,10 @@ func Do[T any](ctx context.Context, policy Policy, onRetry func(Attempt), fn fun
 	}
 }
 
-// backoff calculates delay with exponential growth + jitter.
+// Backoff calculates delay with exponential growth + jitter.
 //
 //	delay = min(base * 2^attempt + jitter, max)
-func backoff(attempt int, base, max time.Duration) time.Duration {
+func Backoff(attempt int, base, max time.Duration) time.Duration {
 	exp := math.Pow(2, float64(attempt))
 	delay := time.Duration(float64(base) * exp)
 
