@@ -133,5 +133,16 @@ func NewDefaultRegistry() *Registry {
 	r.Register(QueueOnCompleteTool)
 	r.Register(WebSearchTool())
 	r.Register(ReflectTool())
+	// Background task tools
+	r.Register(TaskCreateTool())
+	r.Register(TaskGetTool())
+	r.Register(TaskListTool())
+	r.Register(TaskStopTool())
+	r.Register(TaskOutputTool())
+	// Sub-agent tools
+	r.Register(AgentTool())
+	r.Register(AgentGetTool())
+	r.Register(AgentListTool())
+	r.Register(AgentStopTool())
 	return r
 }
