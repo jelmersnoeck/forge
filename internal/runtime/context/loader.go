@@ -92,6 +92,15 @@ func (l *Loader) loadUserContext(bundle *types.ContextBundle) error {
 		})
 	}
 
+	// Load user AGENTS.md
+	if content, err := os.ReadFile(filepath.Join(home, "AGENTS.md")); err == nil {
+		bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
+			Path:    filepath.Join(home, "AGENTS.md"),
+			Content: string(content),
+			Level:   "user",
+		})
+	}
+
 	// Load rules from ~/.claude/rules/
 	rulesDir := filepath.Join(claudeDir, "rules")
 	if entries, err := os.ReadDir(rulesDir); err == nil {
@@ -148,6 +157,15 @@ func (l *Loader) loadParentContext(bundle *types.ContextBundle) error {
 			})
 		}
 
+		agentsPath := filepath.Join(parent, "AGENTS.md")
+		if content, err := os.ReadFile(agentsPath); err == nil {
+			bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
+				Path:    agentsPath,
+				Content: string(content),
+				Level:   "parent",
+			})
+		}
+
 		// Stop if we've reached root or gone past the original cwd parent
 		if parent == root || parent == "/" {
 			break
@@ -174,6 +192,26 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 		if content, err := os.ReadFile(claudePath); err == nil {
 			bundle.ClaudeMD = append(bundle.ClaudeMD, types.ClaudeMDEntry{
 				Path:    claudePath,
+				Content: string(content),
+				Level:   "project",
+			})
+		}
+	}
+
+	// Load AGENTS.md from cwd or .claude/
+	agentsPath := filepath.Join(l.cwd, "AGENTS.md")
+	if content, err := os.ReadFile(agentsPath); err == nil {
+		bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
+			Path:    agentsPath,
+			Content: string(content),
+			Level:   "project",
+		})
+	} else {
+		// Try .claude/AGENTS.md
+		agentsPath = filepath.Join(l.cwd, ".claude", "AGENTS.md")
+		if content, err := os.ReadFile(agentsPath); err == nil {
+			bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
+				Path:    agentsPath,
 				Content: string(content),
 				Level:   "project",
 			})
@@ -242,6 +280,16 @@ func (l *Loader) loadLocalContext(bundle *types.ContextBundle) error {
 	if content, err := os.ReadFile(localPath); err == nil {
 		bundle.ClaudeMD = append(bundle.ClaudeMD, types.ClaudeMDEntry{
 			Path:    localPath,
+			Content: string(content),
+			Level:   "local",
+		})
+	}
+
+	// Load AGENTS.local.md
+	agentsLocalPath := filepath.Join(l.cwd, "AGENTS.local.md")
+	if content, err := os.ReadFile(agentsLocalPath); err == nil {
+		bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
+			Path:    agentsLocalPath,
 			Content: string(content),
 			Level:   "local",
 		})
