@@ -98,3 +98,22 @@ func FormatCost(cost float64) string {
 		return fmt.Sprintf("$%.2f", cost)
 	}
 }
+
+// FormatNumber formats an integer with thousands separators.
+// Example: 1234567 -> "1,234,567"
+func FormatNumber(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+
+	// Convert to string and add commas
+	str := fmt.Sprintf("%d", n)
+	var result []byte
+	for i, digit := range str {
+		if i > 0 && (len(str)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(digit))
+	}
+	return string(result)
+}

@@ -28,6 +28,10 @@ build-agent:
 # Build everything (new + legacy)
 build-all: build build-agent build-server build-cli
 
+# Install unified forge binary to GOBIN (defaults to ~/go/bin)
+install:
+  go install ./cmd/forge
+
 # ── Dev ──────────────────────────────────────────────────────
 
 # Run interactive CLI (unified binary)
