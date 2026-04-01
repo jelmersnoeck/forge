@@ -132,5 +132,6 @@ func NewDefaultRegistry() *Registry {
 	r.Register(QueueImmediateTool)
 	r.Register(QueueOnCompleteTool)
 	r.Register(WebSearchTool())
+	r.Register(ReflectTool())
 	return r
 }

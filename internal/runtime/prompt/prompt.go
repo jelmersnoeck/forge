@@ -28,6 +28,12 @@ When using tools:
 - Use Edit to modify files
 - Use Write only for new files
 
+Self-improvement:
+- At the end of each session, use the Reflect tool to capture learnings
+- Note what worked well, what didn't, and ideas for improvement
+- These reflections are saved to AGENTS.md and loaded in future sessions
+- This creates a continuous learning loop
+
 Always explain what you're doing and why.`
 
 // Assemble creates the system prompt blocks from a context bundle.
@@ -74,7 +80,30 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		})
 	}
 
-	// 4. Rules wrapped in <system-reminder> tags
+	// 4. AGENTS.md learnings wrapped in <system-reminder> tags
+	if len(bundle.AgentsMD) > 0 {
+		var agentsContent strings.Builder
+		agentsContent.WriteString("<system-reminder>\n")
+		agentsContent.WriteString("Self-improvement learnings from previous sessions:\n\n")
+
+		for _, entry := range bundle.AgentsMD {
+			agentsContent.WriteString(fmt.Sprintf("## From %s (%s)\n\n", entry.Path, entry.Level))
+			agentsContent.WriteString(entry.Content)
+			agentsContent.WriteString("\n\n")
+		}
+
+		agentsContent.WriteString("</system-reminder>")
+
+		blocks = append(blocks, types.SystemBlock{
+			Type: "text",
+			Text: agentsContent.String(),
+			CacheControl: &types.CacheControl{
+				Type: "ephemeral",
+			},
+		})
+	}
+
+	// 5. Rules wrapped in <system-reminder> tags
 	if len(bundle.Rules) > 0 {
 		var rulesContent strings.Builder
 		rulesContent.WriteString("<system-reminder>\n")
@@ -94,7 +123,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		})
 	}
 
-	// 5. Skill descriptions
+	// 6. Skill descriptions
 	if len(bundle.SkillDescriptions) > 0 {
 		var skillsContent strings.Builder
 		skillsContent.WriteString("Available Skills:\n\n")
@@ -113,7 +142,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		})
 	}
 
-	// 6. Agent descriptions
+	// 7. Agent descriptions
 	if len(bundle.AgentDefinitions) > 0 {
 		var agentsContent strings.Builder
 		agentsContent.WriteString("Available Agents:\n\n")
