@@ -65,9 +65,8 @@ type model struct {
 	autoScroll      bool // auto-scroll to bottom on new content
 
 	// Cost tracking
-	currentUsage types.TokenUsage // current turn usage
-	totalUsage   types.TokenUsage // session total usage
-	modelName    string           // model name for cost calculation
+	totalUsage types.TokenUsage // session total usage
+	modelName  string           // model name for cost calculation
 }
 
 type serverEvent types.OutboundEvent
@@ -349,7 +348,7 @@ func (m model) getOutputHeight() int {
 	}
 	costHeight := 0
 	if m.modelName != "" && (m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0) {
-		costHeight = 1 // cost status bar
+		costHeight = 1 // cost tracker line
 	}
 	inputHeight := 3 // border + content
 	return m.height - queueHeight - thinkingHeight - costHeight - inputHeight - 1
@@ -444,6 +443,18 @@ func (m model) View() string {
 	// Make input area full width (accounting for border and padding)
 	inputArea := inputBorderStyle.Width(m.width - 4).Render(inputContent)
 
+	// Build cost tracker (below input, transparent)
+	costTrackerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8")).
+		Faint(true)
+	var costTracker string
+	if m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0 {
+		tokens := fmt.Sprintf("in: %d | out: %d", m.totalUsage.InputTokens, m.totalUsage.OutputTokens)
+		totalCost := cost.Calculate(m.modelName, m.totalUsage)
+		costStr := cost.FormatCost(totalCost)
+		costTracker = costTrackerStyle.Render(fmt.Sprintf("  %s | %s", tokens, costStr))
+	}
+
 	// Combine all areas
 	var parts []string
 	if outputArea != "" {
@@ -459,12 +470,18 @@ func (m model) View() string {
 		parts = append(parts, queueArea)
 	}
 	parts = append(parts, inputArea)
+	if costTracker != "" {
+		parts = append(parts, costTracker)
+	}
 
 	return strings.Join(parts, "\n")
 }
 
 func (m *model) handleEvent(event types.OutboundEvent) {
 	switch event.Type {
+	case "model":
+		m.modelName = event.Content
+
 	case "text":
 		m.textBuf += event.Content
 
@@ -492,35 +509,22 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		m.flushText()
 		m.output = append(m.output, queueStyle.Render("  ⏱  Queued on complete: ")+dimStyle.Render(event.Content))
 
-	case "error":
-		m.flushText()
-		m.output = append(m.output, errorStyle.Render("error: "+event.Content))
-
 	case "usage":
-		// Track usage for cost display
+		// Loop sends cumulative totalUsage
 		if event.Usage != nil {
-			// Accumulate current turn usage
-			m.currentUsage.InputTokens += event.Usage.InputTokens
-			m.currentUsage.OutputTokens += event.Usage.OutputTokens
-			m.currentUsage.CacheCreationTokens += event.Usage.CacheCreationTokens
-			m.currentUsage.CacheReadTokens += event.Usage.CacheReadTokens
-
-			// Update session total
-			m.totalUsage.InputTokens += event.Usage.InputTokens
-			m.totalUsage.OutputTokens += event.Usage.OutputTokens
-			m.totalUsage.CacheCreationTokens += event.Usage.CacheCreationTokens
-			m.totalUsage.CacheReadTokens += event.Usage.CacheReadTokens
+			m.totalUsage = *event.Usage
 		}
-
-		// Track model name
+		// Track model name for cost calculation
 		if event.Model != "" {
 			m.modelName = event.Model
 		}
 
+	case "error":
+		m.flushText()
+		m.output = append(m.output, errorStyle.Render("error: "+event.Content))
+
 	case "done":
 		m.flushText()
-		// Reset current turn usage when done
-		m.currentUsage = types.TokenUsage{}
 		m.output = append(m.output, "")
 	}
 }
