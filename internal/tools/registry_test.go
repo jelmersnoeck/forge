@@ -176,10 +176,10 @@ func TestIsReadOnly(t *testing.T) {
 
 func TestTruncateResult(t *testing.T) {
 	tests := map[string]struct {
-		maxChars   int
-		inputLen   int
-		wantTrunc  bool
-		isError    bool
+		maxChars  int
+		inputLen  int
+		wantTrunc bool
+		isError   bool
 	}{
 		"under limit": {
 			maxChars:  1000,

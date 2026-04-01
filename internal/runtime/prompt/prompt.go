@@ -87,8 +87,8 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 			Text: claudeContent.String(),
 			CacheControl: &types.CacheControl{
 				Type:  "ephemeral",
-				TTL:   "1h",      // Extended cache lifetime (default is 5min)
-				Scope: "global",  // Share cache across sessions (safe for CLAUDE.md)
+				TTL:   "1h",     // Extended cache lifetime (default is 5min)
+				Scope: "global", // Share cache across sessions (safe for CLAUDE.md)
 			},
 		})
 	}

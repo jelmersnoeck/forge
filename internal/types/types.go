@@ -120,10 +120,10 @@ type LLMProvider interface {
 
 // ToolSchema is sent to the LLM so it knows which tools are available.
 type ToolSchema struct {
-	Name         string        `json:"name"`
-	Description  string        `json:"description"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
 	InputSchema  map[string]any `json:"input_schema"`
-	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 
 // ToolResult is returned by a tool handler.
