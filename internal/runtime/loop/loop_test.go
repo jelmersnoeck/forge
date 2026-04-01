@@ -2,14 +2,21 @@ package loop
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jelmersnoeck/forge/internal/runtime/retry"
 	"github.com/jelmersnoeck/forge/internal/runtime/session"
+	"github.com/jelmersnoeck/forge/internal/runtime/tokens"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+// ── Mock providers ────────────────────────────────────────────
 
 // MockTextProvider returns a simple text response.
 type MockTextProvider struct{}
@@ -44,14 +51,12 @@ func (m *MockToolProvider) Chat(ctx context.Context, req types.ChatRequest) (<-c
 
 		switch count {
 		case 1:
-			// First call: return tool use
 			ch <- types.ChatDelta{Type: "tool_use_start", ID: "tool-1", Name: "read"}
 			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{"file_path":"/tmp/test.txt"}`}
 			ch <- types.ChatDelta{Type: "tool_use_end"}
 			ch <- types.ChatDelta{Type: "message_stop", StopReason: "tool_use"}
 
 		default:
-			// Second call: return text response
 			ch <- types.ChatDelta{Type: "text_delta", Text: "File read successfully"}
 			ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
 		}
@@ -59,6 +64,125 @@ func (m *MockToolProvider) Chat(ctx context.Context, req types.ChatRequest) (<-c
 
 	return ch, nil
 }
+
+// MockUsageProvider returns text with usage deltas.
+type MockUsageProvider struct{}
+
+func (m *MockUsageProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	ch := make(chan types.ChatDelta, 8)
+	go func() {
+		defer close(ch)
+		ch <- types.ChatDelta{Type: "usage", Usage: &types.TokenUsage{InputTokens: 1500, OutputTokens: 0}}
+		ch <- types.ChatDelta{Type: "text_delta", Text: "Streets ahead!"}
+		ch <- types.ChatDelta{Type: "usage", Usage: &types.TokenUsage{OutputTokens: 42}}
+		ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+	}()
+	return ch, nil
+}
+
+// MockRetryProvider fails N times then succeeds.
+type MockRetryProvider struct {
+	failCount int
+	callCount int
+	mu        sync.Mutex
+}
+
+func (m *MockRetryProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu.Unlock()
+
+	if count <= m.failCount {
+		return nil, fmt.Errorf("status 529: overloaded")
+	}
+
+	ch := make(chan types.ChatDelta, 4)
+	go func() {
+		defer close(ch)
+		ch <- types.ChatDelta{Type: "text_delta", Text: "Pop pop!"}
+		ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+	}()
+	return ch, nil
+}
+
+// MockMultiToolProvider returns multiple tool_use blocks on first call.
+type MockMultiToolProvider struct {
+	callCount int
+	mu        sync.Mutex
+}
+
+func (m *MockMultiToolProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu.Unlock()
+
+	ch := make(chan types.ChatDelta, 16)
+	go func() {
+		defer close(ch)
+
+		switch count {
+		case 1:
+			// Two read-only + one mutating tool
+			ch <- types.ChatDelta{Type: "tool_use_start", ID: "t1", Name: "Glob"}
+			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{"pattern":"*.go"}`}
+			ch <- types.ChatDelta{Type: "tool_use_end"}
+
+			ch <- types.ChatDelta{Type: "tool_use_start", ID: "t2", Name: "Read"}
+			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{"file_path":"/tmp/test.go"}`}
+			ch <- types.ChatDelta{Type: "tool_use_end"}
+
+			ch <- types.ChatDelta{Type: "tool_use_start", ID: "t3", Name: "Bash"}
+			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{"command":"echo hello"}`}
+			ch <- types.ChatDelta{Type: "tool_use_end"}
+
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "tool_use"}
+		default:
+			ch <- types.ChatDelta{Type: "text_delta", Text: "Done"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+		}
+	}()
+	return ch, nil
+}
+
+// ── Helper ────────────────────────────────────────────────────
+
+func makeLoop(t *testing.T, provider types.LLMProvider, registry *tools.Registry, opts ...func(*Options)) *Loop {
+	t.Helper()
+	dir := t.TempDir()
+	store := session.NewStore(dir)
+	o := Options{
+		Provider:     provider,
+		Tools:        registry,
+		Context:      types.ContextBundle{},
+		CWD:          "/home/dean/greendale",
+		SessionStore: store,
+		SessionID:    "session-test",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     100,
+	}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return New(o)
+}
+
+func collectEvents(t *testing.T, l *Loop, prompt string) []types.OutboundEvent {
+	t.Helper()
+	var events []types.OutboundEvent
+	var mu sync.Mutex
+	emit := func(e types.OutboundEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+	err := l.Send(context.Background(), prompt, emit)
+	require.New(t).NoError(err)
+	return events
+}
+
+// ── Tests ─────────────────────────────────────────────────────
 
 func TestLoop_Send_TextResponse(t *testing.T) {
 	r := require.New(t)
@@ -87,7 +211,6 @@ func TestLoop_Send_TextResponse(t *testing.T) {
 	err := loop.Send(context.Background(), "Hello", emit)
 	r.NoError(err)
 
-	// Should have text events and a done event
 	r.Greater(len(events), 2)
 
 	var textContent string
@@ -104,12 +227,10 @@ func TestLoop_Send_TextResponse(t *testing.T) {
 	r.Equal("Hello from Greendale!", textContent)
 	r.True(hasDone)
 
-	// Verify history
 	r.Len(loop.history, 2)
 	r.Equal("user", loop.history[0].Role)
 	r.Equal("assistant", loop.history[1].Role)
 
-	// Verify session was persisted
 	messages, err := store.Load(loop.HistoryID())
 	r.NoError(err)
 	r.Len(messages, 2)
@@ -123,7 +244,6 @@ func TestLoop_Send_ToolUse(t *testing.T) {
 	provider := &MockToolProvider{}
 	registry := tools.NewRegistry()
 
-	// Register a mock read tool
 	registry.Register(types.ToolDefinition{
 		Name:        "read",
 		Description: "Read a file",
@@ -161,7 +281,6 @@ func TestLoop_Send_ToolUse(t *testing.T) {
 	err := loop.Send(context.Background(), "Read the file", emit)
 	r.NoError(err)
 
-	// Should have tool_use event, text event, and done event
 	r.Greater(len(events), 2)
 
 	var hasToolUse bool
@@ -179,7 +298,6 @@ func TestLoop_Send_ToolUse(t *testing.T) {
 	r.True(hasToolUse)
 	r.True(hasDone)
 
-	// Verify history: user message, assistant tool_use, tool_result, assistant response
 	r.Len(loop.history, 4)
 	r.Equal("user", loop.history[0].Role)
 	r.Equal("assistant", loop.history[1].Role)
@@ -194,8 +312,6 @@ func TestLoop_MaxTurns(t *testing.T) {
 
 	dir := t.TempDir()
 	store := session.NewStore(dir)
-
-	// Provider that always returns tool use
 	provider := &MockToolProvider{}
 	registry := tools.NewRegistry()
 
@@ -220,7 +336,7 @@ func TestLoop_MaxTurns(t *testing.T) {
 		SessionStore: store,
 		SessionID:    "session-3",
 		Model:        "claude-sonnet-4-5-20250929",
-		MaxTurns:     1, // Only allow 1 turn
+		MaxTurns:     1,
 	})
 
 	var events []types.OutboundEvent
@@ -231,7 +347,6 @@ func TestLoop_MaxTurns(t *testing.T) {
 	err := loop.Send(context.Background(), "Test", emit)
 	r.NoError(err)
 
-	// Should have error about max turns
 	var hasError bool
 	for _, e := range events {
 		if e.Type == "error" {
@@ -251,7 +366,6 @@ func TestLoop_Resume(t *testing.T) {
 	provider := &MockTextProvider{}
 	registry := tools.NewRegistry()
 
-	// First conversation
 	loop1 := New(Options{
 		Provider:     provider,
 		Tools:        registry,
@@ -270,7 +384,6 @@ func TestLoop_Resume(t *testing.T) {
 
 	historyID := loop1.HistoryID()
 
-	// Resume with new loop
 	loop2 := New(Options{
 		Provider:     provider,
 		Tools:        registry,
@@ -285,11 +398,191 @@ func TestLoop_Resume(t *testing.T) {
 	err = loop2.Resume(context.Background(), historyID, "Second message", emit)
 	r.NoError(err)
 
-	// Should have original history plus new messages
 	r.Greater(len(loop2.history), 2)
 
-	// Session should have all messages
 	messages, err := store.Load(historyID)
 	r.NoError(err)
 	r.Greater(len(messages), 3)
+}
+
+func TestLoop_UsageTracking(t *testing.T) {
+	r := require.New(t)
+
+	l := makeLoop(t, &MockUsageProvider{}, tools.NewRegistry())
+	events := collectEvents(t, l, "What's streets ahead?")
+
+	var usageEvents []types.OutboundEvent
+	for _, e := range events {
+		if e.Type == "usage" {
+			usageEvents = append(usageEvents, e)
+		}
+	}
+
+	r.GreaterOrEqual(len(usageEvents), 1)
+	// Session totals should be accumulated.
+	r.Contains(usageEvents[len(usageEvents)-1].Content, "session total")
+}
+
+func TestLoop_RetryOnTransientError(t *testing.T) {
+	r := require.New(t)
+
+	provider := &MockRetryProvider{failCount: 2}
+	fastRetry := retry.Policy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
+
+	l := makeLoop(t, provider, tools.NewRegistry(), func(o *Options) {
+		o.RetryPolicy = &fastRetry
+	})
+
+	events := collectEvents(t, l, "Pop pop!")
+
+	// Should have retry events.
+	var retryCount int
+	var hasText bool
+	for _, e := range events {
+		switch e.Type {
+		case "retry":
+			retryCount++
+		case "text":
+			hasText = true
+		}
+	}
+
+	r.Equal(2, retryCount) // 2 failures before success
+	r.True(hasText)
+	r.Equal(3, provider.callCount)
+}
+
+func TestLoop_ReadOnlyGatedExecution(t *testing.T) {
+	r := require.New(t)
+
+	// Track execution order to verify read-only tools run before mutating.
+	var executionOrder []string
+	var mu sync.Mutex
+
+	registry := tools.NewRegistry()
+
+	registry.Register(types.ToolDefinition{
+		Name:     "Glob",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			mu.Lock()
+			executionOrder = append(executionOrder, "Glob")
+			mu.Unlock()
+			time.Sleep(10 * time.Millisecond) // simulate work
+			return types.ToolResult{Content: []types.ToolResultContent{{Type: "text", Text: "*.go"}}}, nil
+		},
+	})
+
+	registry.Register(types.ToolDefinition{
+		Name:     "Read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			mu.Lock()
+			executionOrder = append(executionOrder, "Read")
+			mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			return types.ToolResult{Content: []types.ToolResultContent{{Type: "text", Text: "file contents"}}}, nil
+		},
+	})
+
+	registry.Register(types.ToolDefinition{
+		Name:     "Bash",
+		ReadOnly: false,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			mu.Lock()
+			executionOrder = append(executionOrder, "Bash")
+			mu.Unlock()
+			return types.ToolResult{Content: []types.ToolResultContent{{Type: "text", Text: "hello"}}}, nil
+		},
+	})
+
+	l := makeLoop(t, &MockMultiToolProvider{}, registry)
+	collectEvents(t, l, "Do some stuff")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Bash (mutating) must come after both read-only tools.
+	r.Len(executionOrder, 3)
+
+	bashIdx := -1
+	for i, name := range executionOrder {
+		if name == "Bash" {
+			bashIdx = i
+		}
+	}
+	r.Equal(2, bashIdx, "Bash should execute after both read-only tools, got order: %v", executionOrder)
+}
+
+// MockRepeatToolProvider returns tool_use N times before a final text response.
+type MockRepeatToolProvider struct {
+	repeatCount int
+	callCount   int
+	mu          sync.Mutex
+}
+
+func (m *MockRepeatToolProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu.Unlock()
+
+	ch := make(chan types.ChatDelta, 8)
+	go func() {
+		defer close(ch)
+		if count <= m.repeatCount {
+			ch <- types.ChatDelta{Type: "tool_use_start", ID: fmt.Sprintf("t-%d", count), Name: "read"}
+			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{"file_path":"/tmp/test.txt"}`}
+			ch <- types.ChatDelta{Type: "tool_use_end"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "tool_use"}
+		} else {
+			ch <- types.ChatDelta{Type: "text_delta", Text: "All done"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+		}
+	}()
+	return ch, nil
+}
+
+func TestLoop_CompactLargeHistory(t *testing.T) {
+	r := require.New(t)
+
+	// Tiny budget so compaction triggers after a few tool rounds.
+	// System prompt (~150 tok) + tool schema (~60 tok) = ~210 overhead.
+	// Threshold = 800 - 200 - 100 = 500.
+	// Each tool round adds ~300 tokens (tool_use + large tool_result).
+	// After 2 rounds (~600 tok history), we exceed 500 and compact.
+	tinyBudget := tokens.Budget{
+		ContextWindow: 800,
+		OutputReserve: 200,
+		Buffer:        100,
+	}
+
+	// Use enough rounds for history to grow past the threshold.
+	provider := &MockRepeatToolProvider{repeatCount: 6}
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "read",
+		ReadOnly: true,
+		Handler: func(map[string]any, types.ToolContext) (types.ToolResult, error) {
+			// ~250 tokens of tool result to grow history fast.
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: strings.Repeat("Greendale Community College is the finest institution ", 20)}},
+			}, nil
+		},
+	})
+
+	l := makeLoop(t, provider, registry, func(o *Options) {
+		o.Budget = &tinyBudget
+	})
+
+	events := collectEvents(t, l, strings.Repeat("Read the files at Greendale ", 5))
+
+	var compactEvents int
+	for _, e := range events {
+		if e.Type == "compact" {
+			compactEvents++
+		}
+	}
+
+	r.GreaterOrEqual(compactEvents, 1)
 }

@@ -11,19 +11,23 @@ import (
 // InboundMessage is a normalized message from any event source.
 // Adapters translate platform-specific events into this shape.
 type InboundMessage struct {
-	SessionID string                 `json:"sessionId"`
-	Text      string                 `json:"text"`
-	User      string                 `json:"user"`
-	Source    string                 `json:"source"`
-	Metadata  map[string]any         `json:"metadata,omitempty"`
-	Timestamp int64                  `json:"timestamp"`
+	SessionID string         `json:"sessionId"`
+	Text      string         `json:"text"`
+	User      string         `json:"user"`
+	Source    string         `json:"source"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+	Timestamp int64          `json:"timestamp"`
 }
 
 // OutboundEvent is streamed back to subscribers via pub/sub.
+//
+// Type is one of: "text", "tool_use", "done", "error", "thinking",
+// "compact", "retry", "usage", "queued_task_result", "queued_task_error",
+// "queue_immediate", "queue_on_complete".
 type OutboundEvent struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionId"`
-	Type      string `json:"type"` // "text", "tool_use", "done", "error"
+	Type      string `json:"type"`
 	Content   string `json:"content,omitempty"`
 	ToolName  string `json:"toolName,omitempty"`
 	Timestamp int64  `json:"timestamp"`
@@ -71,23 +75,30 @@ type ChatMessage struct {
 
 // ChatContentBlock is a block within a message.
 type ChatContentBlock struct {
-	Type      string         `json:"type"` // "text", "tool_use", "tool_result"
-	Text      string         `json:"text,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
-	ToolUseID string         `json:"tool_use_id,omitempty"`
+	Type      string              `json:"type"` // "text", "tool_use", "tool_result"
+	Text      string              `json:"text,omitempty"`
+	ID        string              `json:"id,omitempty"`
+	Name      string              `json:"name,omitempty"`
+	Input     map[string]any      `json:"input,omitempty"`
+	ToolUseID string              `json:"tool_use_id,omitempty"`
 	Content   []ToolResultContent `json:"content,omitempty"`
 }
 
 // ChatDelta is a streaming event from the LLM.
 type ChatDelta struct {
-	Type        string `json:"type"` // "text_delta", "tool_use_start", "tool_use_delta", "tool_use_end", "message_stop"
-	Text        string `json:"text,omitempty"`
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name,omitempty"`
-	PartialJSON string `json:"partialJson,omitempty"`
-	StopReason  string `json:"stopReason,omitempty"`
+	Type        string      `json:"type"` // "text_delta", "tool_use_start", "tool_use_delta", "tool_use_end", "message_stop"
+	Text        string      `json:"text,omitempty"`
+	ID          string      `json:"id,omitempty"`
+	Name        string      `json:"name,omitempty"`
+	PartialJSON string      `json:"partialJson,omitempty"`
+	StopReason  string      `json:"stopReason,omitempty"`
+	Usage       *TokenUsage `json:"usage,omitempty"`
+}
+
+// TokenUsage tracks token consumption for a single LLM call.
+type TokenUsage struct {
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
 }
 
 // LLMProvider abstracts the LLM API.
@@ -112,9 +123,9 @@ type ToolResult struct {
 
 // ToolResultContent is a block within a tool result.
 type ToolResultContent struct {
-	Type   string          `json:"type"` // "text" or "image"
-	Text   string          `json:"text,omitempty"`
-	Source *ImageSource    `json:"source,omitempty"`
+	Type   string       `json:"type"` // "text" or "image"
+	Text   string       `json:"text,omitempty"`
+	Source *ImageSource `json:"source,omitempty"`
 }
 
 // ImageSource carries base64 image data.
@@ -198,13 +209,13 @@ type SkillDescription struct {
 
 // AgentDefinition is a custom agent from .claude/agents/.
 type AgentDefinition struct {
-	Name           string   `json:"name"`
-	Description    string   `json:"description"`
-	Prompt         string   `json:"prompt"`
-	Tools          []string `json:"tools,omitempty"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	Prompt          string   `json:"prompt"`
+	Tools           []string `json:"tools,omitempty"`
 	DisallowedTools []string `json:"disallowedTools,omitempty"`
-	Model          string   `json:"model,omitempty"`
-	MaxTurns       int      `json:"maxTurns,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	MaxTurns        int      `json:"maxTurns,omitempty"`
 }
 
 // MergedSettings is the merged result of user + project + local settings.
@@ -224,10 +235,10 @@ type PermissionConfig struct {
 
 // SessionMessage is a single entry in the session JSONL.
 type SessionMessage struct {
-	UUID      string `json:"uuid"`
+	UUID       string `json:"uuid"`
 	ParentUUID string `json:"parentUuid,omitempty"`
-	SessionID string `json:"sessionId"`
-	Type      string `json:"type"` // "user", "assistant", "system"
-	Message   any    `json:"message"`
-	Timestamp int64  `json:"timestamp"`
+	SessionID  string `json:"sessionId"`
+	Type       string `json:"type"` // "user", "assistant", "system"
+	Message    any    `json:"message"`
+	Timestamp  int64  `json:"timestamp"`
 }

@@ -10,7 +10,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jelmersnoeck/forge/internal/runtime/prompt"
+	"github.com/jelmersnoeck/forge/internal/runtime/retry"
 	"github.com/jelmersnoeck/forge/internal/runtime/session"
+	"github.com/jelmersnoeck/forge/internal/runtime/tokens"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -28,6 +30,11 @@ type Loop struct {
 	historyID    string
 	history      []types.ChatMessage
 	audit        types.AuditLogger
+	budget       tokens.Budget
+	retryPolicy  retry.Policy
+
+	// Cumulative token usage across all turns in this session.
+	totalUsage types.TokenUsage
 }
 
 // Options configures the conversation loop.
@@ -41,6 +48,8 @@ type Options struct {
 	Model        string
 	MaxTurns     int
 	AuditLogger  types.AuditLogger
+	Budget       *tokens.Budget
+	RetryPolicy  *retry.Policy
 }
 
 // New creates a new conversation loop.
@@ -49,6 +58,17 @@ func New(opts Options) *Loop {
 	if audit == nil {
 		audit = nopAuditLogger{}
 	}
+
+	budget := tokens.DefaultBudget()
+	if opts.Budget != nil {
+		budget = *opts.Budget
+	}
+
+	retryPolicy := retry.DefaultPolicy()
+	if opts.RetryPolicy != nil {
+		retryPolicy = *opts.RetryPolicy
+	}
+
 	return &Loop{
 		provider:     opts.Provider,
 		tools:        opts.Tools,
@@ -61,6 +81,8 @@ func New(opts Options) *Loop {
 		historyID:    uuid.New().String(),
 		history:      []types.ChatMessage{},
 		audit:        audit,
+		budget:       budget,
+		retryPolicy:  retryPolicy,
 	}
 }
 
@@ -71,7 +93,6 @@ func (l *Loop) HistoryID() string {
 
 // Send processes a user prompt and runs the agentic loop.
 func (l *Loop) Send(ctx context.Context, promptText string, emit func(types.OutboundEvent)) error {
-	// Append user message to history
 	userMsg := types.ChatMessage{
 		Role: "user",
 		Content: []types.ChatContentBlock{
@@ -80,26 +101,21 @@ func (l *Loop) Send(ctx context.Context, promptText string, emit func(types.Outb
 	}
 	l.history = append(l.history, userMsg)
 
-	// Persist user message
 	if err := l.persistMessage("user", userMsg); err != nil {
 		return fmt.Errorf("persist user message: %w", err)
 	}
 
-	// Run the agentic loop
 	return l.runLoop(ctx, emit)
 }
 
 // Resume loads a session and continues with a new prompt.
 func (l *Loop) Resume(ctx context.Context, historyID string, promptText string, emit func(types.OutboundEvent)) error {
-	// Load session history
 	sessionMessages, err := l.sessionStore.Load(historyID)
 	if err != nil {
 		return fmt.Errorf("load session: %w", err)
 	}
 
-	// Reconstruct history from session messages
 	for _, msg := range sessionMessages {
-		// Parse message content back into ChatMessage
 		messageBytes, err := json.Marshal(msg.Message)
 		if err != nil {
 			continue
@@ -114,8 +130,6 @@ func (l *Loop) Resume(ctx context.Context, historyID string, promptText string, 
 	}
 
 	l.historyID = historyID
-
-	// Now send the new prompt
 	return l.Send(ctx, promptText, emit)
 }
 
@@ -125,7 +139,6 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 	for {
 		turnCount++
 
-		// Check max turns
 		if l.maxTurns > 0 && turnCount > l.maxTurns {
 			emit(types.OutboundEvent{
 				ID:        uuid.New().String(),
@@ -143,7 +156,6 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			return nil
 		}
 
-		// Emit thinking event
 		emit(types.OutboundEvent{
 			ID:        uuid.New().String(),
 			SessionID: l.sessionID,
@@ -151,40 +163,76 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			Timestamp: time.Now().Unix(),
 		})
 
-		// Assemble chat request
+		// Assemble system prompt and tool schemas (stable across turns).
+		systemBlocks := prompt.Assemble(l.context, l.cwd)
+		toolSchemas := l.tools.Schemas()
+
+		// ── Context window management ──────────────────────────
+		// Check if we need to compact before sending to the LLM.
+		systemTokens := tokens.EstimateSystem(systemBlocks)
+		historyTokens := tokens.EstimateHistory(l.history)
+		toolTokens := tokens.EstimateTools(toolSchemas)
+
+		if l.budget.ShouldCompact(systemTokens, historyTokens, toolTokens) {
+			compacted, removed := tokens.Compact(l.history, l.budget, systemTokens, toolTokens)
+			if removed > 0 {
+				l.history = compacted
+				historyTokens = tokens.EstimateHistory(l.history)
+
+				emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: l.sessionID,
+					Type:      "compact",
+					Content:   fmt.Sprintf("Compacted conversation: removed %d messages (now ~%d tokens)", removed, systemTokens+historyTokens+toolTokens),
+					Timestamp: time.Now().Unix(),
+				})
+			}
+		}
+
 		req := types.ChatRequest{
 			Model:     l.model,
-			System:    prompt.Assemble(l.context, l.cwd),
+			System:    systemBlocks,
 			Messages:  l.history,
-			Tools:     l.tools.Schemas(),
+			Tools:     toolSchemas,
 			MaxTokens: 8192,
 			Stream:    true,
 		}
 
-		// Call provider
-		deltaChan, err := l.provider.Chat(ctx, req)
+		// ── Retry-wrapped provider call ────────────────────────
+		var deltaChan <-chan types.ChatDelta
+		deltaChan, err := retry.Do(ctx, l.retryPolicy,
+			func(attempt retry.Attempt) {
+				emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: l.sessionID,
+					Type:      "retry",
+					Content:   fmt.Sprintf("API call failed (%v), retrying in %s (attempt %d/%d)", attempt.Err, attempt.Delay.Round(time.Millisecond), attempt.Number, attempt.MaxRetry),
+					Timestamp: time.Now().Unix(),
+				})
+			},
+			func() (<-chan types.ChatDelta, error) {
+				return l.provider.Chat(ctx, req)
+			},
+		)
 		if err != nil {
 			return fmt.Errorf("call provider: %w", err)
 		}
 
-		// Collect assistant message from deltas
+		// Collect assistant message from deltas.
 		assistantMsg, err := l.collectAssistantMessage(ctx, deltaChan, emit)
 		if err != nil {
 			return fmt.Errorf("collect assistant message: %w", err)
 		}
 
-		// Append to history
 		l.history = append(l.history, assistantMsg)
 
-		// Persist assistant message
 		if err := l.persistMessage("assistant", assistantMsg); err != nil {
 			return fmt.Errorf("persist assistant message: %w", err)
 		}
 
-		// Check for tool use
+		// Check for tool use.
 		toolUseBlocks := l.findToolUseBlocks(assistantMsg)
 		if len(toolUseBlocks) == 0 {
-			// No tool use, conversation is complete
 			emit(types.OutboundEvent{
 				ID:        uuid.New().String(),
 				SessionID: l.sessionID,
@@ -194,25 +242,18 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			return nil
 		}
 
-		// Execute tools and collect results
-		toolResults, err := l.executeTools(ctx, toolUseBlocks, emit)
-		if err != nil {
-			return fmt.Errorf("execute tools: %w", err)
-		}
+		// ── ReadOnly-gated concurrent execution ────────────────
+		toolResults := l.executeToolsGated(ctx, toolUseBlocks, emit)
 
-		// Add tool results as user message
 		toolResultMsg := types.ChatMessage{
 			Role:    "user",
 			Content: toolResults,
 		}
 		l.history = append(l.history, toolResultMsg)
 
-		// Persist tool result message
 		if err := l.persistMessage("user", toolResultMsg); err != nil {
 			return fmt.Errorf("persist tool result message: %w", err)
 		}
-
-		// Continue loop
 	}
 }
 
@@ -220,7 +261,7 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 	var contentBlocks []types.ChatContentBlock
 	var currentTextBlock *types.ChatContentBlock
 	var currentToolUse *types.ChatContentBlock
-	var toolUseJSONBuf string // accumulates partial JSON across deltas
+	var toolUseJSONBuf string
 
 	for {
 		select {
@@ -229,7 +270,6 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 
 		case delta, ok := <-deltaChan:
 			if !ok {
-				// Channel closed, finalize message
 				if currentTextBlock != nil && currentTextBlock.Text != "" {
 					contentBlocks = append(contentBlocks, *currentTextBlock)
 				}
@@ -245,7 +285,6 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 
 			switch delta.Type {
 			case "text_delta":
-				// Emit text delta event
 				emit(types.OutboundEvent{
 					ID:        uuid.New().String(),
 					SessionID: l.sessionID,
@@ -254,7 +293,6 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 					Timestamp: time.Now().Unix(),
 				})
 
-				// Accumulate text in current block
 				if currentTextBlock == nil {
 					currentTextBlock = &types.ChatContentBlock{
 						Type: "text",
@@ -263,13 +301,11 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 				currentTextBlock.Text += delta.Text
 
 			case "tool_use_start":
-				// Save any pending text block
 				if currentTextBlock != nil && currentTextBlock.Text != "" {
 					contentBlocks = append(contentBlocks, *currentTextBlock)
 					currentTextBlock = nil
 				}
 
-				// Start new tool use block
 				currentToolUse = &types.ChatContentBlock{
 					Type: "tool_use",
 					ID:   delta.ID,
@@ -278,12 +314,9 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 				toolUseJSONBuf = ""
 
 			case "tool_use_delta":
-				// Accumulate partial JSON fragments — they are NOT individually
-				// valid JSON. We concatenate them all and parse once at the end.
 				toolUseJSONBuf += delta.PartialJSON
 
 			case "tool_use_end":
-				// Parse the fully accumulated JSON and finalize tool use block
 				if currentToolUse != nil {
 					if toolUseJSONBuf != "" {
 						var input map[string]any
@@ -292,7 +325,6 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 						}
 					}
 
-					// Emit tool_use event now that we have the full input
 					emit(types.OutboundEvent{
 						ID:        uuid.New().String(),
 						SessionID: l.sessionID,
@@ -307,8 +339,26 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 					toolUseJSONBuf = ""
 				}
 
+			case "usage":
+				// Track token usage from the provider.
+				if delta.Usage != nil {
+					if delta.Usage.InputTokens > 0 {
+						l.totalUsage.InputTokens += delta.Usage.InputTokens
+					}
+					if delta.Usage.OutputTokens > 0 {
+						l.totalUsage.OutputTokens += delta.Usage.OutputTokens
+					}
+
+					emit(types.OutboundEvent{
+						ID:        uuid.New().String(),
+						SessionID: l.sessionID,
+						Type:      "usage",
+						Content:   fmt.Sprintf("tokens: in=%d out=%d (session total: in=%d out=%d)", delta.Usage.InputTokens, delta.Usage.OutputTokens, l.totalUsage.InputTokens, l.totalUsage.OutputTokens),
+						Timestamp: time.Now().Unix(),
+					})
+				}
+
 			case "message_stop":
-				// Message complete
 				if currentTextBlock != nil && currentTextBlock.Text != "" {
 					contentBlocks = append(contentBlocks, *currentTextBlock)
 				}
@@ -338,53 +388,83 @@ func (l *Loop) findToolUseBlocks(msg types.ChatMessage) []types.ChatContentBlock
 	return toolUseBlocks
 }
 
-func (l *Loop) executeTools(ctx context.Context, toolUseBlocks []types.ChatContentBlock, emit func(types.OutboundEvent)) ([]types.ChatContentBlock, error) {
-	results := make([]types.ChatContentBlock, len(toolUseBlocks))
-
-	var wg sync.WaitGroup
-	wg.Add(len(toolUseBlocks))
-
-	for i, block := range toolUseBlocks {
-		go func(idx int, block types.ChatContentBlock) {
-			defer wg.Done()
-
-			toolCtx := types.ToolContext{
-				Ctx:       ctx,
-				CWD:       l.cwd,
-				SessionID: l.sessionID,
-				HistoryID: l.historyID,
-				Emit:      emit,
-			}
-
-			start := time.Now()
-			result, err := l.tools.Execute(block.Name, block.Input, toolCtx)
-			l.audit.LogToolCall(types.ToolCallEvent{
-				SessionID: l.sessionID,
-				ToolName:  block.Name,
-				Input:     block.Input,
-				Duration:  time.Since(start),
-				Error:     err,
-			})
-
-			if err != nil {
-				result = types.ToolResult{
-					Content: []types.ToolResultContent{
-						{Type: "text", Text: fmt.Sprintf("Error: %v", err)},
-					},
-					IsError: true,
-				}
-			}
-
-			results[idx] = types.ChatContentBlock{
-				Type:      "tool_result",
-				ToolUseID: block.ID,
-				Content:   result.Content,
-			}
-		}(i, block)
+// executeToolsGated partitions tools by ReadOnly and runs them in two phases:
+//
+//  1. ReadOnly tools run concurrently (Read, Glob, Grep, WebSearch, etc.)
+//  2. Mutating tools run sequentially (Write, Edit, Bash, etc.)
+//
+// This prevents races between writes while keeping reads fast.
+func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.ChatContentBlock, emit func(types.OutboundEvent)) []types.ChatContentBlock {
+	type indexedBlock struct {
+		idx   int
+		block types.ChatContentBlock
 	}
 
-	wg.Wait()
-	return results, nil
+	var readOnly, mutating []indexedBlock
+	for i, block := range toolUseBlocks {
+		if l.tools.IsReadOnly(block.Name) {
+			readOnly = append(readOnly, indexedBlock{i, block})
+		} else {
+			mutating = append(mutating, indexedBlock{i, block})
+		}
+	}
+
+	results := make([]types.ChatContentBlock, len(toolUseBlocks))
+
+	// Phase 1: ReadOnly tools — fan out.
+	if len(readOnly) > 0 {
+		var wg sync.WaitGroup
+		wg.Add(len(readOnly))
+		for _, ib := range readOnly {
+			go func(idx int, block types.ChatContentBlock) {
+				defer wg.Done()
+				results[idx] = l.executeSingleTool(ctx, block, emit)
+			}(ib.idx, ib.block)
+		}
+		wg.Wait()
+	}
+
+	// Phase 2: Mutating tools — sequential.
+	for _, ib := range mutating {
+		results[ib.idx] = l.executeSingleTool(ctx, ib.block, emit)
+	}
+
+	return results
+}
+
+func (l *Loop) executeSingleTool(ctx context.Context, block types.ChatContentBlock, emit func(types.OutboundEvent)) types.ChatContentBlock {
+	toolCtx := types.ToolContext{
+		Ctx:       ctx,
+		CWD:       l.cwd,
+		SessionID: l.sessionID,
+		HistoryID: l.historyID,
+		Emit:      emit,
+	}
+
+	start := time.Now()
+	result, err := l.tools.Execute(block.Name, block.Input, toolCtx)
+	l.audit.LogToolCall(types.ToolCallEvent{
+		SessionID: l.sessionID,
+		ToolName:  block.Name,
+		Input:     block.Input,
+		Duration:  time.Since(start),
+		Error:     err,
+	})
+
+	if err != nil {
+		result = types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error: %v", err)},
+			},
+			IsError: true,
+		}
+	}
+
+	return types.ChatContentBlock{
+		Type:      "tool_result",
+		ToolUseID: block.ID,
+		Content:   result.Content,
+	}
 }
 
 // toolUseSummary returns a short description of what a tool call is doing.
