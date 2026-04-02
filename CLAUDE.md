@@ -30,6 +30,19 @@ forge stats --sessions         # per-session breakdown
 forge stats --daily --sessions # both views
 ```
 
+## MCP Integration
+
+Forge includes a Model Context Protocol (MCP) server that exposes Forge's tools to any MCP-compatible client (Claude Desktop, Claude Code, VS Code, etc.).
+
+See `mcp-server/README.md` for setup and usage.
+
+Quick start:
+```bash
+just build-mcp
+just mcp         # STDIO mode (local)
+just mcp-http    # HTTP mode (remote)
+```
+
 ## Repository layout
 
 ```
@@ -38,6 +51,11 @@ cmd/
   server/          legacy server binary (use 'forge server' instead)
   agent/           agent binary (still needed by server backend)
   cli/             legacy CLI binary (use 'forge' instead)
+mcp-server/        MCP server (TypeScript) — exposes Forge as MCP server
+  src/
+    server.ts      MCP server implementation
+    index.ts       STDIO entrypoint
+    http.ts        HTTP entrypoint
 internal/
   types/           shared contracts (messages, events, tools, context, tasks)
   tools/           tool registry + implementations
