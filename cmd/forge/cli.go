@@ -64,10 +64,10 @@ type model struct {
 	autoScroll      bool // auto-scroll to bottom on new content
 
 	// Cost tracking
-	totalUsage   types.TokenUsage // session total usage
-	lastTracked  types.TokenUsage // last tracked usage (for delta calculation)
-	modelName    string           // model name for cost calculation
-	costTracker  *cost.Tracker    // persistent cost tracker
+	totalUsage  types.TokenUsage // session total usage
+	lastTracked types.TokenUsage // last tracked usage (for delta calculation)
+	modelName   string           // model name for cost calculation
+	costTracker *cost.Tracker    // persistent cost tracker
 }
 
 type serverEvent types.OutboundEvent
@@ -124,9 +124,10 @@ func runCLI(args []string) int {
 		defer agentCleanup()
 	}
 
+	// Renderer will be initialized with proper width after first WindowSizeMsg
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(100),
+		glamour.WithWordWrap(80), // initial fallback, will be updated
 	)
 
 	// Initialize cost tracker
@@ -200,6 +201,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+		// Reinitialize renderer with updated width for proper wrapping
+		if m.width > 0 {
+			m.renderer, _ = glamour.NewTermRenderer(
+				glamour.WithAutoStyle(),
+				glamour.WithWordWrap(m.width-4), // account for padding/margins
+			)
+		}
 		return m, nil
 
 	case tea.MouseMsg:
@@ -281,8 +289,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// If nothing in queue and not working, send immediately without queuing
 			if len(m.queue) == 0 && !m.working {
-				// Display the user's message in the output with distinct styling
-				m.output = append(m.output, "", userMsgStyle.Render("You: ")+text)
+				// Display the user's message in the output with wrapping
+				m.output = append(m.output, "")
+				maxWidth := m.width - 7 // account for "You: "
+				if maxWidth < 40 {
+					maxWidth = 80
+				}
+				wrapped := wrapText(text, maxWidth)
+				for i, line := range wrapped {
+					if i == 0 {
+						m.output = append(m.output, userMsgStyle.Render("You: ")+line)
+					} else {
+						m.output = append(m.output, "     "+line)
+					}
+				}
 				return m, m.sendMessage(text)
 			}
 
@@ -334,8 +354,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if event.Type == "done" && len(m.queue) > 0 {
 			text := m.queue[0]
 			m.queue = m.queue[1:]
-			// Display the user's message in the output with distinct styling
-			m.output = append(m.output, userMsgStyle.Render("You: ")+text)
+			// Display the user's message in the output with wrapping
+			maxWidth := m.width - 7 // account for "You: "
+			if maxWidth < 40 {
+				maxWidth = 80
+			}
+			wrapped := wrapText(text, maxWidth)
+			for i, line := range wrapped {
+				if i == 0 {
+					m.output = append(m.output, userMsgStyle.Render("You: ")+line)
+				} else {
+					m.output = append(m.output, "     "+line)
+				}
+			}
 			return m, m.sendMessage(text)
 		}
 
@@ -412,11 +443,20 @@ func (m model) View() string {
 			if i == 0 {
 				prefix = "→ "
 			}
-			display := msg
-			if len(msg) > 80 {
-				display = msg[:77] + "..."
+			// Wrap queue messages instead of truncating
+			maxWidth := m.width - 4 // account for prefix
+			if maxWidth < 40 {
+				maxWidth = 80
 			}
-			queueLines = append(queueLines, prefix+queueStyle.Render(display))
+			wrapped := wrapText(msg, maxWidth)
+			for j, line := range wrapped {
+				if j == 0 {
+					queueLines = append(queueLines, prefix+queueStyle.Render(line))
+				} else {
+					// Indent continuation lines
+					queueLines = append(queueLines, "  "+queueStyle.Render(line))
+				}
+			}
 		}
 		queueLines = append(queueLines, "")
 		queueArea = strings.Join(queueLines, "\n")
@@ -465,6 +505,47 @@ func (m model) View() string {
 	return strings.Join(parts, "\n")
 }
 
+// wrapText wraps text to fit within maxWidth, breaking on word boundaries when possible
+func wrapText(text string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		return []string{text}
+	}
+
+	// Handle empty or short text
+	if len(text) <= maxWidth {
+		return []string{text}
+	}
+
+	var lines []string
+	remaining := text
+
+	for len(remaining) > 0 {
+		switch {
+		case len(remaining) <= maxWidth:
+			// Remaining text fits on one line
+			lines = append(lines, remaining)
+			remaining = ""
+
+		default:
+			// Need to break the line
+			breakAt := maxWidth
+
+			// Look for last space before maxWidth
+			lastSpace := strings.LastIndex(remaining[:maxWidth], " ")
+			if lastSpace > maxWidth/2 {
+				// Found a reasonable break point
+				breakAt = lastSpace
+			}
+
+			// Extract line and update remaining
+			lines = append(lines, remaining[:breakAt])
+			remaining = strings.TrimLeft(remaining[breakAt:], " ")
+		}
+	}
+
+	return lines
+}
+
 func (m *model) handleEvent(event types.OutboundEvent) {
 	switch event.Type {
 	case "model":
@@ -476,26 +557,84 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 	case "tool_use":
 		m.flushText()
 		if event.Content != "" {
-			m.output = append(m.output, toolStyle.Render("  ["+event.ToolName+"]")+" "+dimStyle.Render(event.Content))
+			// Wrap long tool content to terminal width
+			maxWidth := m.width - 10 // account for prefix and margins
+			if maxWidth < 40 {
+				maxWidth = 40
+			}
+			wrapped := wrapText(event.Content, maxWidth)
+			prefix := toolStyle.Render("  ["+event.ToolName+"]") + " "
+			for i, line := range wrapped {
+				if i == 0 {
+					m.output = append(m.output, prefix+dimStyle.Render(line))
+				} else {
+					// Indent continuation lines
+					m.output = append(m.output, "    "+dimStyle.Render(line))
+				}
+			}
 		} else {
 			m.output = append(m.output, toolStyle.Render("  ["+event.ToolName+"]"))
 		}
 
 	case "queued_task_result":
 		m.flushText()
-		m.output = append(m.output, queueStyle.Render("  [queued] ")+dimStyle.Render(event.Content))
+		maxWidth := m.width - 14 // account for prefix
+		if maxWidth < 40 {
+			maxWidth = 40
+		}
+		wrapped := wrapText(event.Content, maxWidth)
+		for i, line := range wrapped {
+			if i == 0 {
+				m.output = append(m.output, queueStyle.Render("  [queued] ")+dimStyle.Render(line))
+			} else {
+				m.output = append(m.output, "            "+dimStyle.Render(line))
+			}
+		}
 
 	case "queued_task_error":
 		m.flushText()
-		m.output = append(m.output, errorStyle.Render("  [queued error] ")+event.Content)
+		maxWidth := m.width - 20 // account for prefix
+		if maxWidth < 40 {
+			maxWidth = 40
+		}
+		wrapped := wrapText(event.Content, maxWidth)
+		for i, line := range wrapped {
+			if i == 0 {
+				m.output = append(m.output, errorStyle.Render("  [queued error] ")+line)
+			} else {
+				m.output = append(m.output, "                  "+line)
+			}
+		}
 
 	case "queue_immediate":
 		m.flushText()
-		m.output = append(m.output, queueStyle.Render("  ⏱  Queued immediate: ")+dimStyle.Render(event.Content))
+		maxWidth := m.width - 24 // account for prefix
+		if maxWidth < 40 {
+			maxWidth = 40
+		}
+		wrapped := wrapText(event.Content, maxWidth)
+		for i, line := range wrapped {
+			if i == 0 {
+				m.output = append(m.output, queueStyle.Render("  ⏱  Queued immediate: ")+dimStyle.Render(line))
+			} else {
+				m.output = append(m.output, "                        "+dimStyle.Render(line))
+			}
+		}
 
 	case "queue_on_complete":
 		m.flushText()
-		m.output = append(m.output, queueStyle.Render("  ⏱  Queued on complete: ")+dimStyle.Render(event.Content))
+		maxWidth := m.width - 27 // account for prefix
+		if maxWidth < 40 {
+			maxWidth = 40
+		}
+		wrapped := wrapText(event.Content, maxWidth)
+		for i, line := range wrapped {
+			if i == 0 {
+				m.output = append(m.output, queueStyle.Render("  ⏱  Queued on complete: ")+dimStyle.Render(line))
+			} else {
+				m.output = append(m.output, "                           "+dimStyle.Render(line))
+			}
+		}
 
 	case "usage":
 		// Loop sends cumulative totalUsage
@@ -520,7 +659,7 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 			// Only track if there's a non-zero delta
 			if deltaUsage.InputTokens > 0 || deltaUsage.OutputTokens > 0 ||
 				deltaUsage.CacheCreationTokens > 0 || deltaUsage.CacheReadTokens > 0 {
-				
+
 				callCost := cost.Calculate(event.Model, deltaUsage)
 				if err := m.costTracker.Track(
 					m.sessionID,
@@ -542,7 +681,18 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 
 	case "error":
 		m.flushText()
-		m.output = append(m.output, errorStyle.Render("error: "+event.Content))
+		maxWidth := m.width - 8 // account for "error: "
+		if maxWidth < 40 {
+			maxWidth = 40
+		}
+		wrapped := wrapText(event.Content, maxWidth)
+		for i, line := range wrapped {
+			if i == 0 {
+				m.output = append(m.output, errorStyle.Render("error: ")+line)
+			} else {
+				m.output = append(m.output, "       "+line)
+			}
+		}
 
 	case "done":
 		m.flushText()
