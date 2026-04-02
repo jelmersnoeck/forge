@@ -4,6 +4,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jelmersnoeck/forge/internal/runtime/task"
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -15,7 +16,7 @@ var taskManager = task.NewManager()
 func TaskCreateTool() types.ToolDefinition {
 	return types.ToolDefinition{
 		Name:        "TaskCreate",
-		Description: "Create a background task that runs asynchronously. Use this to run long-running commands without blocking the conversation.",
+		Description: "Create a background task that runs asynchronously. Use this to run long-running commands without blocking the conversation. IMPORTANT: Always set a timeout to prevent stuck commands.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -29,7 +30,7 @@ func TaskCreateTool() types.ToolDefinition {
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": "Maximum execution time in seconds (0 = no timeout)",
+					"description": "Maximum execution time in seconds (0 = no timeout, but NOT recommended). Suggest: 300 for builds, 600 for tests, 60 for quick tasks.",
 				},
 			},
 			"required": []string{"description", "command"},
@@ -85,11 +86,23 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 
+	// Build response message
+	var responseText strings.Builder
+	responseText.WriteString(fmt.Sprintf("Task created successfully:\n%s\n\n", resultJSON))
+	
+	// Warn if no timeout is set for potentially long-running commands
+	if timeout == 0 {
+		responseText.WriteString("⚠️  WARNING: This task has no timeout and may run indefinitely if stuck.\n")
+		responseText.WriteString("   Consider setting a timeout (e.g., timeout: 300 for 5 minutes) or use TaskStop() if needed.\n\n")
+	}
+	
+	responseText.WriteString(fmt.Sprintf("Use TaskGet(\"%s\") to check status or TaskOutput(\"%s\") to retrieve output when complete.", task.ID, task.ID))
+
 	return types.ToolResult{
 		Content: []types.ToolResultContent{
 			{
 				Type: "text",
-				Text: fmt.Sprintf("Task created successfully:\n%s\n\nUse TaskGet(\"%s\") to check status or TaskOutput(\"%s\") to retrieve output when complete.", resultJSON, task.ID, task.ID),
+				Text: responseText.String(),
 			},
 		},
 	}, nil

@@ -46,7 +46,6 @@ var nonInteractivePatterns = []string{
 	"-c ", // for python, ruby, etc. with code argument
 	"-e ", // for perl, ruby, etc. with code argument
 	"< ",  // input redirection
-	"| ",  // piping
 }
 
 // BashTool returns the Bash tool definition.
@@ -163,32 +162,7 @@ func checkInteractiveCommand(command string) string {
 		}
 	}
 
-	// Check for known interactive commands
-	// Extract the first command (before pipes, redirects, etc.)
-	parts := strings.Fields(normalized)
-	if len(parts) == 0 {
-		return ""
-	}
-
-	firstCmd := parts[0]
-	// Remove common prefixes
-	firstCmd = strings.TrimPrefix(firstCmd, "sudo")
-	firstCmd = strings.TrimSpace(firstCmd)
-	if len(strings.Fields(firstCmd)) > 0 {
-		firstCmd = strings.Fields(firstCmd)[0]
-	}
-
-	// Get base command name (strip path)
-	if idx := strings.LastIndex(firstCmd, "/"); idx >= 0 {
-		firstCmd = firstCmd[idx+1:]
-	}
-
-	// Check against known interactive commands
-	if suggestion, found := interactiveCommands[firstCmd]; found {
-		return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", firstCmd, suggestion)
-	}
-
-	// Special case: check for common interactive patterns
+	// Special case: check for common interactive patterns first
 	if strings.Contains(lower, "docker exec -it") || strings.Contains(lower, "docker run -it") {
 		return "Docker interactive mode (-it) requires a TTY.\n\nUse 'docker exec container_name command' without -it flag, or 'docker logs' to view output."
 	}
@@ -197,11 +171,128 @@ func checkInteractiveCommand(command string) string {
 		return "Kubectl interactive mode (-it) requires a TTY.\n\nUse 'kubectl exec pod_name -- command' without -it flag."
 	}
 
-	// Check for bare command invocations that start REPLs
-	if len(parts) == 1 {
-		switch firstCmd {
-		case "python", "python3", "node", "irb", "ruby":
-			return fmt.Sprintf("Running '%s' without arguments starts an interactive REPL.\n\n%s", firstCmd, interactiveCommands[firstCmd])
+	// Check for known interactive commands
+	// Extract the first command (before pipes, redirects, etc.)
+	parts := strings.Fields(normalized)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	firstCmd := parts[0]
+	// Remove sudo prefix if present
+	if firstCmd == "sudo" && len(parts) > 1 {
+		firstCmd = parts[1]
+	}
+
+	// Get base command name (strip path)
+	if idx := strings.LastIndex(firstCmd, "/"); idx >= 0 {
+		firstCmd = firstCmd[idx+1:]
+	}
+
+	// Commands that ALWAYS need TTY (text editors, pagers, interactive tools)
+	alwaysInteractive := map[string]bool{
+		"vim": true, "vi": true, "nano": true, "emacs": true,
+		"less": true, "more": true,
+		"top": true, "htop": true,
+		"tmux": true, "screen": true,
+		"fzf": true,
+		"ssh": true, // Without explicit command
+	}
+
+	if alwaysInteractive[firstCmd] {
+		if suggestion, found := interactiveCommands[firstCmd]; found {
+			return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", firstCmd, suggestion)
+		}
+		return fmt.Sprintf("Command '%s' requires interactive input.", firstCmd)
+	}
+
+	// Commands that start REPLs when run without arguments
+	// But are OK with arguments (scripts, -c flags, etc.)
+	replCommands := map[string]bool{
+		"python": true, "python3": true,
+		"node": true,
+		"irb": true, "ruby": true,
+	}
+
+	if replCommands[firstCmd] {
+		// Check if it has arguments that make it non-interactive
+		hasScript := len(parts) > 1
+		if !hasScript {
+			// Bare command - will start REPL
+			if suggestion, found := interactiveCommands[firstCmd]; found {
+				return fmt.Sprintf("Running '%s' without arguments starts an interactive REPL.\n\n%s", firstCmd, suggestion)
+			}
+		}
+		// Has arguments - assume it's running a script or -c/-e code
+		return ""
+	}
+
+	// Commands like git, docker, npm that are usually OK but can be interactive
+	// Only warn if they look suspicious (no clear non-interactive usage)
+	conditionallyInteractive := map[string][]string{
+		"git":    {"commit", "rebase", "add", "reset"},
+		"docker": {"attach", "exec", "run"},
+		"npm":    {"init"},
+		"yarn":   {"init"},
+	}
+
+	if suspiciousSubcommands, found := conditionallyInteractive[firstCmd]; found {
+		// Check if any suspicious subcommand is present
+		hasSafePattern := false
+		for _, part := range parts[1:] {
+			// Check for non-interactive flags
+			for _, pattern := range nonInteractivePatterns {
+				if strings.Contains(strings.ToLower(part), strings.TrimSpace(pattern)) {
+					hasSafePattern = true
+					break
+				}
+			}
+			// Check for explicit arguments that make it safe
+			if strings.HasPrefix(part, "-m") || strings.HasPrefix(part, "--message") {
+				hasSafePattern = true
+			}
+		}
+		
+		if hasSafePattern {
+			return "" // Has explicit non-interactive flags
+		}
+
+		// Check if it has suspicious subcommands without safety flags
+		for _, subCmd := range suspiciousSubcommands {
+			if len(parts) > 1 && strings.Contains(strings.ToLower(parts[1]), subCmd) {
+				// Found suspicious subcommand, check if it looks safe
+				// e.g., "docker exec container ls" is safe, "docker exec -it" is not
+				if firstCmd == "docker" && subCmd == "exec" {
+					commandHasArgs := len(parts) > 3 // command + subcommand + target + actual command
+					if commandHasArgs {
+						return "" // Has actual command to run
+					}
+				}
+				
+				if firstCmd == "git" && subCmd == "commit" {
+					// git commit without -m is interactive
+					hasMessage := false
+					for _, p := range parts {
+						if strings.HasPrefix(p, "-m") || p == "--message" {
+							hasMessage = true
+							break
+						}
+					}
+					if !hasMessage {
+						if suggestion, found := interactiveCommands[firstCmd]; found {
+							return fmt.Sprintf("Command '%s' may require interactive input.\n\n%s", firstCmd, suggestion)
+						}
+					}
+				}
+
+				if (firstCmd == "npm" || firstCmd == "yarn") && subCmd == "init" {
+					// npm/yarn init without -y is interactive
+					if suggestion, found := interactiveCommands[firstCmd]; found {
+						return fmt.Sprintf("Command '%s %s' requires interactive input.\n\n%s", firstCmd, subCmd, suggestion)
+					}
+					return fmt.Sprintf("Command '%s %s' requires interactive input. Use '%s %s -y' for non-interactive mode.", firstCmd, subCmd, firstCmd, subCmd)
+				}
+			}
 		}
 	}
 

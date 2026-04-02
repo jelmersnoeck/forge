@@ -13,17 +13,23 @@ import (
 
 // Manager handles background task lifecycle.
 type Manager struct {
-	mu     sync.RWMutex
-	tasks  map[string]*types.Task
-	agents map[string]*types.SubAgent
+	mu       sync.RWMutex
+	tasks    map[string]*types.Task
+	agents   map[string]*types.SubAgent
+	warnings chan string // Channel for timeout warnings
+	stopMon  chan struct{}
 }
 
 // NewManager creates a task manager.
 func NewManager() *Manager {
-	return &Manager{
-		tasks:  make(map[string]*types.Task),
-		agents: make(map[string]*types.SubAgent),
+	m := &Manager{
+		tasks:    make(map[string]*types.Task),
+		agents:   make(map[string]*types.SubAgent),
+		warnings: make(chan string, 100),
+		stopMon:  make(chan struct{}),
 	}
+	go m.monitorTasks()
+	return m
 }
 
 // CreateBashTask creates and starts a background bash command.
@@ -81,7 +87,19 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 
 	if err != nil {
 		task.Status = types.TaskStatusFailed
-		task.Error = err.Error()
+		
+		// Check if it was a timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			task.Error = fmt.Sprintf("command timed out after %d seconds", task.Timeout)
+			task.Output += fmt.Sprintf("\n\n⏱️  TIMEOUT: Command exceeded %d second limit.\n", task.Timeout)
+			task.Output += "Consider:\n"
+			task.Output += "  - Increasing the timeout if the task legitimately needs more time\n"
+			task.Output += "  - Breaking the task into smaller steps\n"
+			task.Output += "  - Checking if the command is stuck waiting for input\n"
+		} else {
+			task.Error = err.Error()
+		}
+		
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code := exitErr.ExitCode()
 			task.ExitCode = &code
@@ -241,4 +259,68 @@ func generateTaskID(taskType string) string {
 // generateSessionID creates a unique session ID for sub-agents.
 func generateSessionID() string {
 	return fmt.Sprintf("subagent-%d", time.Now().UnixNano())
+}
+
+// monitorTasks periodically checks for long-running tasks without timeouts.
+func (m *Manager) monitorTasks() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			m.checkLongRunningTasks()
+		case <-m.stopMon:
+			return
+		}
+	}
+}
+
+// checkLongRunningTasks warns about tasks running suspiciously long.
+func (m *Manager) checkLongRunningTasks() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	now := time.Now()
+	for _, task := range m.tasks {
+		if task.Status.IsTerminal() {
+			continue
+		}
+
+		duration := now.Sub(task.StartTime)
+
+		// Warn if task has no timeout and has been running > 5 minutes
+		if task.Timeout == 0 && duration > 5*time.Minute {
+			select {
+			case m.warnings <- fmt.Sprintf(
+				"⚠️  Task %s (%s) has been running for %s without a timeout. Consider using TaskStop(\"%s\") if it's stuck.",
+				task.ID, task.Description, duration.Round(time.Second), task.ID):
+			default:
+				// Channel full, skip warning
+			}
+		}
+
+		// Warn if task is approaching its timeout (90% of timeout elapsed)
+		if task.Timeout > 0 {
+			timeoutDuration := time.Duration(task.Timeout) * time.Second
+			if duration > timeoutDuration*9/10 && duration < timeoutDuration {
+				select {
+				case m.warnings <- fmt.Sprintf(
+					"⏱️  Task %s (%s) is approaching timeout (%s remaining)",
+					task.ID, task.Description, (timeoutDuration - duration).Round(time.Second)):
+				default:
+				}
+			}
+		}
+	}
+}
+
+// GetWarnings returns a channel that receives timeout warnings.
+func (m *Manager) GetWarnings() <-chan string {
+	return m.warnings
+}
+
+// Stop stops the monitoring goroutine.
+func (m *Manager) Stop() {
+	close(m.stopMon)
 }

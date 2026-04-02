@@ -263,8 +263,13 @@ func TestBashToolInteractiveCommands(t *testing.T) {
 			shouldBlock:  true,
 			errorMessage: "top",
 		},
-		"piped command is OK": {
-			command:     "vim file.txt | cat",
+		"piped command with vim should still block": {
+			command:      "vim file.txt | cat",
+			shouldBlock:  true,
+			errorMessage: "vim",
+		},
+		"echo piped to cat is OK": {
+			command:     "echo 'hello' | cat",
 			shouldBlock: false,
 		},
 		"redirected input is OK": {
