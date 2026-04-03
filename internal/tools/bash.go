@@ -285,6 +285,24 @@ func checkInteractiveCommand(command string) string {
 					}
 				}
 
+				if firstCmd == "git" && (subCmd == "rebase" || subCmd == "add" || subCmd == "reset") {
+					// These git commands are only interactive with specific flags
+					isInteractive := false
+					for _, p := range parts {
+						if p == "-i" || p == "--interactive" || p == "-p" || p == "--patch" || p == "-e" || p == "--edit" {
+							isInteractive = true
+							break
+						}
+					}
+					if isInteractive {
+						if suggestion, found := interactiveCommands[firstCmd]; found {
+							return fmt.Sprintf("Command '%s' requires interactive input.\n\n%s", firstCmd, suggestion)
+						}
+					}
+					// Non-interactive usage is fine
+					return ""
+				}
+
 				if (firstCmd == "npm" || firstCmd == "yarn") && subCmd == "init" {
 					// npm/yarn init without -y is interactive
 					if suggestion, found := interactiveCommands[firstCmd]; found {

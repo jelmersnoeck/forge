@@ -11,6 +11,7 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 - **Cost Tracking** - Automatic API cost tracking with analytics (daily/monthly/session breakdowns)
 - **Streaming** - Real-time event stream via Server-Sent Events (SSE)
 - **Tool Execution** - Read, Write, Edit, Bash, Glob, Grep, and Queue tools
+- **MCP Server** - Expose Forge as MCP server for use by Claude Desktop, Claude Code, VS Code, etc.
 
 ## Quick Start
 
@@ -389,6 +390,7 @@ Agent:
 ## Documentation
 
 - **[CLAUDE.md](CLAUDE.md)** - Project instructions and architecture
+- **[docs/mcp-integration.md](docs/mcp-integration.md)** - MCP integration details and comparison with Claude Code
 - **[docs/CLI_TUI.md](docs/CLI_TUI.md)** - CLI TUI user guide
 - **[docs/CLI_TUI_VISUAL.md](docs/CLI_TUI_VISUAL.md)** - Visual examples
 - **[docs/QUEUE_SYSTEM.md](docs/QUEUE_SYSTEM.md)** - Queue implementation details
