@@ -77,14 +77,11 @@ To match Claude Code's MCP capabilities, Forge would need:
 - ⚠️ Add prompt templates for guided workflows
 
 ### Phase 2: MCP Client Implementation
-- ❌ Implement MCP client in Go
-  - Option A: Write native Go MCP client (cleanest, most work)
-  - Option B: Bridge to TypeScript SDK via subprocess (faster, less clean)
-  - Option C: Implement just the JSON-RPC protocol (minimal, flexible)
-- ❌ Add `MCPTool` to Forge's tool registry
-- ❌ Manage multiple concurrent MCP server connections
-- ❌ Add MCP server configuration (similar to `.mcp.json`)
-- ❌ Add slash commands for MCP management (`/mcp add`, `/mcp list`, etc.)
+- ✅ Implement MCP client in Go (JSON-RPC protocol directly)
+- ✅ Add MCP tools to Forge's tool registry (MCPConnect, MCPListTools, MCPCallTool, etc.)
+- ✅ Manage multiple concurrent MCP server connections
+- ⚠️ Add MCP server configuration file support (similar to `.mcp.json`)
+- ⚠️ Add slash commands for MCP management (`/mcp add`, `/mcp list`, etc.)
 
 ### Phase 3: Advanced Features
 - ❌ OAuth authentication for MCP servers

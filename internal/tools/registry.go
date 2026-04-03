@@ -144,5 +144,11 @@ func NewDefaultRegistry() *Registry {
 	r.Register(AgentGetTool())
 	r.Register(AgentListTool())
 	r.Register(AgentStopTool())
+	// MCP client tools
+	r.Register(NewMCPConnectTool())
+	r.Register(NewMCPListToolsTool())
+	r.Register(NewMCPCallToolTool())
+	r.Register(NewMCPListConnectionsTool())
+	r.Register(NewMCPDisconnectTool())
 	return r
 }

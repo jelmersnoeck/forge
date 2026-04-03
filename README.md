@@ -11,7 +11,7 @@ Async coding agent — headless Claude Code behind a platform-agnostic HTTP API.
 - **Cost Tracking** - Automatic API cost tracking with analytics (daily/monthly/session breakdowns)
 - **Streaming** - Real-time event stream via Server-Sent Events (SSE)
 - **Tool Execution** - Read, Write, Edit, Bash, Glob, Grep, and Queue tools
-- **MCP Server** - Expose Forge as MCP server for use by Claude Desktop, Claude Code, VS Code, etc.
+- **MCP Integration** - Connect to external MCP servers and use their tools (MCP client + server)
 
 ## Quick Start
 
@@ -233,15 +233,36 @@ Built-in tools available to the agent:
 
 | Tool | Description |
 |------|-------------|
+| **File Operations** | |
 | `Read` | Read file contents with line numbers |
 | `Write` | Create or overwrite files |
 | `Edit` | String replacement in files |
+| **Execution** | |
 | `Bash` | Execute shell commands |
 | `Glob` | Fast file pattern matching |
 | `Grep` | Search using ripgrep |
+| **External** | |
 | `WebSearch` | Search the web for information (DuckDuckGo or Brave) |
+| **Queuing** | |
 | `QueueImmediate` | Queue command after each tool |
 | `QueueOnComplete` | Queue command on completion |
+| **Background Tasks** | |
+| `TaskCreate` | Create background task |
+| `TaskGet` | Get task status |
+| `TaskList` | List all tasks |
+| `TaskStop` | Stop a running task |
+| `TaskOutput` | Get task output |
+| **Sub-Agents** | |
+| `Agent` | Spawn a sub-agent |
+| `AgentGet` | Get sub-agent status |
+| `AgentList` | List all sub-agents |
+| `AgentStop` | Stop a sub-agent |
+| **MCP Integration** | |
+| `MCPConnect` | Connect to an MCP server |
+| `MCPListTools` | List tools from an MCP server |
+| `MCPCallTool` | Call a tool on an MCP server |
+| `MCPListConnections` | List connected MCP servers |
+| `MCPDisconnect` | Disconnect from an MCP server |
 
 ## API Endpoints
 
@@ -385,6 +406,30 @@ Agent:
   
   [Bash] go version
   [Bash] brew upgrade go  # or your package manager
+```
+
+### Example 5: Using MCP Servers
+```bash
+> Connect to the claude-code-explorer MCP server and list its tools
+
+Agent:
+  [MCPConnect] name="claude-code" command="node" args=["../claude-code/mcp-server/dist/index.js"]
+  Successfully connected to MCP server "claude-code"
+  
+  [MCPListTools] server="claude-code"
+  MCP server "claude-code" has 8 tools:
+  
+  • list_tools: List all Claude Code agent tools
+  • list_commands: List all Claude Code slash commands
+  • get_tool_source: Read tool implementation
+  • search_source: Regex search across source tree
+  ...
+  
+> Use the search_source tool to find how permissions are handled
+
+Agent:
+  [MCPCallTool] server="claude-code" tool="search_source" arguments={"pattern":"permission.*check"}
+  Found 42 matches for "permission.*check" in claude-code source...
 ```
 
 ## Documentation
