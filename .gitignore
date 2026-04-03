@@ -8,4 +8,5 @@ forge-agent
 /dist/
 *.test
 docs/
-forge
+/forge
+worktrees/

@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -122,6 +125,15 @@ func runCLI(args []string) int {
 		serverURL = url
 		agentCleanup = cleanup
 		defer agentCleanup()
+
+		// Setup signal handler to ensure cleanup on interrupt
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			agentCleanup()
+			os.Exit(0)
+		}()
 	}
 
 	// Renderer will be initialized with proper width after first WindowSizeMsg
@@ -820,8 +832,22 @@ func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool
 	}
 }
 
+// isInWorktree checks if the current directory is inside a git worktree.
+// Returns false if not in a git repo or if in the main repo.
+func isInWorktree(dir string) bool {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		return false
+	}
+	// In a worktree, .git is a file (pointing to the real git dir)
+	// In the main repo, .git is a directory
+	return !info.IsDir()
+}
+
 // spawnLocalAgent starts a forge agent subprocess and returns (sessionID, serverURL, cleanup, error).
 // The agent runs on a random port and auto-terminates when cleanup is called.
+// If in a git repo (and not already in a worktree), creates a temporary worktree for the session.
 func spawnLocalAgent(cwd string) (string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
@@ -840,6 +866,49 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 
 	// Generate session ID
 	sessionID := "cli-" + time.Now().Format("20060102-150405")
+
+	// Check if we're in a git repo and should create a worktree
+	var worktreePath string
+	var shouldCleanupWorktree bool
+	var repoRoot string
+
+	// Only create worktree if:
+	// 1. We're in a git repo
+	// 2. We're not already in a worktree
+	if !isInWorktree(cwd) {
+		// Try to find git repo root
+		cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+		cmd.Dir = cwd
+		if out, err := cmd.Output(); err == nil {
+			repoRoot = strings.TrimSpace(string(out))
+
+			// Get current branch
+			cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+			cmd.Dir = repoRoot
+			if branchOut, err := cmd.Output(); err == nil {
+				branch := strings.TrimSpace(string(branchOut))
+
+				// Create worktree directory
+				worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
+				worktreePath = filepath.Join(worktreeBase, sessionID)
+
+				// Ensure base directory exists
+				if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
+					// Create the worktree
+					newBranch := fmt.Sprintf("jelmer/%s", sessionID)
+					cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, branch)
+					cmd.Dir = repoRoot
+					if err := cmd.Run(); err == nil {
+						// Successfully created worktree
+						fmt.Fprintln(os.Stderr, dimStyle.Render("  🌳 Created worktree: "+worktreePath))
+						fmt.Fprintln(os.Stderr, dimStyle.Render("  📦 Branch: "+newBranch))
+						cwd = worktreePath
+						shouldCleanupWorktree = true
+					}
+				}
+			}
+		}
+	}
 
 	// Spawn agent subcommand on random port (0 = OS picks)
 	cmd := exec.Command(forgeBin, "agent",
@@ -898,10 +967,49 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 		return "", "", nil, fmt.Errorf("agent did not become healthy")
 	}
 
+	// Track whether cleanup has been called to avoid double-cleanup
+	var cleanupCalled bool
+	var cleanupMutex sync.Mutex
+
 	cleanup := func() {
+		cleanupMutex.Lock()
+		defer cleanupMutex.Unlock()
+
+		if cleanupCalled {
+			return
+		}
+		cleanupCalled = true
+
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 			cmd.Wait()
+		}
+
+		// Cleanup worktree if we created one
+		if shouldCleanupWorktree && worktreePath != "" && repoRoot != "" {
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  🧹 Cleaning up worktree..."))
+
+			// Remove the worktree
+			gitCmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
+			gitCmd.Dir = repoRoot
+			if err := gitCmd.Run(); err != nil {
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  ⚠  worktree remove failed: "+err.Error()))
+			}
+
+			// Prune worktree references
+			gitCmd = exec.Command("git", "worktree", "prune")
+			gitCmd.Dir = repoRoot
+			gitCmd.Run() // ignore errors
+
+			// Delete the branch
+			branchName := fmt.Sprintf("jelmer/%s", sessionID)
+			gitCmd = exec.Command("git", "branch", "-D", branchName)
+			gitCmd.Dir = repoRoot
+			if err := gitCmd.Run(); err != nil {
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  ⚠  branch delete failed: "+err.Error()))
+			}
+
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  ✅ Worktree cleanup complete"))
 		}
 	}
 

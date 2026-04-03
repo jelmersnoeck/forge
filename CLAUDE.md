@@ -102,6 +102,14 @@ export ANTHROPIC_API_KEY=sk-...
 forge                    # spawns local agent, ephemeral session
 ```
 
+**Git Worktree Isolation**: When running in interactive mode from a git repository (and not already in a worktree), Forge automatically:
+- Creates a temporary worktree in `/tmp/forge/worktrees/<session-id>`
+- Creates a branch `jelmer/<session-id>` from your current HEAD
+- Runs the agent in that isolated worktree
+- Cleans up the worktree and branch on exit
+
+This ensures each Forge session has its own isolated workspace, preventing conflicts when running multiple sessions or when your main working tree is in use.
+
 ### Server mode (persistent sessions)
 ```bash
 cp .env.example .env        # set ANTHROPIC_API_KEY
