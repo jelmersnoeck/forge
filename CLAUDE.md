@@ -252,6 +252,13 @@ POST   /interrupt                     interrupt current work
 Use TV show Community references for fake data (Troy Barnes, Greendale
 Community College, etc.).
 
+## Git commands
+
+- **NEVER use git commands with the -i flag** (like `git rebase -i`, `git add -i`, `git commit --interactive`) since they require interactive input which is not supported
+- The Bash tool sets `GIT_EDITOR=true` to prevent git from opening editors, so commands like `git rebase` or `git commit --amend` will work non-interactively
+- Always use `-m` flag for `git commit` to provide messages inline
+- For complex rebases, use explicit commands like `git rebase --onto` with SHA arguments rather than interactive mode
+
 ## Conventions
 
 - Go, standard library where possible
