@@ -74,12 +74,17 @@ func TestRegistry(t *testing.T) {
 				r.True(names["greendale_tool"])
 				r.True(names["chang_tool"])
 
-				// All schemas should have cache control with 1h TTL
+				// Only the last tool should have cache control (single breakpoint covers all)
+				cacheCount := 0
 				for _, schema := range schemas {
-					r.NotNil(schema.CacheControl, "tool %s missing cache control", schema.Name)
-					r.Equal("ephemeral", schema.CacheControl.Type, "tool %s wrong cache type", schema.Name)
-					r.Equal("1h", schema.CacheControl.TTL, "tool %s wrong TTL", schema.Name)
+					if schema.CacheControl != nil {
+						cacheCount++
+						r.Equal("ephemeral", schema.CacheControl.Type, "tool %s wrong cache type", schema.Name)
+						r.Equal("1h", schema.CacheControl.TTL, "tool %s wrong TTL", schema.Name)
+					}
 				}
+				r.Equal(1, cacheCount, "exactly one tool should have cache control")
+				r.NotNil(schemas[len(schemas)-1].CacheControl, "last tool should have cache control")
 			},
 		},
 		"execute tool": {

@@ -61,7 +61,9 @@ func (r *Registry) All() []types.ToolDefinition {
 }
 
 // Schemas returns schemas for all registered tools.
-// Tool schemas are marked with 1h cache control since they rarely change.
+// Only the last tool gets cache_control — a single breakpoint caches the
+// entire tool list. Anthropic's API allows at most 4 cache_control blocks
+// across all system + tool blocks combined.
 func (r *Registry) Schemas() []types.ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -71,12 +73,17 @@ func (r *Registry) Schemas() []types.ToolSchema {
 			Name:        def.Name,
 			Description: def.Description,
 			InputSchema: def.InputSchema,
-			CacheControl: &types.CacheControl{
-				Type: "ephemeral",
-				TTL:  "1h",
-			},
 		})
 	}
+
+	// Single cache breakpoint on the last tool covers all tools
+	if len(schemas) > 0 {
+		schemas[len(schemas)-1].CacheControl = &types.CacheControl{
+			Type: "ephemeral",
+			TTL:  "1h",
+		}
+	}
+
 	return schemas
 }
 
