@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -49,7 +50,7 @@ type model struct {
 	server          string
 	sessionID       string
 	interactiveMode bool // true if talking directly to agent, false if via gateway
-	input           string
+	textInput       textinput.Model
 	queue           []string
 	output          []string
 	ready           bool
@@ -149,10 +150,18 @@ func runCLI(args []string) int {
 		// Continue without cost tracking
 	}
 
+	// Initialize text input
+	ti := textinput.New()
+	ti.Placeholder = "Type your message..."
+	ti.Focus()
+	ti.CharLimit = 0 // no limit
+	ti.Width = 80    // will be updated on WindowSizeMsg
+
 	m := model{
 		server:          serverURL,
 		sessionID:       sessionID,
 		interactiveMode: (*server == ""),
+		textInput:       ti,
 		output:          []string{},
 		queue:           []string{},
 		renderer:        renderer,
@@ -213,6 +222,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+		// Update text input width
+		m.textInput.Width = msg.Width - 4 // account for border padding
 		// Reinitialize renderer with updated width for proper wrapping
 		if m.width > 0 {
 			m.renderer, _ = glamour.NewTermRenderer(
@@ -292,12 +303,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyEnter:
-			if m.input == "" {
+			if m.textInput.Value() == "" {
 				return m, nil
 			}
-			text := m.input
-			m.input = ""       // Clear input immediately
-			m.exitAttempts = 0 // Reset exit attempts on new message
+			text := m.textInput.Value()
+			m.textInput.SetValue("") // Clear input immediately
+			m.exitAttempts = 0       // Reset exit attempts on new message
 
 			// If nothing in queue and not working, send immediately without queuing
 			if len(m.queue) == 0 && !m.working {
@@ -322,22 +333,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.queue = append(m.queue, text)
 			return m, nil
 
-		case tea.KeyBackspace:
-			if len(m.input) > 0 {
-				m.input = m.input[:len(m.input)-1]
-			}
+		default:
+			// Let textinput handle all other keys (including navigation)
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
 			m.exitAttempts = 0 // Reset on any input
-			return m, nil
-
-		case tea.KeySpace:
-			m.input += " "
-			m.exitAttempts = 0 // Reset on any input
-			return m, nil
-
-		case tea.KeyRunes:
-			m.input += string(msg.Runes)
-			m.exitAttempts = 0 // Reset on any input
-			return m, nil
+			return m, cmd
 		}
 
 	case serverEvent:
@@ -474,17 +475,10 @@ func (m model) View() string {
 		queueArea = strings.Join(queueLines, "\n")
 	}
 
-	// Build input area with cursor
-	cursor := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("│")
-	var inputContent string
-	if m.input == "" {
-		inputDisplay := dimStyle.Render("Type your message...")
-		inputContent = promptStyle.Render("> ") + cursor + " " + inputDisplay
-	} else {
-		inputContent = promptStyle.Render("> ") + m.input + cursor
-	}
-	// Make input area full width (accounting for border and padding)
-	inputArea := inputBorderStyle.Width(m.width - 4).Render(inputContent)
+	// Build input area with textinput component
+	inputArea := inputBorderStyle.Width(m.width - 4).Render(
+		promptStyle.Render("> ") + m.textInput.View(),
+	)
 
 	// Build cost tracker (below input, transparent)
 	costTrackerStyle := lipgloss.NewStyle().
