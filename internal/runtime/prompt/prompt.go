@@ -36,24 +36,15 @@ Response format:
 func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var blocks []types.SystemBlock
 
-	// 1. Base coding agent prompt (cached - never changes)
-	// Uses 1h TTL because this content is completely static.
-	// API requires TTL ordering: 1h blocks must come before 5m blocks
-	// across tools → system → messages.
-	blocks = append(blocks, types.SystemBlock{
-		Type: "text",
-		Text: basePrompt,
-		CacheControl: &types.CacheControl{
-			Type: "ephemeral",
-			TTL:  "1h",
-		},
-	})
+	// 1. Base prompt + environment info (cached together as one block)
+	// Merged to stay within the 4 cache_control block limit:
+	// system(base+env) + system(CLAUDE.md) + system(bundled) + tools = 4
+	envInfo := fmt.Sprintf(`%s
 
-	// 2. Environment info (cached - only changes daily when date changes)
-	envInfo := fmt.Sprintf(`Environment Information:
+Environment Information:
 - Working directory: %s
 - Platform: %s
-- Current date: %s`, cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
+- Current date: %s`, basePrompt, cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
 
 	blocks = append(blocks, types.SystemBlock{
 		Type: "text",
