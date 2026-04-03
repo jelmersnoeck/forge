@@ -184,3 +184,42 @@ func TestAssemble_AllFeatures(t *testing.T) {
 	r.Contains(bundledBlock.Text, "test-skill")
 	r.Contains(bundledBlock.Text, "test-agent")
 }
+
+func TestAssemble_CacheControlTTL(t *testing.T) {
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		ClaudeMD: []types.ClaudeMDEntry{
+			{Path: "/test/CLAUDE.md", Content: "Test CLAUDE.md", Level: "project"},
+		},
+		AgentsMD: []types.AgentsMDEntry{
+			{Path: "/test/AGENTS.md", Content: "Test AGENTS.md", Level: "project"},
+		},
+		Rules: []types.RuleEntry{
+			{Path: "/test/.claude/rules/test.md", Content: "Test rule", Level: "project"},
+		},
+		SkillDescriptions: []types.SkillDescription{
+			{Name: "test-skill", Description: "Test", IsUserInvocable: true},
+		},
+		AgentDefinitions: map[string]types.AgentDefinition{
+			"test-agent": {Name: "test-agent", Description: "Test agent"},
+		},
+	}
+
+	blocks := Assemble(bundle, "/test")
+
+	// All blocks should have cache control with 1h TTL
+	blockNames := []string{"base prompt", "env info", "CLAUDE.md", "AGENTS.md", "rules", "skills", "agents"}
+	r.Equal(len(blockNames), len(blocks), "expected %d blocks", len(blockNames))
+
+	for i, block := range blocks {
+		r.NotNil(block.CacheControl, "block %d (%s) missing cache control", i, blockNames[i])
+		r.Equal("ephemeral", block.CacheControl.Type, "block %d (%s) wrong cache type", i, blockNames[i])
+		r.Equal("1h", block.CacheControl.TTL, "block %d (%s) wrong TTL", i, blockNames[i])
+	}
+
+	// CLAUDE.md should also have global scope
+	claudeBlock := blocks[2]
+	r.Contains(claudeBlock.Text, "CLAUDE.md")
+	r.Equal("global", claudeBlock.CacheControl.Scope)
+}

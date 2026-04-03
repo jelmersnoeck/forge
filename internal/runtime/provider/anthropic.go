@@ -34,16 +34,16 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 
 		if block.CacheControl != nil {
 			cacheControl := anthropic.NewCacheControlEphemeralParam()
-			
+
 			// Set TTL if specified (1h for extended cache, default is 5m)
 			if block.CacheControl.TTL == "1h" {
 				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
 			} else if block.CacheControl.TTL == "5m" {
 				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
 			}
-			// Note: Scope (global) support depends on SDK/API version
-			// Currently not exposed in the Go SDK, but the API supports it
-			
+			// Note: Scope (global) not yet supported in Go SDK v1.27.1
+			// The API supports it but CacheControlEphemeralParam doesn't expose it
+
 			textBlock.CacheControl = cacheControl
 		}
 
@@ -90,6 +90,21 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		if tool.Description != "" {
 			toolUnion.OfTool.Description = anthropic.Opt(tool.Description)
 		}
+
+		// Set cache control if provided (tools rarely change, so cache them)
+		if tool.CacheControl != nil {
+			cacheControl := anthropic.NewCacheControlEphemeralParam()
+
+			// Set TTL if specified
+			if tool.CacheControl.TTL == "1h" {
+				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+			} else if tool.CacheControl.TTL == "5m" {
+				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+			}
+
+			toolUnion.OfTool.CacheControl = cacheControl
+		}
+
 		tools[i] = toolUnion
 	}
 
