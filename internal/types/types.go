@@ -88,6 +88,9 @@ type ChatContentBlock struct {
 	Content   []ToolResultContent `json:"content,omitempty"`
 }
 
+// ContentBlock is an alias for ToolResultContent (for backwards compatibility with MCP).
+type ContentBlock = ToolResultContent
+
 // ChatDelta is a streaming event from the LLM.
 type ChatDelta struct {
 	Type        string      `json:"type"` // "text_delta", "tool_use_start", "tool_use_delta", "tool_use_end", "message_stop", "error"
