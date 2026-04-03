@@ -14,10 +14,10 @@ func TestAssemble_BasePrompt(t *testing.T) {
 	bundle := types.ContextBundle{}
 	blocks := Assemble(bundle, "/home/troy/greendale")
 
-	// Should have at least base prompt and environment info
-	r.GreaterOrEqual(len(blocks), 2)
+	// Should have base prompt + env info merged into one block
+	r.GreaterOrEqual(len(blocks), 1)
 	r.Contains(blocks[0].Text, "Coding assistant")
-	r.Contains(blocks[1].Text, "/home/troy/greendale")
+	r.Contains(blocks[0].Text, "/home/troy/greendale")
 }
 
 func TestAssemble_ClaudeMD(t *testing.T) {
@@ -175,11 +175,11 @@ func TestAssemble_AllFeatures(t *testing.T) {
 
 	blocks := Assemble(bundle, "/test")
 
-	// Should have: base prompt, env info, CLAUDE.md, bundled (rules+skills+agents) = 4 blocks
-	r.Equal(4, len(blocks))
-	
+	// Should have: base+env, CLAUDE.md, bundled (rules+skills+agents) = 3 blocks
+	r.Equal(3, len(blocks))
+
 	// Verify bundled content contains all sections
-	bundledBlock := blocks[3]
+	bundledBlock := blocks[2]
 	r.Contains(bundledBlock.Text, "Test rule")
 	r.Contains(bundledBlock.Text, "test-skill")
 	r.Contains(bundledBlock.Text, "test-agent")
@@ -208,8 +208,9 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 
 	blocks := Assemble(bundle, "/test")
 
-	// All blocks should have cache control with 1h TTL
-	blockNames := []string{"base prompt", "env info", "CLAUDE.md", "AGENTS.md", "rules", "skills", "agents"}
+	// Should have: base+env, CLAUDE.md, bundled = 3 blocks
+	// (base+env merged to stay within 4 cache_control limit with tools)
+	blockNames := []string{"base+env", "CLAUDE.md", "bundled"}
 	r.Equal(len(blockNames), len(blocks), "expected %d blocks", len(blockNames))
 
 	for i, block := range blocks {
@@ -219,7 +220,7 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 	}
 
 	// CLAUDE.md should also have global scope
-	claudeBlock := blocks[2]
+	claudeBlock := blocks[1]
 	r.Contains(claudeBlock.Text, "CLAUDE.md")
 	r.Equal("global", claudeBlock.CacheControl.Scope)
 }
