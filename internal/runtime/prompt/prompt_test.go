@@ -16,7 +16,7 @@ func TestAssemble_BasePrompt(t *testing.T) {
 
 	// Should have at least base prompt and environment info
 	r.GreaterOrEqual(len(blocks), 2)
-	r.Contains(blocks[0].Text, "helpful coding assistant")
+	r.Contains(blocks[0].Text, "Coding assistant")
 	r.Contains(blocks[1].Text, "/home/troy/greendale")
 }
 
