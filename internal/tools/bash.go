@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,29 +14,29 @@ import (
 
 // interactiveCommands maps command names to their non-interactive alternatives or flags
 var interactiveCommands = map[string]string{
-	"vim":      "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"vi":       "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"nano":     "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"emacs":    "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
-	"less":     "Use 'cat' to read files directly.",
-	"more":     "Use 'cat' to read files directly.",
-	"top":      "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
-	"htop":     "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
-	"python":   "Use 'python script.py' to run a script, or 'python -c \"code\"' for one-liners.",
-	"python3":  "Use 'python3 script.py' to run a script, or 'python3 -c \"code\"' for one-liners.",
-	"node":     "Use 'node script.js' to run a script, or 'node -e \"code\"' for one-liners.",
-	"irb":      "Use 'ruby script.rb' to run a script, or 'ruby -e \"code\"' for one-liners.",
-	"rails":    "Use non-interactive flags like 'rails new app --api --skip-test' or 'rails generate model User name:string --no-interaction'.",
-	"npm":      "Use 'npm install' or add flags like 'npm init -y' for non-interactive mode.",
-	"yarn":     "Use 'yarn install' or add --non-interactive flag where applicable.",
-	"docker":   "Most docker commands are non-interactive, but avoid 'docker attach' or 'docker exec -it'.",
-	"ssh":      "SSH requires a TTY. Run commands remotely like: 'ssh user@host \"command\"'.",
-	"tmux":     "Tmux requires a TTY. Consider using background processes or separate sessions.",
-	"screen":   "Screen requires a TTY. Consider using background processes or separate sessions.",
-	"mysql":    "Use 'mysql -e \"SQL\"' for queries, or 'mysql < script.sql' for scripts.",
-	"psql":     "Use 'psql -c \"SQL\"' for queries, or 'psql -f script.sql' for scripts.",
-	"fzf":      "FZF requires interactive selection. Use grep, find, or other filtering tools instead.",
-	"git":      "Git commands work fine, but avoid interactive rebase or commit editors. Use 'git commit -m \"message\"'.",
+	"vim":     "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
+	"vi":      "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
+	"nano":    "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
+	"emacs":   "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
+	"less":    "Use 'cat' to read files directly.",
+	"more":    "Use 'cat' to read files directly.",
+	"top":     "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
+	"htop":    "Use 'ps aux' for process listing or 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head' for top processes.",
+	"python":  "Use 'python script.py' to run a script, or 'python -c \"code\"' for one-liners.",
+	"python3": "Use 'python3 script.py' to run a script, or 'python3 -c \"code\"' for one-liners.",
+	"node":    "Use 'node script.js' to run a script, or 'node -e \"code\"' for one-liners.",
+	"irb":     "Use 'ruby script.rb' to run a script, or 'ruby -e \"code\"' for one-liners.",
+	"rails":   "Use non-interactive flags like 'rails new app --api --skip-test' or 'rails generate model User name:string --no-interaction'.",
+	"npm":     "Use 'npm install' or add flags like 'npm init -y' for non-interactive mode.",
+	"yarn":    "Use 'yarn install' or add --non-interactive flag where applicable.",
+	"docker":  "Most docker commands are non-interactive, but avoid 'docker attach' or 'docker exec -it'.",
+	"ssh":     "SSH requires a TTY. Run commands remotely like: 'ssh user@host \"command\"'.",
+	"tmux":    "Tmux requires a TTY. Consider using background processes or separate sessions.",
+	"screen":  "Screen requires a TTY. Consider using background processes or separate sessions.",
+	"mysql":   "Use 'mysql -e \"SQL\"' for queries, or 'mysql < script.sql' for scripts.",
+	"psql":    "Use 'psql -c \"SQL\"' for queries, or 'psql -f script.sql' for scripts.",
+	"fzf":     "FZF requires interactive selection. Use grep, find, or other filtering tools instead.",
+	"git":     "Git commands work fine, but avoid interactive rebase or commit editors. Use 'git commit -m \"message\"'.",
 }
 
 // nonInteractivePatterns are command patterns that indicate non-interactive mode
@@ -104,6 +105,17 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	cmd := exec.CommandContext(execCtx, "bash", "-l", "-c", command)
 	cmd.Dir = ctx.CWD
+
+	// Set environment variables to prevent interactive editors from being invoked.
+	// GIT_EDITOR=true: git commands that need an editor (rebase, commit --amend, etc.)
+	//                  will use 'true' (a no-op that exits 0), preventing hangs
+	// EDITOR=true: fallback for any tool that uses $EDITOR
+	// VISUAL=true: fallback for any tool that uses $VISUAL
+	cmd.Env = append(os.Environ(),
+		"GIT_EDITOR=true",
+		"EDITOR=true",
+		"VISUAL=true",
+	)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -211,7 +223,7 @@ func checkInteractiveCommand(command string) string {
 	replCommands := map[string]bool{
 		"python": true, "python3": true,
 		"node": true,
-		"irb": true, "ruby": true,
+		"irb":  true, "ruby": true,
 	}
 
 	if replCommands[firstCmd] {
@@ -252,7 +264,7 @@ func checkInteractiveCommand(command string) string {
 				hasSafePattern = true
 			}
 		}
-		
+
 		if hasSafePattern {
 			return "" // Has explicit non-interactive flags
 		}
@@ -268,7 +280,7 @@ func checkInteractiveCommand(command string) string {
 						return "" // Has actual command to run
 					}
 				}
-				
+
 				if firstCmd == "git" && subCmd == "commit" {
 					// git commit without -m is interactive
 					hasMessage := false
