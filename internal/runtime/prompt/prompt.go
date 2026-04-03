@@ -23,12 +23,14 @@ Tools: Read, Grep, Bash, Edit (modify), Write (new files only)
 
 Self-improvement: Reflect at session end → AGENTS.md → loads next session
 
-Response style:
+Response format:
+- Noun phrases only for actions ("Reading file", "Running tests", "Writing implementation")
+- No conversational filler ("Good!", "Let's", "Now", "Great")
+- No rhetorical questions or explanations unless user asks
+- State action, execute, report result
+- Example: "Writing test" not "Good! Now let's create a simple test to verify our changes work"
 - Minimal tokens in/out
-- Report only essential info
-- Skip acknowledgments/pleasantries
-- State what, not why (unless critical)
-- No emoji, exclamations, filler`
+- No emoji, exclamations, pleasantries`
 
 // Assemble creates the system prompt blocks from a context bundle.
 func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
