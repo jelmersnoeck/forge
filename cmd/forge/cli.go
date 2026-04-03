@@ -72,6 +72,10 @@ type model struct {
 	lastTracked types.TokenUsage // last tracked usage (for delta calculation)
 	modelName   string           // model name for cost calculation
 	costTracker *cost.Tracker    // persistent cost tracker
+
+	// Worktree info
+	worktreePath   string // path to worktree if created
+	worktreeBranch string // branch name if worktree created
 }
 
 type serverEvent types.OutboundEvent
@@ -94,6 +98,8 @@ func runCLI(args []string) int {
 	var sessionID string
 	var serverURL string
 	var agentCleanup func()
+	var worktreePath string
+	var worktreeBranch string
 
 	if *server != "" {
 		// Remote server mode
@@ -117,13 +123,15 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, cleanup, err := spawnLocalAgent(cwd)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
 		}
 		sessionID = sid
 		serverURL = url
+		worktreePath = wtPath
+		worktreeBranch = wtBranch
 		agentCleanup = cleanup
 		defer agentCleanup()
 
@@ -167,6 +175,8 @@ func runCLI(args []string) int {
 		renderer:        renderer,
 		autoScroll:      true, // start with auto-scroll enabled
 		costTracker:     costTracker,
+		worktreePath:    worktreePath,
+		worktreeBranch:  worktreeBranch,
 	}
 
 	// Add welcome message
@@ -182,6 +192,17 @@ func runCLI(args []string) int {
 	m.output = append(m.output,
 		headerStyle.Render("forge cli")+" "+dimStyle.Render("— "+modeDesc+" — session "+sessionID),
 		dimStyle.Render("server: "+serverURL),
+	)
+
+	// Add worktree info if present
+	if worktreePath != "" {
+		m.output = append(m.output, dimStyle.Render("worktree: "+worktreePath))
+		if worktreeBranch != "" {
+			m.output = append(m.output, dimStyle.Render("branch: "+worktreeBranch))
+		}
+	}
+
+	m.output = append(m.output,
 		"",
 		resumeHint,
 		"",
@@ -839,10 +860,10 @@ func isInWorktree(dir string) bool {
 	return !info.IsDir()
 }
 
-// spawnLocalAgent starts a forge agent subprocess and returns (sessionID, serverURL, cleanup, error).
+// spawnLocalAgent starts a forge agent subprocess and returns (sessionID, serverURL, worktreePath, worktreeBranch, cleanup, error).
 // The agent runs on a random port and auto-terminates when cleanup is called.
 // If in a git repo (and not already in a worktree), creates a temporary worktree for the session.
-func spawnLocalAgent(cwd string) (string, string, func(), error) {
+func spawnLocalAgent(cwd string) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -863,6 +884,7 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 
 	// Check if we're in a git repo and should create a worktree
 	var worktreePath string
+	var worktreeBranch string
 	var shouldCleanupWorktree bool
 	var repoRoot string
 
@@ -894,6 +916,7 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 					cmd.Dir = repoRoot
 					if err := cmd.Run(); err == nil {
 						// Successfully created worktree
+						worktreeBranch = newBranch
 						fmt.Fprintln(os.Stderr, dimStyle.Render("  🌳 Created worktree: "+worktreePath))
 						fmt.Fprintln(os.Stderr, dimStyle.Render("  📦 Branch: "+newBranch))
 						cwd = worktreePath
@@ -914,21 +937,21 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 	// Capture stdout to read the port
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", "", nil, fmt.Errorf("create stdout pipe: %w", err)
+		return "", "", "", "", nil, fmt.Errorf("create stdout pipe: %w", err)
 	}
 
 	// Send stderr to /dev/null (agent logs are noise in interactive mode)
 	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
-		return "", "", nil, fmt.Errorf("start agent: %w", err)
+		return "", "", "", "", nil, fmt.Errorf("start agent: %w", err)
 	}
 
 	// Read port from first line of stdout (JSON: {"port": 12345})
 	scanner := bufio.NewScanner(stdout)
 	if !scanner.Scan() {
 		cmd.Process.Kill()
-		return "", "", nil, fmt.Errorf("agent did not emit port")
+		return "", "", "", "", nil, fmt.Errorf("agent did not emit port")
 	}
 
 	var portMsg struct {
@@ -936,7 +959,7 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 	}
 	if err := json.Unmarshal(scanner.Bytes(), &portMsg); err != nil {
 		cmd.Process.Kill()
-		return "", "", nil, fmt.Errorf("parse agent port: %w", err)
+		return "", "", "", "", nil, fmt.Errorf("parse agent port: %w", err)
 	}
 
 	serverURL := fmt.Sprintf("http://localhost:%d", portMsg.Port)
@@ -958,7 +981,7 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 
 	if !ready {
 		cmd.Process.Kill()
-		return "", "", nil, fmt.Errorf("agent did not become healthy")
+		return "", "", "", "", nil, fmt.Errorf("agent did not become healthy")
 	}
 
 	// Track whether cleanup has been called to avoid double-cleanup
@@ -1007,5 +1030,5 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 		}
 	}
 
-	return sessionID, serverURL, cleanup, nil
+	return sessionID, serverURL, worktreePath, worktreeBranch, cleanup, nil
 }
