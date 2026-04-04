@@ -56,7 +56,26 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		for j, block := range msg.Content {
 			switch block.Type {
 			case "text":
-				content[j] = anthropic.NewTextBlock(block.Text)
+				// Create TextBlockParam with optional cache control
+				textBlock := anthropic.TextBlockParam{
+					Text: block.Text,
+				}
+				
+				// Add cache control if specified (for message-level caching)
+				if block.CacheControl != nil {
+					cacheControl := anthropic.NewCacheControlEphemeralParam()
+					if block.CacheControl.TTL == "1h" {
+						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+					} else if block.CacheControl.TTL == "5m" {
+						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+					}
+					textBlock.CacheControl = cacheControl
+				}
+				
+				// Wrap in ContentBlockParamUnion
+				content[j] = anthropic.ContentBlockParamUnion{
+					OfText: &textBlock,
+				}
 			case "tool_use":
 				content[j] = anthropic.NewToolUseBlock(block.ID, block.Input, block.Name)
 			case "tool_result":

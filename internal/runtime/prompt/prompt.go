@@ -33,55 +33,44 @@ Response format:
 - No emoji, exclamations, pleasantries`
 
 // Assemble creates the system prompt blocks from a context bundle.
+// Max 4 cache_control blocks total across system + tools + messages.
+// Strategy: 2 system blocks + 1 tool + 1 message = 4 total
 func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var blocks []types.SystemBlock
 
-	// 1. Base prompt + environment info (cached together as one block)
-	// Merged to stay within the 4 cache_control block limit:
-	// system(base+env) + system(CLAUDE.md) + system(bundled) + tools = 4
-	envInfo := fmt.Sprintf(`%s
+	// 1. Base prompt + environment info + CLAUDE.md (static, global cache)
+	// Merged into one block to free up cache slots for message-level caching
+	var staticContent strings.Builder
+	staticContent.WriteString(basePrompt)
+	staticContent.WriteString(fmt.Sprintf("\n\nEnvironment Information:\n- Working directory: %s\n- Platform: %s\n- Current date: %s",
+		cwd, runtime.GOOS, time.Now().Format("2006-01-02")))
 
-Environment Information:
-- Working directory: %s
-- Platform: %s
-- Current date: %s`, basePrompt, cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
+	if len(bundle.ClaudeMD) > 0 {
+		staticContent.WriteString("\n\n<system-reminder>\n")
+		staticContent.WriteString("Project and user instructions are shown below. Follow these instructions carefully.\n\n")
+
+		for _, entry := range bundle.ClaudeMD {
+			staticContent.WriteString(fmt.Sprintf("## From %s (%s)\n\n", entry.Path, entry.Level))
+			staticContent.WriteString(entry.Content)
+			staticContent.WriteString("\n\n")
+		}
+
+		staticContent.WriteString("</system-reminder>")
+	}
 
 	blocks = append(blocks, types.SystemBlock{
 		Type: "text",
-		Text: envInfo,
+		Text: staticContent.String(),
 		CacheControl: &types.CacheControl{
-			Type: "ephemeral",
-			TTL:  "1h",
+			Type:  "ephemeral",
+			TTL:   "1h",
+			Scope: "global", // Static content shared across sessions
 		},
 	})
 
-	// 3. CLAUDE.md content wrapped in <system-reminder> tags
-	if len(bundle.ClaudeMD) > 0 {
-		var claudeContent strings.Builder
-		claudeContent.WriteString("<system-reminder>\n")
-		claudeContent.WriteString("Project and user instructions are shown below. Follow these instructions carefully.\n\n")
-
-		for _, entry := range bundle.ClaudeMD {
-			claudeContent.WriteString(fmt.Sprintf("## From %s (%s)\n\n", entry.Path, entry.Level))
-			claudeContent.WriteString(entry.Content)
-			claudeContent.WriteString("\n\n")
-		}
-
-		claudeContent.WriteString("</system-reminder>")
-
-		blocks = append(blocks, types.SystemBlock{
-			Type: "text",
-			Text: claudeContent.String(),
-			CacheControl: &types.CacheControl{
-				Type:  "ephemeral",
-				TTL:   "1h",     // Extended cache lifetime (default is 5min)
-				Scope: "global", // Share cache across sessions (safe for CLAUDE.md)
-			},
-		})
-	}
-
-	// 4. Bundle: AGENTS.md + Rules + Skills + Agent definitions (cached together)
-	// This keeps us under the 4 cache control block limit while still caching everything
+	// 2. Dynamic content: AGENTS.md + Rules + Skills + Agent definitions
+	// This is the only other system block, freeing up cache slots for message-level caching
+	// System blocks (2) + Tools (1) + Messages (1) = 4 total cache_control blocks
 	var bundledContent strings.Builder
 	hasContent := false
 

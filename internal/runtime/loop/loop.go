@@ -197,17 +197,23 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		systemBlocks := prompt.Assemble(l.context, l.cwd)
 		toolSchemas := l.tools.Schemas()
 
+		// Add cache control to the last message (critical for caching efficiency)
+		// Max 4 cache_control blocks: system(2) + tools(1) + messages(1) = 4
+		messagesWithCache := addMessageCacheControl(l.history)
+
 		// ── Context window management ──────────────────────────
 		// Check if we need to compact before sending to the LLM.
 		systemTokens := tokens.EstimateSystem(systemBlocks)
-		historyTokens := tokens.EstimateHistory(l.history)
+		historyTokens := tokens.EstimateHistory(messagesWithCache)
 		toolTokens := tokens.EstimateTools(toolSchemas)
 
 		if l.budget.ShouldCompact(systemTokens, historyTokens, toolTokens) {
-			compacted, removed := tokens.Compact(l.history, l.budget, systemTokens, toolTokens)
+			compacted, removed := tokens.Compact(messagesWithCache, l.budget, systemTokens, toolTokens)
 			if removed > 0 {
-				l.history = compacted
-				historyTokens = tokens.EstimateHistory(l.history)
+				messagesWithCache = compacted
+				// Re-add cache control after compaction
+				messagesWithCache = addMessageCacheControl(messagesWithCache)
+				historyTokens = tokens.EstimateHistory(messagesWithCache)
 
 				emit(types.OutboundEvent{
 					ID:        uuid.New().String(),
@@ -222,7 +228,7 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		req := types.ChatRequest{
 			Model:     l.model,
 			System:    systemBlocks,
-			Messages:  l.history,
+			Messages:  messagesWithCache,
 			Tools:     toolSchemas,
 			MaxTokens: 8192,
 			Stream:    true,
@@ -666,4 +672,34 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 	}
 	
 	l.lastCacheRead = usage.CacheReadTokens
+}
+
+// addMessageCacheControl adds cache_control to the last content block of the last message.
+// This is critical for prompt caching efficiency - allows the API to cache conversation history.
+// Max 4 cache_control blocks total: system(2) + tools(1) + messages(1) = 4
+func addMessageCacheControl(messages []types.ChatMessage) []types.ChatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	// Deep copy to avoid mutating the original history
+	result := make([]types.ChatMessage, len(messages))
+	copy(result, messages)
+	
+	// Add cache control to the last content block of the last message
+	lastMsg := &result[len(result)-1]
+	if len(lastMsg.Content) > 0 {
+		// Deep copy the content array
+		lastMsg.Content = make([]types.ChatContentBlock, len(messages[len(messages)-1].Content))
+		copy(lastMsg.Content, messages[len(messages)-1].Content)
+		
+		// Add cache control to the last content block
+		lastBlock := &lastMsg.Content[len(lastMsg.Content)-1]
+		lastBlock.CacheControl = &types.CacheControl{
+			Type: "ephemeral",
+			TTL:  "1h",
+		}
+	}
+	
+	return result
 }

@@ -79,13 +79,14 @@ type ChatMessage struct {
 
 // ChatContentBlock is a block within a message.
 type ChatContentBlock struct {
-	Type      string              `json:"type"` // "text", "tool_use", "tool_result"
-	Text      string              `json:"text,omitempty"`
-	ID        string              `json:"id,omitempty"`
-	Name      string              `json:"name,omitempty"`
-	Input     map[string]any      `json:"input,omitempty"`
-	ToolUseID string              `json:"tool_use_id,omitempty"`
-	Content   []ToolResultContent `json:"content,omitempty"`
+	Type         string              `json:"type"` // "text", "tool_use", "tool_result"
+	Text         string              `json:"text,omitempty"`
+	ID           string              `json:"id,omitempty"`
+	Name         string              `json:"name,omitempty"`
+	Input        map[string]any      `json:"input,omitempty"`
+	ToolUseID    string              `json:"tool_use_id,omitempty"`
+	Content      []ToolResultContent `json:"content,omitempty"`
+	CacheControl *CacheControl       `json:"cache_control,omitempty"`
 }
 
 // ContentBlock is an alias for ToolResultContent (for backwards compatibility with MCP).
