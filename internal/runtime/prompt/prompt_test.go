@@ -175,11 +175,20 @@ func TestAssemble_AllFeatures(t *testing.T) {
 
 	blocks := Assemble(bundle, "/test")
 
-	// Should have: base+env, CLAUDE.md, bundled (rules+skills+agents) = 3 blocks
-	r.Equal(3, len(blocks))
+	// Should have: static(base+env+CLAUDE.md), bundled(rules+skills+agents) = 2 blocks
+	// This frees up cache slots for message-level caching (system 2 + tools 1 + messages 1 = 4)
+	r.Equal(2, len(blocks))
 
-	// Verify bundled content contains all sections
-	bundledBlock := blocks[2]
+	// Static block should contain base, env, and CLAUDE.md
+	staticBlock := blocks[0]
+	r.Contains(staticBlock.Text, "Coding assistant")
+	r.Contains(staticBlock.Text, "Working directory: /test")
+	r.Contains(staticBlock.Text, "Test instructions")
+	r.NotNil(staticBlock.CacheControl)
+	r.Equal("global", staticBlock.CacheControl.Scope)
+
+	// Bundled content contains all dynamic sections
+	bundledBlock := blocks[1]
 	r.Contains(bundledBlock.Text, "Test rule")
 	r.Contains(bundledBlock.Text, "test-skill")
 	r.Contains(bundledBlock.Text, "test-agent")
@@ -208,9 +217,9 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 
 	blocks := Assemble(bundle, "/test")
 
-	// Should have: base+env, CLAUDE.md, bundled = 3 blocks
-	// (base+env merged to stay within 4 cache_control limit with tools)
-	blockNames := []string{"base+env", "CLAUDE.md", "bundled"}
+	// Should have: static(base+env+CLAUDE.md), bundled(AGENTS.md+rules+skills+agents) = 2 blocks
+	// This leaves room for: system(2) + tools(1) + messages(1) = 4 cache_control blocks total
+	blockNames := []string{"static", "bundled"}
 	r.Equal(len(blockNames), len(blocks), "expected %d blocks", len(blockNames))
 
 	for i, block := range blocks {
@@ -219,8 +228,8 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 		r.Equal("1h", block.CacheControl.TTL, "block %d (%s) wrong TTL", i, blockNames[i])
 	}
 
-	// CLAUDE.md should also have global scope
-	claudeBlock := blocks[1]
-	r.Contains(claudeBlock.Text, "CLAUDE.md")
-	r.Equal("global", claudeBlock.CacheControl.Scope)
+	// Static block should have global scope (shared across sessions)
+	staticBlock := blocks[0]
+	r.Contains(staticBlock.Text, "CLAUDE.md")
+	r.Equal("global", staticBlock.CacheControl.Scope)
 }
