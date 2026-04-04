@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -38,6 +40,10 @@ type OAuthClient struct {
 	httpClient *http.Client
 	store      *TokenStore
 	serverName string
+
+	// PrintFunc is called to display messages to the user (auth URLs, status).
+	// Defaults to log.Printf.
+	PrintFunc func(format string, args ...any)
 }
 
 // NewOAuthClient creates an OAuth client for a specific MCP server.
@@ -46,6 +52,7 @@ func NewOAuthClient(serverName string, store *TokenStore) *OAuthClient {
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		store:      store,
 		serverName: serverName,
+		PrintFunc:  log.Printf,
 	}
 }
 
@@ -301,9 +308,15 @@ func (o *OAuthClient) authorizeWithPKCE(ctx context.Context, metadata *AuthServe
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	authURL.RawQuery = q.Encode()
+	authURLStr := authURL.String()
 
-	fmt.Fprintf(log.Writer(), "\n[mcp:%s] OAuth authorization required.\n", o.serverName)
-	fmt.Fprintf(log.Writer(), "[mcp:%s] Open this URL in your browser:\n\n  %s\n\n", o.serverName, authURL.String())
+	// Try to open browser automatically
+	if err := openBrowser(authURLStr); err != nil {
+		o.PrintFunc("[mcp:%s] Could not open browser automatically: %v", o.serverName, err)
+	}
+
+	o.PrintFunc("[mcp:%s] OAuth authorization required. Open this URL in your browser:\n\n  %s\n", o.serverName, authURLStr)
+	o.PrintFunc("[mcp:%s] Waiting for authorization callback on port %d...", o.serverName, port)
 
 	// Wait for callback
 	codeCh := make(chan string, 1)
@@ -466,4 +479,38 @@ func generateRandomString(n int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// Authenticate runs the full OAuth flow for an MCP server and stores the
+// resulting tokens. Intended for interactive use (e.g., "forge mcp add").
+func Authenticate(ctx context.Context, serverName, mcpURL string, printFunc func(format string, args ...any)) error {
+	store, err := NewTokenStore()
+	if err != nil {
+		return fmt.Errorf("create token store: %w", err)
+	}
+
+	oauth := NewOAuthClient(serverName, store)
+	oauth.PrintFunc = printFunc
+
+	_, err = oauth.fullAuthFlow(ctx, mcpURL)
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	printFunc("[mcp:%s] Authentication successful! Token stored.", serverName)
+	return nil
+}
+
+// openBrowser tries to open a URL in the user's default browser.
+func openBrowser(url string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url).Start()
+	case "linux":
+		return exec.Command("xdg-open", url).Start()
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	default:
+		return fmt.Errorf("unsupported platform %s", runtime.GOOS)
+	}
 }

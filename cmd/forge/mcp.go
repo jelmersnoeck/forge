@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -23,6 +24,8 @@ func runMCP(args []string) int {
 		return runMCPRemove(args[1:])
 	case "list", "ls":
 		return runMCPList(args[1:])
+	case "login":
+		return runMCPLogin(args[1:])
 	case "help", "-h", "--help":
 		printMCPHelp()
 		return 0
@@ -94,6 +97,21 @@ func runMCPAdd(args []string) int {
 		scope = "project"
 	}
 	fmt.Printf("Added MCP server %q (%s) to %s config\n", name, *urlFlag, scope)
+
+	// Run OAuth flow immediately so the user authenticates now, not later
+	if *authFlag == "oauth" {
+		fmt.Printf("Authenticating with %q...\n", name)
+		ctx := context.Background()
+		err := mcp.Authenticate(ctx, name, *urlFlag, func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, format+"\n", args...)
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: authentication failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "You can retry later with: forge mcp login %s\n", name)
+			return 0
+		}
+	}
+
 	return 0
 }
 
@@ -164,13 +182,57 @@ func runMCPList(args []string) int {
 	return 0
 }
 
+func runMCPLogin(args []string) int {
+	name, _ := extractPositional(args[1:])
+	if name == "" {
+		fmt.Fprintln(os.Stderr, "Usage: forge mcp login <name>")
+		return 1
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	cfg, err := mcp.ListServers(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	server, ok := cfg.Servers[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Error: MCP server %q not found. Run 'forge mcp list' to see configured servers.\n", name)
+		return 1
+	}
+
+	if server.Auth != "oauth" {
+		fmt.Fprintf(os.Stderr, "Error: MCP server %q does not use OAuth (auth=%q)\n", name, server.Auth)
+		return 1
+	}
+
+	fmt.Printf("Authenticating with %q...\n", name)
+	ctx := context.Background()
+	err = mcp.Authenticate(ctx, name, server.URL, func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	return 0
+}
+
 func printMCPHelp() {
 	fmt.Println(`forge mcp — manage MCP server connections
 
 Usage:
-  forge mcp add <name> --url <url> [flags]    add a server
+  forge mcp add <name> --url <url> [flags]    add a server (runs auth if --auth oauth)
   forge mcp remove <name> [--project]          remove a server
   forge mcp list                               list configured servers
+  forge mcp login <name>                       re-authenticate with an OAuth server
 
 Add flags:
   --url URL          MCP server URL (required)
@@ -182,6 +244,7 @@ Examples:
   forge mcp add datadog --url https://mcp.datadoghq.com/mcp --auth oauth
   forge mcp add internal --url https://tools.internal/mcp --header Authorization="Bearer sk-..."
   forge mcp add local-dev --url http://localhost:8080/mcp --project
+  forge mcp login datadog
   forge mcp remove datadog
   forge mcp list`)
 }
