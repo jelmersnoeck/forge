@@ -23,7 +23,7 @@ Principles:
 
 Tools: Read, Grep, Bash, Edit (modify), Write (new files only)
 
-Self-improvement: Reflect at session end → AGENTS.md → loads next session
+Self-improvement: Reflect at session end → .forge/learnings/ → loads next session
 
 Response format:
 - Noun phrases only for actions ("Reading file", "Running tests", "Writing implementation")

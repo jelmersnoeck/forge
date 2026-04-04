@@ -30,8 +30,8 @@ func TestReflectTool(t *testing.T) {
 		},
 		"full reflection": {
 			input: map[string]any{
-				"summary":     "Added AGENTS.md support",
-				"mistakes":    []any{"Forgot to handle nil case", "Used wrong type"},
+				"summary":     "Added learnings support for Greendale",
+				"mistakes":    []any{"Forgot to check nil case", "Used wrong type"},
 				"successes":   []any{"Tests passed", "Code is clean"},
 				"suggestions": []any{"Add more tests", "Improve documentation"},
 			},
@@ -57,16 +57,23 @@ func TestReflectTool(t *testing.T) {
 			r.NoError(err)
 			r.False(result.IsError)
 
-			// Check that AGENTS.md was created
-			agentsPath := filepath.Join(tmpDir, "AGENTS.md")
-			content, err := os.ReadFile(agentsPath)
+			// Check that a learning file was created in .forge/learnings/
+			entries, err := os.ReadDir(filepath.Join(tmpDir, ".forge", "learnings"))
+			r.NoError(err)
+			r.Len(entries, 1)
+
+			content, err := os.ReadFile(filepath.Join(tmpDir, ".forge", "learnings", entries[0].Name()))
 			r.NoError(err)
 			r.Contains(string(content), tc.wantContain)
+
+			// No AGENTS.md should be created
+			_, err = os.Stat(filepath.Join(tmpDir, "AGENTS.md"))
+			r.True(os.IsNotExist(err), "AGENTS.md should not be created")
 		})
 	}
 }
 
-func TestReflectToolAppends(t *testing.T) {
+func TestReflectToolMultipleReflections(t *testing.T) {
 	r := require.New(t)
 
 	tmpDir := t.TempDir()
@@ -77,30 +84,119 @@ func TestReflectToolAppends(t *testing.T) {
 	tool := ReflectTool()
 
 	// First reflection
-	input1 := map[string]any{
-		"summary": "First session",
-	}
-	_, err := tool.Handler(input1, ctx)
+	_, err := tool.Handler(map[string]any{
+		"summary": "First session at Greendale",
+	}, ctx)
 	r.NoError(err)
 
 	// Second reflection
-	input2 := map[string]any{
-		"summary": "Second session",
+	_, err = tool.Handler(map[string]any{
+		"summary": "Second session with Troy Barnes",
+	}, ctx)
+	r.NoError(err)
+
+	// Should have two separate files
+	entries, err := os.ReadDir(filepath.Join(tmpDir, ".forge", "learnings"))
+	r.NoError(err)
+	r.Len(entries, 2)
+
+	// Verify content in separate files
+	var allContent strings.Builder
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(tmpDir, ".forge", "learnings", e.Name()))
+		r.NoError(err)
+		allContent.Write(data)
 	}
-	_, err = tool.Handler(input2, ctx)
-	r.NoError(err)
+	r.Contains(allContent.String(), "First session at Greendale")
+	r.Contains(allContent.String(), "Second session with Troy Barnes")
+}
 
-	// Verify both are in the file
-	agentsPath := filepath.Join(tmpDir, "AGENTS.md")
-	content, err := os.ReadFile(agentsPath)
-	r.NoError(err)
+func TestReflectToolGitattributes(t *testing.T) {
+	tests := map[string]struct {
+		existingContent string
+		wantContains    string
+		wantCount       int // how many times the line appears
+	}{
+		"no existing gitattributes": {
+			existingContent: "",
+			wantContains:    ".forge/learnings/** linguist-generated=true",
+			wantCount:       1,
+		},
+		"existing gitattributes without learnings": {
+			existingContent: "*.go text\n*.md text\n",
+			wantContains:    ".forge/learnings/** linguist-generated=true",
+			wantCount:       1,
+		},
+		"existing gitattributes with learnings already": {
+			existingContent: "*.go text\n.forge/learnings/** linguist-generated=true\n",
+			wantContains:    ".forge/learnings/** linguist-generated=true",
+			wantCount:       1,
+		},
+		"existing without trailing newline": {
+			existingContent: "*.go text",
+			wantContains:    "*.go text\n.forge/learnings/** linguist-generated=true\n",
+			wantCount:       1,
+		},
+	}
 
-	contentStr := string(content)
-	r.Contains(contentStr, "First session")
-	r.Contains(contentStr, "Second session")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
 
-	// Verify "Second session" comes after "First session"
-	firstIdx := strings.Index(contentStr, "First session")
-	secondIdx := strings.Index(contentStr, "Second session")
-	r.True(secondIdx > firstIdx, "Second session should appear after first")
+			tmpDir := t.TempDir()
+
+			if tc.existingContent != "" {
+				err := os.WriteFile(filepath.Join(tmpDir, ".gitattributes"), []byte(tc.existingContent), 0644)
+				r.NoError(err)
+			}
+
+			ctx := types.ToolContext{CWD: tmpDir}
+			tool := ReflectTool()
+			_, err := tool.Handler(map[string]any{
+				"summary": "Testing gitattributes at Greendale",
+			}, ctx)
+			r.NoError(err)
+
+			content, err := os.ReadFile(filepath.Join(tmpDir, ".gitattributes"))
+			r.NoError(err)
+			r.Contains(string(content), tc.wantContains)
+			r.Equal(tc.wantCount, strings.Count(string(content), ".forge/learnings/** linguist-generated=true"))
+		})
+	}
+}
+
+func TestSlugify(t *testing.T) {
+	tests := map[string]struct {
+		input  string
+		maxLen int
+		want   string
+	}{
+		"simple": {
+			input: "Implemented feature X", maxLen: 50,
+			want: "implemented-feature-x",
+		},
+		"special chars": {
+			input: "Fixed bug #42 (memory leak)", maxLen: 50,
+			want: "fixed-bug-42-memory-leak",
+		},
+		"long summary truncated": {
+			input: "This is a very long summary that should be truncated to fit", maxLen: 20,
+			want: "this-is-a-very-long",
+		},
+		"empty becomes reflection": {
+			input: "", maxLen: 50,
+			want: "reflection",
+		},
+		"only special chars": {
+			input: "!@#$%", maxLen: 50,
+			want: "reflection",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, slugify(tc.input, tc.maxLen))
+		})
+	}
 }

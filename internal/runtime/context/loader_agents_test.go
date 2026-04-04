@@ -3,6 +3,7 @@ package context
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -157,4 +158,95 @@ Just for this session.
 	r.True(foundParent, "Should find parent AGENTS.md")
 	r.True(foundProject, "Should find project AGENTS.md")
 	r.True(foundLocal, "Should find local AGENTS.local.md")
+}
+
+func TestLoader_LoadLearnings(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+
+	// Create .forge/learnings/ with some learning files
+	learningsDir := filepath.Join(tmpDir, ".forge", "learnings")
+	err := os.MkdirAll(learningsDir, 0755)
+	r.NoError(err)
+
+	err = os.WriteFile(filepath.Join(learningsDir, "20260404-120000-troy-barnes-rules.md"), []byte("# Troy Barnes Rules\n\nBe cool.\n"), 0644)
+	r.NoError(err)
+
+	err = os.WriteFile(filepath.Join(learningsDir, "20260404-130000-abed-nadir-analysis.md"), []byte("# Abed Nadir Analysis\n\nCool cool cool.\n"), 0644)
+	r.NoError(err)
+
+	// Non-md file should be ignored
+	err = os.WriteFile(filepath.Join(learningsDir, "notes.txt"), []byte("ignore me"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(tmpDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	// Should have exactly 2 learning entries (not the .txt)
+	r.Len(bundle.AgentsMD, 2)
+
+	var contents []string
+	for _, entry := range bundle.AgentsMD {
+		r.Equal("project", entry.Level)
+		contents = append(contents, entry.Content)
+	}
+
+	// Both should be present (order depends on ReadDir, so check both)
+	allContent := strings.Join(contents, "\n")
+	r.Contains(allContent, "Troy Barnes Rules")
+	r.Contains(allContent, "Abed Nadir Analysis")
+}
+
+func TestLoader_LoadLearningsAndAgentsMD(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+
+	// AGENTS.md (hand-written, read-only)
+	err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("# Manual Learnings\n\nHuman Being mascot guidance.\n"), 0644)
+	r.NoError(err)
+
+	// .forge/learnings/ (generated)
+	learningsDir := filepath.Join(tmpDir, ".forge", "learnings")
+	err = os.MkdirAll(learningsDir, 0755)
+	r.NoError(err)
+
+	err = os.WriteFile(filepath.Join(learningsDir, "20260404-140000-senor-chang.md"), []byte("# Senor Chang Session\n\nHa! Gaaay!\n"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(tmpDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	// Should have both AGENTS.md and the learning file
+	r.Len(bundle.AgentsMD, 2)
+
+	var foundManual, foundGenerated bool
+	for _, entry := range bundle.AgentsMD {
+		switch {
+		case strings.Contains(entry.Content, "Manual Learnings"):
+			foundManual = true
+		case strings.Contains(entry.Content, "Senor Chang"):
+			foundGenerated = true
+		}
+	}
+
+	r.True(foundManual, "Should load AGENTS.md")
+	r.True(foundGenerated, "Should load .forge/learnings/ files")
+}
+
+func TestLoader_LoadLearningsNoDirectory(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	// No .forge/learnings/ directory exists
+
+	loader := NewLoader(tmpDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	// No entries at all — no error
+	r.Len(bundle.AgentsMD, 0)
 }
