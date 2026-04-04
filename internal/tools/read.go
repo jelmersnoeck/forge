@@ -11,6 +11,12 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
+// FileUnchangedStub is returned when a file has already been read with the
+// same parameters and hasn't been modified on disk since. The earlier
+// tool_result is still in the conversation context, so re-sending the full
+// content would waste tokens (especially cache_creation tokens).
+const FileUnchangedStub = "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading."
+
 // ReadTool returns the Read tool definition.
 func ReadTool() types.ToolDefinition {
 	return types.ToolDefinition{
@@ -83,7 +89,8 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		}, nil
 	}
 
-	// Check if it's an image
+	// Check if it's an image (images are never deduped — they're binary blobs
+	// and the model can't "refer back" to a previous image tool_result)
 	ext := strings.ToLower(filepath.Ext(filePath))
 	imageExts := map[string]string{
 		".png":  "image/png",
@@ -110,6 +117,28 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 				},
 			}},
 		}, nil
+	}
+
+	// ── Dedup: return stub if file unchanged since last read ──
+	//
+	//   Read("foo.go")  → 25K tokens of content, store mtime
+	//   Read("foo.go")  → ~30 tokens stub (same params, same mtime)
+	//
+	// Only applies to text reads. Edit/Write invalidate the entry
+	// so the next Read after a mutation always returns fresh content.
+	if ctx.ReadState != nil {
+		if entry, exists := ctx.ReadState[filePath]; exists {
+			if entry.Offset == offset && entry.Limit == limit {
+				if info.ModTime().Unix() == entry.MtimeUnix {
+					return types.ToolResult{
+						Content: []types.ToolResultContent{{
+							Type: "text",
+							Text: FileUnchangedStub,
+						}},
+					}, nil
+				}
+			}
+		}
 	}
 
 	// Read text file with line numbers
@@ -139,6 +168,15 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	if err := scanner.Err(); err != nil {
 		return types.ToolResult{IsError: true}, err
+	}
+
+	// Store state for dedup on subsequent reads.
+	if ctx.ReadState != nil {
+		ctx.ReadState[filePath] = types.ReadFileEntry{
+			MtimeUnix: info.ModTime().Unix(),
+			Offset:    offset,
+			Limit:     limit,
+		}
 	}
 
 	return types.ToolResult{

@@ -36,10 +36,13 @@ type Loop struct {
 
 	// Cumulative token usage across all turns in this session.
 	totalUsage types.TokenUsage
-	
+
 	// Cache tracking for break detection
 	lastCacheRead int
 	callCount     int
+
+	// Per-session file read dedup state, shared across all tool calls.
+	readState types.ReadState
 }
 
 // Options configures the conversation loop.
@@ -88,6 +91,7 @@ func New(opts Options) *Loop {
 		audit:        audit,
 		budget:       budget,
 		retryPolicy:  retryPolicy,
+		readState:    make(types.ReadState),
 	}
 }
 
@@ -466,18 +470,18 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 					if delta.Usage.CacheReadTokens > 0 {
 						l.totalUsage.CacheReadTokens += delta.Usage.CacheReadTokens
 					}
-					
+
 					// Check for cache breaks (simple detection)
 					l.checkCacheHealth(delta.Usage, emit)
 
-				emit(types.OutboundEvent{
-					ID:        uuid.New().String(),
-					SessionID: l.sessionID,
-					Type:      "usage",
-					Usage:     &l.totalUsage,
-					Model:     l.model,
-					Timestamp: time.Now().Unix(),
-				})
+					emit(types.OutboundEvent{
+						ID:        uuid.New().String(),
+						SessionID: l.sessionID,
+						Type:      "usage",
+						Usage:     &l.totalUsage,
+						Model:     l.model,
+						Timestamp: time.Now().Unix(),
+					})
 				}
 
 			case "message_stop":
@@ -564,6 +568,7 @@ func (l *Loop) executeSingleTool(ctx context.Context, block types.ChatContentBlo
 		SessionID: l.sessionID,
 		HistoryID: l.historyID,
 		Emit:      emit,
+		ReadState: l.readState,
 	}
 
 	start := time.Now()
@@ -642,17 +647,17 @@ func (l *Loop) persistMessage(msgType string, msg types.ChatMessage) error {
 // Logs a warning when cache_read_tokens drops significantly (>5% and >2K tokens).
 func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.OutboundEvent)) {
 	l.callCount++
-	
+
 	// First call - just record baseline
 	if l.lastCacheRead == 0 {
 		l.lastCacheRead = usage.CacheReadTokens
 		return
 	}
-	
+
 	// Check for cache break (>5% drop and >2K tokens)
 	tokenDrop := l.lastCacheRead - usage.CacheReadTokens
 	percentDrop := float64(l.lastCacheRead-usage.CacheReadTokens) / float64(l.lastCacheRead)
-	
+
 	if percentDrop > 0.05 && tokenDrop > 2000 {
 		// Cache broke unexpectedly
 		emit(types.OutboundEvent{
@@ -670,7 +675,7 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 			Timestamp: time.Now().Unix(),
 		})
 	}
-	
+
 	l.lastCacheRead = usage.CacheReadTokens
 }
 
@@ -685,14 +690,14 @@ func addMessageCacheControl(messages []types.ChatMessage) []types.ChatMessage {
 	// Deep copy to avoid mutating the original history
 	result := make([]types.ChatMessage, len(messages))
 	copy(result, messages)
-	
+
 	// Add cache control to the last content block of the last message
 	lastMsg := &result[len(result)-1]
 	if len(lastMsg.Content) > 0 {
 		// Deep copy the content array
 		lastMsg.Content = make([]types.ChatContentBlock, len(messages[len(messages)-1].Content))
 		copy(lastMsg.Content, messages[len(messages)-1].Content)
-		
+
 		// Add cache control to the last content block
 		lastBlock := &lastMsg.Content[len(lastMsg.Content)-1]
 		lastBlock.CacheControl = &types.CacheControl{
@@ -700,6 +705,6 @@ func addMessageCacheControl(messages []types.ChatMessage) []types.ChatMessage {
 			TTL:  "1h",
 		}
 	}
-	
+
 	return result
 }
