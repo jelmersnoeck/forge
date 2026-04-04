@@ -82,7 +82,7 @@ func TestDiscoverAuthServer(t *testing.T) {
 	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
 		case "/.well-known/oauth-authorization-server":
-			json.NewEncoder(w).Encode(AuthServerMetadata{
+			_ = json.NewEncoder(w).Encode(AuthServerMetadata{
 				Issuer:                "https://auth.greendale.edu",
 				AuthorizationEndpoint: "https://auth.greendale.edu/authorize",
 				TokenEndpoint:         "https://auth.greendale.edu/token",
@@ -99,7 +99,7 @@ func TestDiscoverAuthServer(t *testing.T) {
 	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
 		case "/.well-known/oauth-protected-resource/mcp":
-			json.NewEncoder(w).Encode(ProtectedResourceMetadata{
+			_ = json.NewEncoder(w).Encode(ProtectedResourceMetadata{
 				Resource:             mcpURL + "/mcp",
 				AuthorizationServers: []string{authServer.URL},
 			})
@@ -160,11 +160,11 @@ func TestRegisterClient(t *testing.T) {
 		r.Equal("application/json", req.Header.Get("Content-Type"))
 
 		var body map[string]any
-		json.NewDecoder(req.Body).Decode(&body)
+		_ = json.NewDecoder(req.Body).Decode(&body)
 		r.Equal("Forge Agent", body["client_name"])
 
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"client_id":     "human-being-mascot",
 			"client_secret": "six-seasons-and-a-movie",
 		})
@@ -194,7 +194,7 @@ func TestRefreshToken(t *testing.T) {
 		r.Equal("old-refresh-token", req.FormValue("refresh_token"))
 		r.Equal("study-group-7", req.FormValue("client_id"))
 
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "new-access-token",
 			"refresh_token": "new-refresh-token",
 			"token_type":    "Bearer",

@@ -65,7 +65,7 @@ func NewTracker() (*Tracker, error) {
 	`
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
@@ -123,7 +123,7 @@ func (t *Tracker) GetDailySummaries(start, end time.Time) ([]DailySummary, error
 	if err != nil {
 		return nil, fmt.Errorf("query summaries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var summaries []DailySummary
 	for rows.Next() {
@@ -193,7 +193,7 @@ func (t *Tracker) GetSessionBreakdown(start, end time.Time) ([]SessionBreakdown,
 	if err != nil {
 		return nil, fmt.Errorf("query session breakdown: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var breakdowns []SessionBreakdown
 	for rows.Next() {

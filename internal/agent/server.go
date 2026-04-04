@@ -39,20 +39,20 @@ func Start(cfg Config) error {
 	mux.HandleFunc("GET /events", handleSSE(hub))
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	
+
 	// Start listener to discover actual port (when cfg.Port == 0)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
-	
+
 	actualPort := listener.Addr().(*net.TCPAddr).Port
-	
+
 	// Emit port to stdout for parent process discovery
 	portJSON, _ := json.Marshal(map[string]int{"port": actualPort})
-	fmt.Fprintf(os.Stdout, "%s\n", portJSON)
-	os.Stdout.Sync()
-	
+	_, _ = fmt.Fprintf(os.Stdout, "%s\n", portJSON)
+	_ = os.Stdout.Sync()
+
 	log.Printf("[agent] listening on %s (session=%s)", listener.Addr(), cfg.SessionID)
 	return http.Serve(listener, mux)
 }
@@ -60,7 +60,7 @@ func Start(cfg Config) error {
 func handleHealth(sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":    "ok",
 			"sessionId": sessionID,
 		})
@@ -99,12 +99,12 @@ func handleMessages(hub *Hub, sessionID string) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		
+
 		status := "queued"
 		if immediate {
 			status = "processing"
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": status})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
 	}
 }
 
@@ -113,7 +113,7 @@ func handleInterrupt(hub *Hub) http.HandlerFunc {
 		hub.TriggerInterrupt()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "interrupted"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "interrupted"})
 	}
 }
 
@@ -140,7 +140,7 @@ func handleSSE(hub *Hub) http.HandlerFunc {
 					return
 				}
 				data, _ := json.Marshal(event)
-				fmt.Fprintf(w, "id: %s\ndata: %s\n\n", event.ID, data)
+				_, _ = fmt.Fprintf(w, "id: %s\ndata: %s\n\n", event.ID, data)
 				flusher.Flush()
 			case <-r.Context().Done():
 				return

@@ -81,7 +81,7 @@ type SystemEntry struct {
 
 // AttachmentEntry represents context injected into the conversation.
 type AttachmentEntry struct {
-	Type    string `json:"type"`    // "file", "memory", "skill", etc.
+	Type    string `json:"type"` // "file", "memory", "skill", etc.
 	Content string `json:"content"`
 	Path    string `json:"path,omitempty"`
 }
@@ -99,12 +99,12 @@ type ProgressEntry struct {
 
 // Writer writes session entries to a JSONL file.
 type Writer struct {
-	mu          sync.Mutex
-	sessionID   string
-	path        string
-	file        *os.File
-	encoder     *json.Encoder
-	lastUUID    string // UUID of last written entry (for parent chain)
+	mu        sync.Mutex
+	sessionID string
+	path      string
+	file      *os.File
+	encoder   *json.Encoder
+	lastUUID  string // UUID of last written entry (for parent chain)
 }
 
 // NewWriter creates a session writer. The file is created if it doesn't exist.
@@ -227,11 +227,11 @@ func (r *Reader) ReadAll() ([]Entry, error) {
 		}
 		return nil, fmt.Errorf("open session file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var entries []Entry
 	scanner := bufio.NewScanner(file)
-	
+
 	// Increase buffer size for large tool results
 	buf := make([]byte, 0, 1024*1024) // 1MB buffer
 	scanner.Buffer(buf, 10*1024*1024) // 10MB max line size

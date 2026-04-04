@@ -157,7 +157,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 
 	go func() {
 		defer close(ch)
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		var activeToolUse *types.ChatDelta
 

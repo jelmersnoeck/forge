@@ -239,7 +239,7 @@ func (c *Client) Close(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -287,7 +287,7 @@ func (c *Client) sendNotification(ctx context.Context, method string, params any
 	if err != nil {
 		return fmt.Errorf("send notification: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Capture session ID
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
@@ -324,12 +324,12 @@ func (c *Client) doRequest(ctx context.Context, rpcReq JSONRPCRequest) (*JSONRPC
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Handle 401 with OAuth retry
 	if resp.StatusCode == http.StatusUnauthorized && c.oauth != nil {
 		// Clear stored token and retry
-		c.oauth.store.Delete(c.serverName)
+		_ = c.oauth.store.Delete(c.serverName)
 		token, err := c.oauth.EnsureValidToken(ctx, c.mcpURL)
 		if err != nil {
 			return nil, fmt.Errorf("oauth retry: %w", err)
@@ -348,7 +348,7 @@ func (c *Client) doRequest(ctx context.Context, rpcReq JSONRPCRequest) (*JSONRPC
 		if err != nil {
 			return nil, fmt.Errorf("retry HTTP request: %w", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 	}
 
 	if resp.StatusCode != http.StatusOK {

@@ -68,7 +68,7 @@ func (w *Worker) Run(ctx context.Context) {
 	w.connectMCPServers(ctx, mcpStore)
 	defer func() {
 		for _, c := range mcpStore.Clients() {
-			c.Close(context.Background())
+			_ = c.Close(context.Background())
 		}
 	}()
 

@@ -34,7 +34,6 @@ var (
 	queueStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	queueHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
 	thinkingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Italic(true)
-	costStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	userMsgStyle     = lipgloss.NewStyle().
 				Background(lipgloss.Color("236")).
 				Foreground(lipgloss.Color("15")).
@@ -88,7 +87,7 @@ func runCLI(args []string) int {
 	resume := fs.String("resume", "", "session ID to resume")
 	server := fs.String("server", "", "connect to remote forge server (e.g. http://localhost:3000)")
 	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
-	fs.Parse(args[1:])
+	_ = fs.Parse(args[1:])
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -264,8 +263,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		switch msg.Type {
-		case tea.MouseWheelUp:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
 			// Scroll up (like pressing up arrow)
 			outputHeight := m.getOutputHeight()
 			maxOffset := len(m.output) - outputHeight
@@ -278,7 +277,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case tea.MouseWheelDown:
+		case tea.MouseButtonWheelDown:
 			// Scroll down (like pressing down arrow)
 			if m.scrollOffset > 0 {
 				m.scrollOffset -= 3 // scroll 3 lines at a time
@@ -786,7 +785,7 @@ func (m model) sendMessage(text string) tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusAccepted {
 			b, _ := io.ReadAll(resp.Body)
@@ -811,7 +810,7 @@ func (m model) sendInterrupt() tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
@@ -827,7 +826,7 @@ func createSession(server, cwd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		SessionID string `json:"sessionId"`
@@ -851,7 +850,7 @@ func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool
 		p.Send(errMsg(err))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -977,7 +976,7 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 	// Read port from first line of stdout (JSON: {"port": 12345})
 	scanner := bufio.NewScanner(stdout)
 	if !scanner.Scan() {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		return "", "", "", "", nil, fmt.Errorf("agent did not emit port")
 	}
 
@@ -985,7 +984,7 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 		Port int `json:"port"`
 	}
 	if err := json.Unmarshal(scanner.Bytes(), &portMsg); err != nil {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		return "", "", "", "", nil, fmt.Errorf("parse agent port: %w", err)
 	}
 
@@ -996,18 +995,18 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 	for i := 0; i < 10; i++ {
 		resp, err := http.Get(serverURL + "/health")
 		if err == nil && resp.StatusCode == 200 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			ready = true
 			break
 		}
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	if !ready {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		return "", "", "", "", nil, fmt.Errorf("agent did not become healthy")
 	}
 
@@ -1025,8 +1024,8 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 		cleanupCalled = true
 
 		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
 
 		// Cleanup worktree if we created one
@@ -1043,7 +1042,7 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 			// Prune worktree references
 			gitCmd = exec.Command("git", "worktree", "prune")
 			gitCmd.Dir = repoRoot
-			gitCmd.Run() // ignore errors
+			_ = gitCmd.Run()
 
 			// Delete the branch
 			branchName := fmt.Sprintf("jelmer/%s", sessionID)

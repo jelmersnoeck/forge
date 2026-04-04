@@ -123,7 +123,7 @@ func (wm *WorktreeManager) RemoveWorktree(sessionID string) error {
 	// Prune the worktree reference
 	cmd = exec.Command("git", "worktree", "prune")
 	cmd.Dir = wm.repoRoot
-	cmd.Run() // ignore errors, this is just cleanup
+	_ = cmd.Run()
 
 	// Delete the branch
 	branchName := fmt.Sprintf("jelmer/%s", sessionID)
@@ -178,12 +178,12 @@ func (wm *WorktreeManager) cleanupStale() {
 		worktreePath := filepath.Join(wm.worktreeDir, entry.Name())
 		if !activeWorktrees[worktreePath] {
 			log.Printf("[worktree] cleaning up stale worktree: %s", worktreePath)
-			os.RemoveAll(worktreePath)
+			_ = os.RemoveAll(worktreePath)
 		}
 	}
 
 	// Prune git's worktree references
 	cmd = exec.Command("git", "worktree", "prune")
 	cmd.Dir = wm.repoRoot
-	cmd.Run()
+	_ = cmd.Run()
 }

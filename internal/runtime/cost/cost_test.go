@@ -28,7 +28,7 @@ func TestCalculate(t *testing.T) {
 			usage: types.TokenUsage{
 				InputTokens:         1000, // Non-cached input
 				OutputTokens:        500,
-				CacheCreationTokens: 5000, // Separate from InputTokens
+				CacheCreationTokens: 5000,  // Separate from InputTokens
 				CacheReadTokens:     10000, // Separate from InputTokens
 			},
 			// Cost: (1000/1M * $3) + (500/1M * $15) + (5000/1M * $3.75) + (10000/1M * $0.30)

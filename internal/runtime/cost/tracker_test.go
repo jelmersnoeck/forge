@@ -14,13 +14,11 @@ func TestTrackerBasics(t *testing.T) {
 
 	// Use temp dir for test database
 	tmpDir := t.TempDir()
-	home := os.Getenv("HOME")
-	defer os.Setenv("HOME", home)
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 
 	tracker, err := NewTracker()
 	r.NoError(err)
-	defer tracker.Close()
+	defer func() { _ = tracker.Close() }()
 
 	// Verify database file was created
 	dbPath := filepath.Join(tmpDir, ".forge", "costs.db")
@@ -48,18 +46,16 @@ func TestDailySummaries(t *testing.T) {
 	r := require.New(t)
 
 	tmpDir := t.TempDir()
-	home := os.Getenv("HOME")
-	defer os.Setenv("HOME", home)
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 
 	tracker, err := NewTracker()
 	r.NoError(err)
-	defer tracker.Close()
+	defer func() { _ = tracker.Close() }()
 
 	now := time.Now()
 
 	// Track costs on different days
-	tracker.Track("session-1", "claude-3-5-sonnet-20241022", 1000, 500, 0, 0, 0.0225)
+	r.NoError(tracker.Track("session-1", "claude-3-5-sonnet-20241022", 1000, 500, 0, 0, 0.0225))
 	time.Sleep(time.Millisecond * 10) // Ensure different timestamps
 
 	// Get daily summaries for current month
@@ -84,20 +80,18 @@ func TestSessionBreakdown(t *testing.T) {
 	r := require.New(t)
 
 	tmpDir := t.TempDir()
-	home := os.Getenv("HOME")
-	defer os.Setenv("HOME", home)
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 
 	tracker, err := NewTracker()
 	r.NoError(err)
-	defer tracker.Close()
+	defer func() { _ = tracker.Close() }()
 
 	// Track multiple sessions
-	tracker.Track("session-annie", "claude-3-5-sonnet-20241022", 1000, 500, 0, 0, 0.0225)
+	r.NoError(tracker.Track("session-annie", "claude-3-5-sonnet-20241022", 1000, 500, 0, 0, 0.0225))
 	time.Sleep(time.Millisecond * 10)
-	tracker.Track("session-annie", "claude-3-5-sonnet-20241022", 2000, 800, 0, 0, 0.045)
+	r.NoError(tracker.Track("session-annie", "claude-3-5-sonnet-20241022", 2000, 800, 0, 0, 0.045))
 	time.Sleep(time.Millisecond * 10)
-	tracker.Track("session-troy", "claude-3-haiku-20240307", 500, 200, 0, 0, 0.00038)
+	r.NoError(tracker.Track("session-troy", "claude-3-haiku-20240307", 500, 200, 0, 0, 0.00038))
 
 	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
@@ -121,13 +115,11 @@ func TestEmptyDatabase(t *testing.T) {
 	r := require.New(t)
 
 	tmpDir := t.TempDir()
-	home := os.Getenv("HOME")
-	defer os.Setenv("HOME", home)
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 
 	tracker, err := NewTracker()
 	r.NoError(err)
-	defer tracker.Close()
+	defer func() { _ = tracker.Close() }()
 
 	now := time.Now()
 	total, err := tracker.MonthlyTotal(now.Year(), now.Month())

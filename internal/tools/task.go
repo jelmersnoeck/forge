@@ -105,7 +105,7 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 
 	// Build response message
 	var responseText strings.Builder
-	responseText.WriteString(fmt.Sprintf("Task created successfully:\n%s\n\n", resultJSON))
+	fmt.Fprintf(&responseText, "Task created successfully:\n%s\n\n", resultJSON)
 
 	// Warn if no timeout is set for potentially long-running commands
 	if timeout == 0 {
@@ -113,7 +113,7 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 		responseText.WriteString("   Consider setting a timeout (e.g., timeout: 300 for 5 minutes) or use TaskStop() if needed.\n\n")
 	}
 
-	responseText.WriteString(fmt.Sprintf("Use TaskGet(\"%s\") to check status or TaskOutput(\"%s\") to retrieve output when complete.", task.ID, task.ID))
+	fmt.Fprintf(&responseText, "Use TaskGet(\"%s\") to check status or TaskOutput(\"%s\") to retrieve output when complete.", task.ID, task.ID)
 
 	return types.ToolResult{
 		Content: []types.ToolResultContent{

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -16,7 +15,6 @@ import (
 type fakeMCPServer struct {
 	t         *testing.T
 	sessionID string
-	requestID atomic.Int64
 }
 
 func newFakeMCPServer(t *testing.T) *fakeMCPServer {
@@ -92,7 +90,7 @@ func (s *fakeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		json.Unmarshal(params, &callParams)
+		_ = json.Unmarshal(params, &callParams)
 
 		switch callParams.Name {
 		case "paintball_launcher":
@@ -122,7 +120,7 @@ func (s *fakeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *fakeMCPServer) writeResponse(w http.ResponseWriter, id *int64, result any) {
 	data, _ := json.Marshal(result)
-	json.NewEncoder(w).Encode(JSONRPCResponse{
+	_ = json.NewEncoder(w).Encode(JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
 		Result:  json.RawMessage(data),
@@ -130,7 +128,7 @@ func (s *fakeMCPServer) writeResponse(w http.ResponseWriter, id *int64, result a
 }
 
 func (s *fakeMCPServer) writeError(w http.ResponseWriter, id *int64, code int, msg string) {
-	json.NewEncoder(w).Encode(JSONRPCResponse{
+	_ = json.NewEncoder(w).Encode(JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
 		Error:   &JSONRPCError{Code: code, Message: msg},
@@ -190,7 +188,7 @@ func TestClientSSEResponse(t *testing.T) {
 	// Server that responds with SSE
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var rpcReq JSONRPCRequest
-		json.NewDecoder(req.Body).Decode(&rpcReq)
+		_ = json.NewDecoder(req.Body).Decode(&rpcReq)
 
 		if rpcReq.ID == nil {
 			w.WriteHeader(http.StatusOK)
@@ -212,7 +210,7 @@ func TestClientSSEResponse(t *testing.T) {
 				ID:      rpcReq.ID,
 				Result:  json.RawMessage(result),
 			})
-			fmt.Fprintf(w, "data: %s\n\n", resp)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", resp)
 		case "tools/list":
 			result, _ := json.Marshal(map[string]any{"tools": []MCPTool{}})
 			resp, _ := json.Marshal(JSONRPCResponse{
@@ -220,7 +218,7 @@ func TestClientSSEResponse(t *testing.T) {
 				ID:      rpcReq.ID,
 				Result:  json.RawMessage(result),
 			})
-			fmt.Fprintf(w, "data: %s\n\n", resp)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", resp)
 		}
 
 		if f, ok := w.(http.Flusher); ok {
@@ -245,7 +243,7 @@ func TestClientWithHeaders(t *testing.T) {
 		gotAuth = req.Header.Get("Authorization")
 
 		var rpcReq JSONRPCRequest
-		json.NewDecoder(req.Body).Decode(&rpcReq)
+		_ = json.NewDecoder(req.Body).Decode(&rpcReq)
 
 		if rpcReq.ID == nil {
 			w.WriteHeader(http.StatusOK)
@@ -258,7 +256,7 @@ func TestClientWithHeaders(t *testing.T) {
 			ServerInfo:      MCPServerInfo{Name: "Auth Server"},
 			Capabilities:    ServerCapabilities{},
 		})
-		json.NewEncoder(w).Encode(JSONRPCResponse{
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      rpcReq.ID,
 			Result:  json.RawMessage(result),
@@ -285,7 +283,7 @@ func TestClientClose(t *testing.T) {
 		}
 
 		var rpcReq JSONRPCRequest
-		json.NewDecoder(req.Body).Decode(&rpcReq)
+		_ = json.NewDecoder(req.Body).Decode(&rpcReq)
 
 		if rpcReq.ID == nil {
 			w.WriteHeader(http.StatusOK)
@@ -299,7 +297,7 @@ func TestClientClose(t *testing.T) {
 			ServerInfo:      MCPServerInfo{Name: "Close Test"},
 			Capabilities:    ServerCapabilities{},
 		})
-		json.NewEncoder(w).Encode(JSONRPCResponse{
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      rpcReq.ID,
 			Result:  json.RawMessage(result),

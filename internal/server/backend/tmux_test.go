@@ -34,7 +34,7 @@ func TestTmuxBackend_Integration(t *testing.T) {
 
 	workspace := t.TempDir()
 	b := NewTmux(forgeBin, "test", workspace)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// Troy Barnes' enrollment session at Greendale Community College.
 	sessionID := "troy-barnes-enrollment-2009"
@@ -55,7 +55,7 @@ func TestTmuxBackend_Integration(t *testing.T) {
 	// Hit the health endpoint directly.
 	resp, err := http.Get(fmt.Sprintf("http://%s/health", address))
 	r.NoError(err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	r.Equal(http.StatusOK, resp.StatusCode)
 
 	// The shared tmux session should exist.
@@ -122,7 +122,7 @@ func TestTmuxBackend_WithGitWorktrees(t *testing.T) {
 	r.NoError(cmd.Run())
 
 	b := NewTmux(forgeBin, "test-git", workspace)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	r.True(b.worktreeMgr.enabled, "worktree manager should be enabled")
 
@@ -149,7 +149,7 @@ func TestTmuxBackend_WithGitWorktrees(t *testing.T) {
 	// Hit the health endpoint.
 	resp, err := http.Get(fmt.Sprintf("http://%s/health", address))
 	r.NoError(err)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	r.Equal(http.StatusOK, resp.StatusCode)
 
 	// StopAgent should clean up the worktree.

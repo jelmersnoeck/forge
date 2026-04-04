@@ -19,8 +19,8 @@ func TestGrepTool(t *testing.T) {
 	}{
 		"files_with_matches mode": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "troy.txt"), []byte("Troy Barnes\nCool cool cool"), 0644)
-				os.WriteFile(filepath.Join(dir, "abed.txt"), []byte("Abed Nadir\nInspector Spacetime"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "troy.txt"), []byte("Troy Barnes\nCool cool cool"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "abed.txt"), []byte("Abed Nadir\nInspector Spacetime"), 0644)
 
 				return map[string]any{
 					"pattern":     "Troy",
@@ -37,7 +37,7 @@ func TestGrepTool(t *testing.T) {
 		},
 		"content mode": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "greendale.txt"), []byte("Line 1: Greendale\nLine 2: Community College\nLine 3: Study Room"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "greendale.txt"), []byte("Line 1: Greendale\nLine 2: Community College\nLine 3: Study Room"), 0644)
 
 				return map[string]any{
 					"pattern":     "Community",
@@ -54,7 +54,7 @@ func TestGrepTool(t *testing.T) {
 		},
 		"count mode": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "dean.txt"), []byte("Dean\nDean\nDean Pelton"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "dean.txt"), []byte("Dean\nDean\nDean Pelton"), 0644)
 
 				return map[string]any{
 					"pattern":     "Dean",
@@ -70,7 +70,7 @@ func TestGrepTool(t *testing.T) {
 		},
 		"case insensitive": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "test.txt"), []byte("Troy\ntroy\nTROY"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "test.txt"), []byte("Troy\ntroy\nTROY"), 0644)
 
 				return map[string]any{
 					"pattern": "troy",
@@ -86,8 +86,8 @@ func TestGrepTool(t *testing.T) {
 		},
 		"glob filter": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "code.go"), []byte("package main"), 0644)
-				os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("package info"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "code.go"), []byte("package main"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("package info"), 0644)
 
 				return map[string]any{
 					"pattern": "package",
@@ -104,7 +104,7 @@ func TestGrepTool(t *testing.T) {
 		},
 		"no matches": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "test.txt"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "test.txt"), []byte("content"), 0644)
 
 				return map[string]any{
 					"pattern": "nonexistent",
@@ -120,7 +120,7 @@ func TestGrepTool(t *testing.T) {
 		"context lines": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
 				content := "Line 1\nLine 2\nLine 3: match\nLine 4\nLine 5"
-				os.WriteFile(filepath.Join(dir, "context.txt"), []byte(content), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "context.txt"), []byte(content), 0644)
 
 				return map[string]any{
 					"pattern":     "match",
@@ -141,9 +141,9 @@ func TestGrepTool(t *testing.T) {
 		},
 		"head_limit": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "file1.txt"), []byte("match"), 0644)
-				os.WriteFile(filepath.Join(dir, "file2.txt"), []byte("match"), 0644)
-				os.WriteFile(filepath.Join(dir, "file3.txt"), []byte("match"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "file1.txt"), []byte("match"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "file2.txt"), []byte("match"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "file3.txt"), []byte("match"), 0644)
 
 				return map[string]any{
 					"pattern":    "match",
@@ -160,7 +160,7 @@ func TestGrepTool(t *testing.T) {
 		},
 		"regex pattern": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "regex.txt"), []byte("email@example.com\ntest@test.org"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "regex.txt"), []byte("email@example.com\ntest@test.org"), 0644)
 
 				return map[string]any{
 					"pattern":     `\w+@\w+\.\w+`,
@@ -177,9 +177,9 @@ func TestGrepTool(t *testing.T) {
 		},
 		"search in subdirectories": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.MkdirAll(filepath.Join(dir, "subdir"), 0755)
-				os.WriteFile(filepath.Join(dir, "root.txt"), []byte("Human Being mascot"), 0644)
-				os.WriteFile(filepath.Join(dir, "subdir", "nested.txt"), []byte("Human Being mascot"), 0644)
+				_ = os.MkdirAll(filepath.Join(dir, "subdir"), 0755)
+				_ = os.WriteFile(filepath.Join(dir, "root.txt"), []byte("Human Being mascot"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "subdir", "nested.txt"), []byte("Human Being mascot"), 0644)
 
 				return map[string]any{
 					"pattern": "Human Being",

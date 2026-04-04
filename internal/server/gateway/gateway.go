@@ -1,9 +1,9 @@
 // Package gateway provides the HTTP API for the forge server.
 //
-//   POST   /sessions                     create session
-//   GET    /sessions/:sessionId          get session info
-//   POST   /sessions/:sessionId/messages send message
-//   GET    /sessions/:sessionId/events   SSE stream
+//	POST   /sessions                     create session
+//	GET    /sessions/:sessionId          get session info
+//	POST   /sessions/:sessionId/messages send message
+//	GET    /sessions/:sessionId/events   SSE stream
 package gateway
 
 import (
@@ -70,7 +70,7 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"sessionId": sessionID,
 		"metadata":  body.Metadata,
 	})
@@ -85,7 +85,7 @@ func handleGetSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(meta)
+	_ = json.NewEncoder(w).Encode(meta)
 }
 
 // relays tracks active SSE relay goroutines per session so we don't
@@ -119,7 +119,7 @@ func startRelay(sessionID, agentAddr string) {
 			log.Printf("[relay:%s] connect error: %v", sessionID, err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
@@ -210,7 +210,7 @@ func handleSendMessage(cfg Config) http.HandlerFunc {
 			http.Error(w, `{"error":"failed to forward message to agent"}`, http.StatusBadGateway)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// Parse the agent's response to get the actual status
 		var agentResp map[string]string
@@ -228,7 +228,7 @@ func handleSendMessage(cfg Config) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(agentResp)
+		_ = json.NewEncoder(w).Encode(agentResp)
 	}
 }
 
@@ -241,7 +241,7 @@ func handleInterrupt(cfg Config) http.HandlerFunc {
 		if agentAddr == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"status": "no active agent"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "no active agent"})
 			return
 		}
 
@@ -253,13 +253,13 @@ func handleInterrupt(cfg Config) http.HandlerFunc {
 			http.Error(w, `{"error":"failed to forward interrupt to agent"}`, http.StatusBadGateway)
 			return
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		log.Printf("[gateway] interrupt sent to agent id=%s", sessionID)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "interrupted"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "interrupted"})
 	}
 }
 
@@ -287,7 +287,7 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data, _ := json.Marshal(event)
-			fmt.Fprintf(w, "id: %s\ndata: %s\n\n", event.ID, data)
+			_, _ = fmt.Fprintf(w, "id: %s\ndata: %s\n\n", event.ID, data)
 			flusher.Flush()
 		case <-r.Context().Done():
 			return

@@ -40,7 +40,7 @@ func TestInProcessTerminal_FullLifecycle(t *testing.T) {
 	r.Contains(output, "cool cool cool")
 
 	// Run failing command
-	output, exitCode, err = term.RunInPane(ctx, pane, "exit 42", dir)
+	_, exitCode, err = term.RunInPane(ctx, pane, "exit 42", dir)
 	r.NoError(err)
 	r.Equal(42, exitCode)
 

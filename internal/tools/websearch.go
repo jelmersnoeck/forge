@@ -183,10 +183,10 @@ func formatSearchResponse(blocks []anthropic.ContentBlockUnion, query string) st
 	}
 
 	var out strings.Builder
-	out.WriteString(fmt.Sprintf("Search results for: %s\n\n", query))
+	fmt.Fprintf(&out, "Search results for: %s\n\n", query)
 
 	for i, r := range allResults {
-		out.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, r.Title, r.URL))
+		fmt.Fprintf(&out, "%d. %s\n   %s\n\n", i+1, r.Title, r.URL)
 	}
 
 	if len(textParts) > 0 {
@@ -199,7 +199,7 @@ func formatSearchResponse(blocks []anthropic.ContentBlockUnion, query string) st
 	case len(allResults) == 0 && len(textParts) == 0:
 		return fmt.Sprintf("No results found for: %s", query)
 	case len(allResults) > 0:
-		out.WriteString(fmt.Sprintf("Found %d result(s).", len(allResults)))
+		fmt.Fprintf(&out, "Found %d result(s).", len(allResults))
 	}
 
 	return out.String()

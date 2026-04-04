@@ -29,7 +29,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "/health")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -48,7 +48,7 @@ func TestPostMessages_Accepted(t *testing.T) {
 	payload := `{"text":"Have you ever heard of the Darkest Timeline?","user":"Abed Nadir","source":"dreamatorium"}`
 	resp, err := http.Post(srv.URL+"/messages", "application/json", strings.NewReader(payload))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
@@ -73,7 +73,7 @@ func TestPostMessages_EmptyText(t *testing.T) {
 	payload := `{"text":"","user":"Jeff Winger"}`
 	resp, err := http.Post(srv.URL+"/messages", "application/json", strings.NewReader(payload))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
@@ -85,7 +85,7 @@ func TestPostMessages_InvalidJSON(t *testing.T) {
 
 	resp, err := http.Post(srv.URL+"/messages", "application/json", strings.NewReader("{not json"))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
@@ -98,7 +98,7 @@ func TestPostMessages_Defaults(t *testing.T) {
 	payload := `{"text":"I am the Truest Repairman"}`
 	resp, err := http.Post(srv.URL+"/messages", "application/json", strings.NewReader(payload))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
@@ -115,7 +115,7 @@ func TestSSE_EventDelivery(t *testing.T) {
 	// Start SSE connection
 	resp, err := http.Get(srv.URL + "/events")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
