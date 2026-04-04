@@ -6,6 +6,7 @@
 //	forge agent        run agent server
 //	forge server       run gateway server
 //	forge stats        show cost analytics
+//	forge mcp          manage MCP server connections
 package main
 
 import (
@@ -28,6 +29,8 @@ func main() {
 		os.Exit(runServer(os.Args[1:]))
 	case "stats":
 		os.Exit(runStats(os.Args[1:]))
+	case "mcp":
+		os.Exit(runMCP(os.Args[1:]))
 	case "help", "-h", "--help":
 		printHelp()
 		os.Exit(0)
@@ -50,6 +53,7 @@ Usage:
   forge agent        run agent server
   forge server       run gateway server  
   forge stats        show cost analytics
+  forge mcp          manage MCP server connections
   forge help         show this help
 
 Flags (interactive mode):
@@ -58,10 +62,10 @@ Flags (interactive mode):
   --skip-worktree          skip git worktree creation
 
 Examples:
-  forge                              # start interactive session
-  forge --skip-worktree              # run in current directory (no worktree)
-  forge --server http://localhost:3000  # connect to remote server
-  forge stats --month 2026-04       # show costs for April 2026
-  forge agent --port 8080           # run agent on port 8080
-  forge server -daemon              # run server in background`)
+  forge                                        # start interactive session
+  forge --skip-worktree                        # run in current directory
+  forge --server http://localhost:3000         # connect to remote server
+  forge stats --month 2026-04                  # show costs for April 2026
+  forge mcp add datadog --url https://mcp.datadoghq.com/mcp --auth oauth
+  forge mcp list                               # list MCP servers`)
 }
