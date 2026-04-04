@@ -178,7 +178,7 @@ func TestRegisterClient(t *testing.T) {
 		RegistrationEndpoint: regServer.URL,
 	}
 
-	clientID, clientSecret, err := oauth.registerClient(metadata)
+	clientID, clientSecret, err := oauth.registerClient(metadata, "http://127.0.0.1:12345/callback")
 	r.NoError(err)
 	r.Equal("human-being-mascot", clientID)
 	r.Equal("six-seasons-and-a-movie", clientSecret)

@@ -104,14 +104,24 @@ func (o *OAuthClient) fullAuthFlow(ctx context.Context, mcpURL string) (string, 
 		return "", fmt.Errorf("fetch auth server metadata: %w", err)
 	}
 
-	// Step 3: Dynamic Client Registration (if endpoint available)
-	clientID, clientSecret, err := o.registerClient(metadata)
+	// Step 3: Start callback listener early so we know the port for DCR
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("start callback listener: %w", err)
+	}
+	defer listener.Close()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+
+	// Step 4: Dynamic Client Registration with the actual redirect URI
+	clientID, clientSecret, err := o.registerClient(metadata, redirectURI)
 	if err != nil {
 		return "", fmt.Errorf("DCR: %w", err)
 	}
 
-	// Step 4: Authorization Code + PKCE
-	entry, err := o.authorizeWithPKCE(ctx, metadata, clientID, clientSecret, authServerURL)
+	// Step 5: Authorization Code + PKCE
+	entry, err := o.authorizeWithPKCE(ctx, metadata, clientID, clientSecret, authServerURL, listener, redirectURI)
 	if err != nil {
 		return "", fmt.Errorf("PKCE authorization: %w", err)
 	}
@@ -221,20 +231,15 @@ func (o *OAuthClient) fetchAuthServerMetadata(authServerURL string) (*AuthServer
 }
 
 // registerClient performs Dynamic Client Registration (RFC 7591).
-func (o *OAuthClient) registerClient(metadata *AuthServerMetadata) (clientID, clientSecret string, err error) {
-	// Check if we already have registration for this server
-	entry, _ := o.store.Get(o.serverName)
-	if entry != nil && entry.ClientID != "" {
-		return entry.ClientID, entry.ClientSecret, nil
-	}
-
+// The redirectURI must match what will be used in the authorization request.
+func (o *OAuthClient) registerClient(metadata *AuthServerMetadata, redirectURI string) (clientID, clientSecret string, err error) {
 	if metadata.RegistrationEndpoint == "" {
 		return "", "", fmt.Errorf("auth server has no registration_endpoint; manual client registration required")
 	}
 
 	regReq := map[string]any{
 		"client_name":                "Forge Agent",
-		"redirect_uris":              []string{"http://127.0.0.1/callback"},
+		"redirect_uris":              []string{redirectURI},
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": "client_secret_post",
@@ -272,22 +277,14 @@ func (o *OAuthClient) registerClient(metadata *AuthServerMetadata) (clientID, cl
 }
 
 // authorizeWithPKCE runs the Authorization Code + PKCE flow.
-// Starts a local callback server, prints the auth URL, waits for the callback.
-func (o *OAuthClient) authorizeWithPKCE(ctx context.Context, metadata *AuthServerMetadata, clientID, clientSecret, authServerURL string) (*TokenEntry, error) {
+// Uses the provided listener for the callback server.
+func (o *OAuthClient) authorizeWithPKCE(ctx context.Context, metadata *AuthServerMetadata, clientID, clientSecret, authServerURL string, listener net.Listener, redirectURI string) (*TokenEntry, error) {
 	verifier, challenge, err := generatePKCE()
 	if err != nil {
 		return nil, fmt.Errorf("generate PKCE: %w", err)
 	}
 
-	// Start local callback server on ephemeral port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("start callback listener: %w", err)
-	}
-	defer listener.Close()
-
 	port := listener.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 
 	state, err := generateRandomString(32)
 	if err != nil {
