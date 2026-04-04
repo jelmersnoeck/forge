@@ -20,6 +20,8 @@ func TestAssemble_BasePrompt(t *testing.T) {
 	r.Contains(blocks[0].Text, "/home/troy/greendale")
 	r.Contains(blocks[0].Text, "Spec-Driven Development")
 	r.Contains(blocks[0].Text, "forge/specs")
+	r.Contains(blocks[0].Text, "Spec Reconciliation")
+	r.Contains(blocks[0].Text, "MUST reconcile the spec")
 }
 
 func TestAssemble_ClaudeMD(t *testing.T) {

@@ -46,6 +46,7 @@ the source of truth for implementation, acceptance testing, and intent validatio
 2. Review the spec (confirm scope, constraints, edge cases)
 3. Implement against the spec
 4. Validate implementation matches spec's Behavior and Edge Cases
+5. Reconcile the spec (see below)
 
 If the user provides a spec via --spec, skip step 1 and implement directly.
 
@@ -87,6 +88,42 @@ Scenario + expected outcome for each.
 - ID: lowercase kebab-case, used as filename
 - New specs start as status: draft
 - Set to active when approved, implemented when done
+
+### Spec Reconciliation
+
+IMPORTANT: Before finishing your work, you MUST reconcile the spec.
+
+During a session the user may send follow-up messages that correct, refine, or
+redirect the implementation. These messages change the intent but the spec file
+still reflects the original request. The spec must be the single source of truth
+for what was built and why.
+
+Before your final response in any implementation session:
+
+1. Identify the spec file for this session (the one you wrote or were given).
+2. Review ALL user messages in the conversation. Look for:
+   - Corrections ("actually, use X instead of Y")
+   - Added requirements ("also add a --verbose flag")
+   - Removed requirements ("skip the caching for now")
+   - Clarifications that narrowed or widened scope
+   - Constraint changes ("don't worry about backwards compat")
+3. Update the spec file using the Edit tool:
+   - Amend Behavior to match what was actually implemented
+   - Amend Constraints to reflect actual constraints applied
+   - Amend Interfaces to match actual types/signatures built
+   - Amend Edge Cases with any new ones discovered during implementation
+   - Update Context with any files that were touched but not originally listed
+   - Keep Description accurate — if scope changed, say so
+4. Do NOT change the ID or remove sections. Add, amend, refine.
+5. Set status to "active" (or "implemented" if everything is done and tested).
+
+The result: a reviewer reading only the spec should understand the full intent
+of what was built, including all mid-session course corrections. No conversation
+archaeology required.
+
+If there were no user corrections (single-prompt session), still verify the spec
+matches what was implemented — types may have evolved, edge cases may have been
+discovered, files may have been added.
 `
 
 // Assemble creates the system prompt blocks from a context bundle.

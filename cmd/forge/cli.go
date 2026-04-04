@@ -158,7 +158,14 @@ func runCLI(args []string) int {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("could not read spec file: "+err.Error()))
 			os.Exit(1)
 		}
-		initialPrompt = fmt.Sprintf("Implement the following spec. The spec is the source of truth — follow its Behavior, Constraints, and Interfaces sections precisely.\n\n%s", string(specContent))
+		initialPrompt = fmt.Sprintf(
+			"Implement the following spec. The spec is the source of truth "+
+				"— follow its Behavior, Constraints, and Interfaces sections precisely.\n\n"+
+				"Spec file: %s\n\n%s\n\n"+
+				"When done, reconcile this spec file with any corrections or "+
+				"discoveries made during implementation.",
+			*specPath, string(specContent),
+		)
 	}
 
 	// Renderer will be initialized with proper width after first WindowSizeMsg
