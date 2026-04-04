@@ -1,6 +1,6 @@
 ---
 id: claude-agnostic-config
-status: draft
+status: implemented
 ---
 # Remove Claude-specific configuration, use forge-native paths
 
@@ -11,14 +11,19 @@ field are removed; its content merges into `AgentsMD`. Anthropic API
 implementation stays unchanged — this is config/context only.
 
 ## Context
-- `internal/types/types.go` — `ContextBundle`, `ClaudeMDEntry` type
-- `internal/runtime/context/loader.go` — file discovery (`CLAUDE.md`, `.claude/`)
-- `internal/runtime/context/loader_test.go` — tests for CLAUDE.md loading
-- `internal/runtime/context/loader_agents_test.go` — AGENTS.md tests
-- `internal/runtime/prompt/prompt.go` — `Assemble()`, system prompt blocks
-- `internal/runtime/prompt/prompt_test.go` — prompt assembly tests
-- `CLAUDE.md` — project-level instructions (becomes `AGENTS.md` content)
-- `AGENTS.md` — existing learnings file
+- `internal/types/types.go` — `ContextBundle.ClaudeMD` field and `ClaudeMDEntry` type removed
+- `internal/runtime/context/loader.go` — file discovery rewritten: .forge/ preferred, .claude/ fallback
+- `internal/runtime/context/loader_test.go` — tests rewritten for AGENTS.md and .forge/ paths
+- `internal/runtime/context/loader_agents_test.go` — updated .claude dir test to use .forge
+- `internal/runtime/prompt/prompt.go` — `Assemble()` splits AgentsMD into instructions vs learnings
+- `internal/runtime/prompt/prompt_test.go` — tests updated for AgentsMD-only world
+- `CLAUDE.md` → deleted, content merged into `AGENTS.md`
+- `AGENTS.md` — now contains project docs + learnings (single file)
+- `mcp-server/src/server.ts` — resource URI forge://claude → forge://agents
+- `mcp-server/README.md` — updated resource docs
+- `README.md`, `CACHE_STRATEGY.md`, `CACHE_IMPROVEMENTS.md`, `IMPLEMENTATION-COMPLETE.md` — refs updated
+- `.forge/specs/forge-architecture.md` — updated context loader description
+- `docs/` — multiple doc files updated
 
 ## Behavior
 - `CLAUDE.md` at any level (user/project/parent/local) is no longer loaded
@@ -36,9 +41,10 @@ implementation stays unchanged — this is config/context only.
 - Backward compat: also check legacy `.claude/` paths as fallback, but prefer `.forge/`
 - `CLAUDE.local.md` → `AGENTS.local.md` (already supported)
 - Parent directory walk loads `AGENTS.md` (already does), stops loading `CLAUDE.md`
-- `prompt.go` Assemble: uses `AgentsMD` for both project instructions and learnings in the same system-reminder block
+- `prompt.go` Assemble: splits AgentsMD into instructions (static block) and learnings (dynamic block) based on `.forge/learnings/` path prefix
 - Reflect tool continues writing to `.forge/learnings/` (unchanged)
-- `LoadSkillContent` searches `.forge/skills/` instead of `.claude/skills/`
+- `LoadSkillContent` searches `.forge/skills/` then `.claude/skills/` for backward compat
+- `~/CLAUDE.md` is no longer loaded; replaced by `~/AGENTS.md`
 
 ## Constraints
 - Do NOT change the Anthropic API implementation (provider, models, etc.)
@@ -66,9 +72,9 @@ type ContextBundle struct {
 ```
 
 ```go
-// prompt.Assemble — merge what was ClaudeMD into AgentsMD handling
-// The static block includes project instructions from AgentsMD
-// The dynamic block includes learnings from AgentsMD
+// prompt.Assemble — instructions go in static block, learnings in dynamic
+// Split based on path: entries from .forge/learnings/ → dynamic block
+// Everything else (AGENTS.md at root, .forge/AGENTS.md, etc.) → static block
 ```
 
 ## Edge Cases
