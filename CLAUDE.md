@@ -32,6 +32,8 @@ forge stats --daily --sessions # both views
 
 ## MCP Integration
 
+### MCP Server (exposing Forge's tools)
+
 Forge includes a Model Context Protocol (MCP) server that exposes Forge's tools to any MCP-compatible client (Claude Desktop, Claude Code, VS Code, etc.).
 
 See `mcp-server/README.md` for setup and usage.
@@ -42,6 +44,40 @@ just build-mcp
 just mcp         # STDIO mode (local)
 just mcp-http    # HTTP mode (remote)
 ```
+
+### MCP Client (connecting to remote MCP servers)
+
+The agent can connect to remote MCP servers over HTTP (Streamable HTTP transport),
+discover their tools, and expose them to the LLM alongside built-in tools.
+Tools from MCP servers are namespaced as `mcp__<serverName>__<toolName>`.
+
+Configuration in `~/.forge/mcp.json` (user-level) or `.forge/mcp.json` (project-level):
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "url": "https://example.com/mcp",
+      "auth": "oauth"
+    },
+    "simple-server": {
+      "url": "https://simple.example.com/mcp",
+      "headers": { "Authorization": "Bearer sk-..." }
+    }
+  }
+}
+```
+
+Authentication modes:
+- `"auth": "oauth"` — Full OAuth 2.1 with Dynamic Client Registration (RFC 7591),
+  PKCE authorization, and automatic token refresh. Tokens stored at `~/.forge/mcp-tokens.json`.
+- `"headers"` — Static headers (API keys, pre-configured bearer tokens).
+
+Key files:
+- `internal/mcp/client.go` — JSON-RPC 2.0 over Streamable HTTP, SSE support
+- `internal/mcp/oauth.go` — OAuth 2.1 + DCR + PKCE flow
+- `internal/mcp/bridge.go` — bridges MCP tools into Forge's tool registry
+- `internal/mcp/config.go` — config loading (user + project merge)
+- `internal/mcp/token_store.go` — persistent OAuth token storage
 
 ## Repository layout
 
@@ -57,6 +93,12 @@ mcp-server/        MCP server (TypeScript) — exposes Forge as MCP server
     index.ts       STDIO entrypoint
     http.ts        HTTP entrypoint
 internal/
+  mcp/             MCP client (Go) — connects to remote MCP servers
+    client.go      JSON-RPC over Streamable HTTP transport
+    oauth.go       OAuth 2.1 + DCR + PKCE
+    bridge.go      bridges MCP tools into Forge's tool registry
+    config.go      config loading (~/.forge/mcp.json)
+    token_store.go persistent OAuth token storage
   types/           shared contracts (messages, events, tools, context, tasks)
   tools/           tool registry + implementations
   agent/           agent HTTP server, single-session hub, worker
