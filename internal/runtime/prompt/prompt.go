@@ -142,6 +142,25 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		hasContent = true
 	}
 
+	// Active specs
+	if len(bundle.Specs) > 0 {
+		var activeSpecs []string
+		for _, s := range bundle.Specs {
+			if s.Status == "active" {
+				activeSpecs = append(activeSpecs, fmt.Sprintf("- **%s**: %s", s.ID, s.Header))
+			}
+		}
+		if len(activeSpecs) > 0 {
+			bundledContent.WriteString("Active Specs:\n\n")
+			for _, line := range activeSpecs {
+				bundledContent.WriteString(line)
+				bundledContent.WriteString("\n")
+			}
+			bundledContent.WriteString("\n")
+			hasContent = true
+		}
+	}
+
 	// Add bundled block with cache control if we have any content
 	if hasContent {
 		blocks = append(blocks, types.SystemBlock{
