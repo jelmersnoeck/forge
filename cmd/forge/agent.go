@@ -17,7 +17,7 @@ func runAgent(args []string) int {
 	cwd := fs.String("cwd", ".", "working directory for the agent")
 	sessionID := fs.String("session-id", "", "session ID (required)")
 	sessionsDir := fs.String("sessions-dir", "/tmp/forge/sessions", "directory for session JSONL files")
-	fs.Parse(args[1:])
+	_ = fs.Parse(args[1:])
 
 	// Change to the working directory and load .env from there.
 	if err := os.Chdir(*cwd); err != nil {
@@ -64,7 +64,7 @@ func loadAgentEnv(dir string) {
 		if err != nil {
 			continue
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
@@ -79,7 +79,7 @@ func loadAgentEnv(dir string) {
 			key := strings.TrimSpace(line[:eq])
 			val := strings.TrimSpace(line[eq+1:])
 			if _, exists := os.LookupEnv(key); !exists {
-				os.Setenv(key, val)
+				_ = os.Setenv(key, val)
 			}
 		}
 		return

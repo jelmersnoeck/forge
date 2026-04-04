@@ -150,7 +150,7 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	if err != nil {
 		return types.ToolResult{IsError: true}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var lines []string
 	scanner := bufio.NewScanner(file)

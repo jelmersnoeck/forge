@@ -1,10 +1,10 @@
 // Package bus provides an in-memory message queue and event pub/sub for
 // session-based communication between the gateway and workers.
 //
-//   pushMessage  → gateway enqueues work
-//   pullMessage  → worker blocks until a message arrives
-//   publishEvent → worker emits output
-//   subscribe    → SSE handler receives output
+//	pushMessage  → gateway enqueues work
+//	pullMessage  → worker blocks until a message arrives
+//	publishEvent → worker emits output
+//	subscribe    → SSE handler receives output
 //
 // Uses a waiter list: if a worker is already waiting when a message
 // arrives, we resolve its channel directly — no polling, no timers.

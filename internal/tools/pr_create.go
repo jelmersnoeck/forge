@@ -178,8 +178,8 @@ func prCreateHandler(input map[string]any, ctx types.ToolContext) (types.ToolRes
 	prURL := strings.TrimSpace(stdout.String())
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Draft PR created: %s\n\n", prURL))
-	result.WriteString(fmt.Sprintf("Branch: %s -> %s\n\n", currentBranch, base))
+	fmt.Fprintf(&result, "Draft PR created: %s\n\n", prURL)
+	fmt.Fprintf(&result, "Branch: %s -> %s\n\n", currentBranch, base)
 	result.WriteString("Diff summary:\n")
 	result.WriteString(diffStat)
 

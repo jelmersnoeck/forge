@@ -23,7 +23,7 @@ func runServer(args []string) int {
 	daemon := fs.Bool("daemon", false, "run in background and write PID file")
 	pidFile := fs.String("pid-file", "", "path to PID file (default: $SESSIONS_DIR/forge.pid)")
 	logFile := fs.String("log-file", "", "path to log file (default: $SESSIONS_DIR/forge.log)")
-	fs.Parse(args[1:])
+	_ = fs.Parse(args[1:])
 
 	loadServerEnv()
 
@@ -52,15 +52,15 @@ func runServer(args []string) int {
 		}
 	}
 
-	os.MkdirAll(workspaceDir, 0o755)
-	os.MkdirAll(sessionsDir, 0o755)
+	_ = os.MkdirAll(workspaceDir, 0o755)
+	_ = os.MkdirAll(sessionsDir, 0o755)
 
 	// Write PID file if we're in daemon mode
 	if pidFile != nil && *pidFile != "" {
 		if err := writePIDFile(*pidFile); err != nil {
 			log.Fatalf("failed to write PID file: %v", err)
 		}
-		defer os.Remove(*pidFile)
+		defer func() { _ = os.Remove(*pidFile) }()
 	}
 
 	serverID := uuid.New().String()[:8]
@@ -72,9 +72,9 @@ func runServer(args []string) int {
 	go func() {
 		sig := <-sigCh
 		log.Printf("received %s, stopping agents...", sig)
-		be.Close()
+		_ = be.Close()
 		if pidFile != nil && *pidFile != "" {
-			os.Remove(*pidFile)
+			_ = os.Remove(*pidFile)
 		}
 		os.Exit(0)
 	}()
@@ -94,7 +94,7 @@ func runServer(args []string) int {
 	}
 
 	if err := gateway.Start(cfg); err != nil {
-		be.Close()
+		_ = be.Close()
 		log.Printf("fatal: %v", err)
 		return 1
 	}
@@ -117,7 +117,7 @@ func loadServerEnv() {
 		if err != nil {
 			continue
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
@@ -132,7 +132,7 @@ func loadServerEnv() {
 			key := strings.TrimSpace(line[:eq])
 			val := strings.TrimSpace(line[eq+1:])
 			if _, exists := os.LookupEnv(key); !exists {
-				os.Setenv(key, val)
+				_ = os.Setenv(key, val)
 			}
 		}
 		return
@@ -175,7 +175,7 @@ func daemonize(pidFile, logFile string) {
 	if err != nil {
 		log.Fatalf("failed to open log file: %v", err)
 	}
-	defer lf.Close()
+	defer func() { _ = lf.Close() }()
 
 	// Re-execute with FORGE_DAEMON_CHILD=1 to skip daemonization
 	cmd := exec.Command(exe)

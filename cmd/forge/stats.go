@@ -21,14 +21,14 @@ func runStats(args []string) int {
 	week := fs.Bool("week", false, "show current week stats")
 	daily := fs.Bool("daily", false, "show daily breakdown")
 	sessions := fs.Bool("sessions", false, "show per-session breakdown")
-	fs.Parse(args[1:])
+	_ = fs.Parse(args[1:])
 
 	tracker, err := cost.NewTracker()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: could not open cost database: %v\n", err)
 		return 1
 	}
-	defer tracker.Close()
+	defer func() { _ = tracker.Close() }()
 
 	var start, end time.Time
 

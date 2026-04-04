@@ -26,7 +26,7 @@ func TestReadHandler_BlocksEnvFile(t *testing.T) {
 	dir := t.TempDir()
 
 	envPath := filepath.Join(dir, ".env")
-	os.WriteFile(envPath, []byte("SECRET=changme"), 0644)
+	_ = os.WriteFile(envPath, []byte("SECRET=changme"), 0644)
 
 	tests := map[string]struct {
 		path string
@@ -51,7 +51,7 @@ func TestReadHandler_AllowsNonEnvFile(t *testing.T) {
 	dir := t.TempDir()
 
 	safePath := filepath.Join(dir, "config.yaml")
-	os.WriteFile(safePath, []byte("key: value"), 0644)
+	_ = os.WriteFile(safePath, []byte("key: value"), 0644)
 
 	result, err := readHandler(map[string]any{"file_path": safePath}, newTestCtx(t, dir))
 	r.NoError(err)
@@ -74,7 +74,7 @@ func TestReadHandler_AllowsEnvExample(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(dir, tc.filename)
-			os.WriteFile(path, []byte("ANTHROPIC_API_KEY=your-key-here"), 0644)
+			_ = os.WriteFile(path, []byte("ANTHROPIC_API_KEY=your-key-here"), 0644)
 
 			result, err := readHandler(map[string]any{"file_path": path}, newTestCtx(t, dir))
 			r.NoError(err)
@@ -119,7 +119,7 @@ func TestEditHandler_BlocksEnvFile(t *testing.T) {
 	dir := t.TempDir()
 
 	envPath := filepath.Join(dir, ".env")
-	os.WriteFile(envPath, []byte("OLD=value"), 0644)
+	_ = os.WriteFile(envPath, []byte("OLD=value"), 0644)
 
 	result, err := editHandler(map[string]any{
 		"file_path":  envPath,
@@ -140,7 +140,7 @@ func TestBashHandler_BlocksEnvFile(t *testing.T) {
 	dir := t.TempDir()
 
 	envPath := filepath.Join(dir, ".env")
-	os.WriteFile(envPath, []byte("SECRET=hunter2"), 0644)
+	_ = os.WriteFile(envPath, []byte("SECRET=hunter2"), 0644)
 
 	tests := map[string]struct {
 		command string
@@ -177,7 +177,7 @@ func TestGlobHandler_FiltersEnvFiles(t *testing.T) {
 
 	// Create a mix of files
 	for _, name := range []string{".env", ".env.local", ".env.example", "config.yaml", "main.go"} {
-		os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644)
+		_ = os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644)
 	}
 
 	result, err := globHandler(map[string]any{"pattern": "*"}, newTestCtx(t, dir))
@@ -204,7 +204,7 @@ func TestGrepHandler_BlocksEnvFilePath(t *testing.T) {
 	dir := t.TempDir()
 
 	envPath := filepath.Join(dir, ".env")
-	os.WriteFile(envPath, []byte("SECRET=hunter2"), 0644)
+	_ = os.WriteFile(envPath, []byte("SECRET=hunter2"), 0644)
 
 	result, err := grepHandler(map[string]any{
 		"pattern": "SECRET",
@@ -220,7 +220,7 @@ func TestGrepHandler_AllowsEnvExampleDirectly(t *testing.T) {
 	dir := t.TempDir()
 
 	examplePath := filepath.Join(dir, ".env.example")
-	os.WriteFile(examplePath, []byte("ANTHROPIC_API_KEY=your-key-here"), 0644)
+	_ = os.WriteFile(examplePath, []byte("ANTHROPIC_API_KEY=your-key-here"), 0644)
 
 	result, err := grepHandler(map[string]any{
 		"pattern":     "ANTHROPIC",
@@ -236,9 +236,9 @@ func TestGrepHandler_ExcludesEnvFromDirectorySearch(t *testing.T) {
 	r := require.New(t)
 	dir := t.TempDir()
 
-	os.WriteFile(filepath.Join(dir, ".env"), []byte("DEAN_PELTON=secret"), 0644)
-	os.WriteFile(filepath.Join(dir, ".env.local"), []byte("DEAN_PELTON=also_secret"), 0644)
-	os.WriteFile(filepath.Join(dir, "config.go"), []byte("DEAN_PELTON=public"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("DEAN_PELTON=secret"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, ".env.local"), []byte("DEAN_PELTON=also_secret"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "config.go"), []byte("DEAN_PELTON=public"), 0644)
 
 	result, err := grepHandler(map[string]any{
 		"pattern":     "DEAN_PELTON",
@@ -297,7 +297,7 @@ func TestEnvFileBlock_NoOverrides(t *testing.T) {
 	dir := t.TempDir()
 
 	envPath := filepath.Join(dir, ".env")
-	os.WriteFile(envPath, []byte("PIERCE_HAWTHORNE=moist"), 0644)
+	_ = os.WriteFile(envPath, []byte("PIERCE_HAWTHORNE=moist"), 0644)
 
 	// Even with all possible context variations, .env is blocked
 	ctx := newTestCtx(t, dir)

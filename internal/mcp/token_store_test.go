@@ -64,8 +64,8 @@ func TestTokenStore(t *testing.T) {
 		},
 		"multiple servers coexist": {
 			setup: func(s *TokenStore) {
-				s.Put("greendale", &TokenEntry{AccessToken: "go-human-beings", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)})
-				s.Put("city-college", &TokenEntry{AccessToken: "go-bulldogs", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)})
+				_ = s.Put("greendale", &TokenEntry{AccessToken: "go-human-beings", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)})
+				_ = s.Put("city-college", &TokenEntry{AccessToken: "go-bulldogs", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)})
 			},
 			check: func(r *require.Assertions, s *TokenStore) {
 				g, err := s.Get("greendale")

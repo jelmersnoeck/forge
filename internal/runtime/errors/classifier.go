@@ -72,11 +72,11 @@ func (e *ClassifiedError) Unwrap() error {
 var (
 	// Prompt too long patterns
 	promptTooLongRe = regexp.MustCompile(`prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)`)
-	
+
 	// Rate limit patterns
-	rateLimitRe = regexp.MustCompile(`rate limit|quota|too many requests`)
+	rateLimitRe  = regexp.MustCompile(`rate limit|quota|too many requests`)
 	retryAfterRe = regexp.MustCompile(`retry.?after[:\s]+(\d+)`)
-	
+
 	// Auth patterns
 	authErrorPatterns = []string{
 		"invalid api key",
@@ -86,7 +86,7 @@ var (
 		"token expired",
 		"token revoked",
 	}
-	
+
 	// Overload patterns
 	overloadPatterns = []string{
 		"529",
@@ -103,7 +103,7 @@ func Classify(err error, statusCode int) *ClassifiedError {
 	}
 
 	errMsg := strings.ToLower(err.Error())
-	
+
 	// Check for context cancellation (user interrupt)
 	if errors.Is(err, context.Canceled) {
 		return &ClassifiedError{
@@ -114,7 +114,7 @@ func Classify(err error, statusCode int) *ClassifiedError {
 			IsRetryable: false,
 		}
 	}
-	
+
 	// Check for deadline exceeded (timeout)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &ClassifiedError{
@@ -152,7 +152,7 @@ func Classify(err error, statusCode int) *ClassifiedError {
 				retryAfter = time.Duration(seconds) * time.Second
 			}
 		}
-		
+
 		return &ClassifiedError{
 			Original:    err,
 			Category:    CategoryRateLimit,
@@ -227,11 +227,11 @@ func Classify(err error, statusCode int) *ClassifiedError {
 
 // RetryConfig controls retry behavior.
 type RetryConfig struct {
-	MaxAttempts        int           // Maximum number of retry attempts (0 = no retries)
-	InitialBackoff     time.Duration // Initial backoff duration
-	MaxBackoff         time.Duration // Maximum backoff duration
-	BackoffMultiplier  float64       // Backoff multiplier for exponential backoff
-	OnRetry            func(attempt int, err *ClassifiedError) // Called before each retry
+	MaxAttempts       int                                     // Maximum number of retry attempts (0 = no retries)
+	InitialBackoff    time.Duration                           // Initial backoff duration
+	MaxBackoff        time.Duration                           // Maximum backoff duration
+	BackoffMultiplier float64                                 // Backoff multiplier for exponential backoff
+	OnRetry           func(attempt int, err *ClassifiedError) // Called before each retry
 }
 
 // DefaultRetryConfig returns sensible defaults.
@@ -248,7 +248,7 @@ func DefaultRetryConfig() RetryConfig {
 // Retry executes fn with automatic retry logic based on error classification.
 func Retry(ctx context.Context, config RetryConfig, fn func() error) error {
 	var lastErr *ClassifiedError
-	
+
 	for attempt := 0; attempt <= config.MaxAttempts; attempt++ {
 		err := fn()
 		if err == nil {

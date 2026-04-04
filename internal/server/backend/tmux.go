@@ -117,7 +117,7 @@ func (b *TmuxBackend) EnsureAgent(ctx context.Context, sessionID string, opts Ag
 		return "", fmt.Errorf("find free port: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
+	_ = listener.Close()
 
 	wName := windowName(sessionID)
 
@@ -144,7 +144,7 @@ func (b *TmuxBackend) EnsureAgent(ctx context.Context, sessionID string, opts Ag
 	for i := 0; i < 50; i++ {
 		resp, err := client.Get(healthURL)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				b.mu.Lock()
 				b.agents[sessionID] = &agentInfo{

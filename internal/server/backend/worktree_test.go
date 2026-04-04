@@ -135,6 +135,14 @@ func TestWorktreeManager_CleanupStale(t *testing.T) {
 	cmd.Dir = repoDir
 	r.NoError(cmd.Run())
 
+	// Configure git user (required for commits on CI)
+	cmd = exec.Command("git", "config", "user.email", "test@greendale.edu")
+	cmd.Dir = repoDir
+	r.NoError(cmd.Run())
+	cmd = exec.Command("git", "config", "user.name", "Troy Barnes")
+	cmd.Dir = repoDir
+	r.NoError(cmd.Run())
+
 	// Create an initial commit
 	testFile := filepath.Join(repoDir, "README.md")
 	r.NoError(os.WriteFile(testFile, []byte("# Study Group\n"), 0o644))

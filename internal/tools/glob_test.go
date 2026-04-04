@@ -18,9 +18,9 @@ func TestGlobTool(t *testing.T) {
 	}{
 		"simple pattern": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "troy.txt"), []byte("content"), 0644)
-				os.WriteFile(filepath.Join(dir, "abed.txt"), []byte("content"), 0644)
-				os.WriteFile(filepath.Join(dir, "jeff.go"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "troy.txt"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "abed.txt"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "jeff.go"), []byte("content"), 0644)
 
 				return map[string]any{"pattern": "*.txt"}, types.ToolContext{CWD: dir}
 			},
@@ -35,10 +35,10 @@ func TestGlobTool(t *testing.T) {
 		},
 		"recursive pattern": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.MkdirAll(filepath.Join(dir, "greendale", "library"), 0755)
-				os.WriteFile(filepath.Join(dir, "root.go"), []byte("content"), 0644)
-				os.WriteFile(filepath.Join(dir, "greendale", "study.go"), []byte("content"), 0644)
-				os.WriteFile(filepath.Join(dir, "greendale", "library", "books.go"), []byte("content"), 0644)
+				_ = os.MkdirAll(filepath.Join(dir, "greendale", "library"), 0755)
+				_ = os.WriteFile(filepath.Join(dir, "root.go"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "greendale", "study.go"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "greendale", "library", "books.go"), []byte("content"), 0644)
 
 				return map[string]any{"pattern": "**/*.go"}, types.ToolContext{CWD: dir}
 			},
@@ -53,7 +53,7 @@ func TestGlobTool(t *testing.T) {
 		},
 		"no matches": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0644)
 				return map[string]any{"pattern": "*.go"}, types.ToolContext{CWD: dir}
 			},
 			want: func(t *testing.T, result types.ToolResult, err error) {
@@ -67,14 +67,14 @@ func TestGlobTool(t *testing.T) {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
 				// Create files with different modification times
 				old := filepath.Join(dir, "old.txt")
-				os.WriteFile(old, []byte("old"), 0644)
+				_ = os.WriteFile(old, []byte("old"), 0644)
 				oldTime := time.Now().Add(-2 * time.Hour)
-				os.Chtimes(old, oldTime, oldTime)
+				_ = os.Chtimes(old, oldTime, oldTime)
 
 				time.Sleep(10 * time.Millisecond)
 
 				new := filepath.Join(dir, "new.txt")
-				os.WriteFile(new, []byte("new"), 0644)
+				_ = os.WriteFile(new, []byte("new"), 0644)
 
 				return map[string]any{"pattern": "*.txt"}, types.ToolContext{CWD: dir}
 			},
@@ -92,8 +92,8 @@ func TestGlobTool(t *testing.T) {
 		"custom path": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
 				subdir := filepath.Join(dir, "subdir")
-				os.MkdirAll(subdir, 0755)
-				os.WriteFile(filepath.Join(subdir, "file.txt"), []byte("content"), 0644)
+				_ = os.MkdirAll(subdir, 0755)
+				_ = os.WriteFile(filepath.Join(subdir, "file.txt"), []byte("content"), 0644)
 
 				return map[string]any{
 					"pattern": "*.txt",
@@ -109,8 +109,8 @@ func TestGlobTool(t *testing.T) {
 		},
 		"skip directories": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.MkdirAll(filepath.Join(dir, "troy"), 0755)
-				os.WriteFile(filepath.Join(dir, "troy.txt"), []byte("content"), 0644)
+				_ = os.MkdirAll(filepath.Join(dir, "troy"), 0755)
+				_ = os.WriteFile(filepath.Join(dir, "troy.txt"), []byte("content"), 0644)
 
 				return map[string]any{"pattern": "troy*"}, types.ToolContext{CWD: dir}
 			},
@@ -124,11 +124,11 @@ func TestGlobTool(t *testing.T) {
 		},
 		"complex pattern": {
 			setup: func(t *testing.T, dir string) (map[string]any, types.ToolContext) {
-				os.MkdirAll(filepath.Join(dir, "src", "tools"), 0755)
-				os.MkdirAll(filepath.Join(dir, "pkg", "tools"), 0755)
-				os.WriteFile(filepath.Join(dir, "src", "tools", "read.go"), []byte("content"), 0644)
-				os.WriteFile(filepath.Join(dir, "pkg", "tools", "write.go"), []byte("content"), 0644)
-				os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("content"), 0644)
+				_ = os.MkdirAll(filepath.Join(dir, "src", "tools"), 0755)
+				_ = os.MkdirAll(filepath.Join(dir, "pkg", "tools"), 0755)
+				_ = os.WriteFile(filepath.Join(dir, "src", "tools", "read.go"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "pkg", "tools", "write.go"), []byte("content"), 0644)
+				_ = os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("content"), 0644)
 
 				return map[string]any{"pattern": "**/tools/*.go"}, types.ToolContext{CWD: dir}
 			},

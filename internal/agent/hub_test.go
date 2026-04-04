@@ -163,7 +163,7 @@ func TestHub_ConcurrentPushPull(t *testing.T) {
 func TestHub_PushMessage_ReturnsImmediateStatus(t *testing.T) {
 	tests := map[string]struct {
 		setup    func(*Hub) // Setup function to configure hub state
-		expected bool        // Expected return value from PushMessage
+		expected bool       // Expected return value from PushMessage
 	}{
 		"returns true when worker is idle (waiter exists)": {
 			setup: func(hub *Hub) {

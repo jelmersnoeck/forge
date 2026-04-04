@@ -24,7 +24,7 @@ func TestConnectAndStore(t *testing.T) {
 	client, err := ConnectAndStore(context.Background(), store, "greendale", cfg, nil)
 	r.NoError(err)
 	r.NotNil(client)
-	defer client.Close(context.Background())
+	defer func() { _ = client.Close(context.Background()) }()
 
 	// Tools should be in the store, not a registry
 	r.False(store.Empty())
@@ -51,7 +51,7 @@ func TestConnectAndStoreCallTool(t *testing.T) {
 
 	client, err := ConnectAndStore(context.Background(), store, "greendale", cfg, nil)
 	r.NoError(err)
-	defer client.Close(context.Background())
+	defer func() { _ = client.Close(context.Background()) }()
 
 	// Call tool through the store
 	result, err := store.CallTool(context.Background(), "greendale", "paintball_launcher", map[string]any{
@@ -71,7 +71,7 @@ func TestConnectAndStoreWithHeaders(t *testing.T) {
 		gotAuth = req.Header.Get("X-Dean-Secret")
 
 		var rpcReq JSONRPCRequest
-		json.NewDecoder(req.Body).Decode(&rpcReq)
+		_ = json.NewDecoder(req.Body).Decode(&rpcReq)
 
 		if rpcReq.ID == nil {
 			w.WriteHeader(http.StatusOK)
@@ -87,14 +87,14 @@ func TestConnectAndStoreWithHeaders(t *testing.T) {
 				ServerInfo:      MCPServerInfo{Name: "Header Test"},
 				Capabilities:    ServerCapabilities{Tools: &ToolsCapability{}},
 			})
-			json.NewEncoder(w).Encode(JSONRPCResponse{
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      rpcReq.ID,
 				Result:  json.RawMessage(result),
 			})
 		case "tools/list":
 			result, _ := json.Marshal(map[string]any{"tools": []MCPTool{}})
-			json.NewEncoder(w).Encode(JSONRPCResponse{
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      rpcReq.ID,
 				Result:  json.RawMessage(result),
@@ -111,7 +111,7 @@ func TestConnectAndStoreWithHeaders(t *testing.T) {
 
 	client, err := ConnectAndStore(context.Background(), store, "secret", cfg, nil)
 	r.NoError(err)
-	defer client.Close(context.Background())
+	defer func() { _ = client.Close(context.Background()) }()
 
 	r.Equal("dean-dean-dean", gotAuth)
 }

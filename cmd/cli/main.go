@@ -190,8 +190,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		switch msg.Type {
-		case tea.MouseWheelUp:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
 			// Scroll up (like pressing up arrow)
 			outputHeight := m.getOutputHeight()
 			maxOffset := len(m.output) - outputHeight
@@ -204,7 +204,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case tea.MouseWheelDown:
+		case tea.MouseButtonWheelDown:
 			// Scroll down (like pressing down arrow)
 			if m.scrollOffset > 0 {
 				m.scrollOffset -= 3 // scroll 3 lines at a time
@@ -390,8 +390,6 @@ func (m model) View() string {
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
 	}
 
-
-
 	// Build queue display
 	var queueArea string
 	if len(m.queue) > 0 {
@@ -539,7 +537,7 @@ func (m model) sendMessage(text string) tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusAccepted {
 			b, _ := io.ReadAll(resp.Body)
@@ -564,7 +562,7 @@ func (m model) sendInterrupt() tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
@@ -580,7 +578,7 @@ func createSession(server, cwd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		SessionID string `json:"sessionId"`
@@ -604,7 +602,7 @@ func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool
 		p.Send(errMsg(err))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -664,7 +662,7 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 	// Read port from first line of stdout (JSON: {"port": 12345})
 	scanner := bufio.NewScanner(stdout)
 	if !scanner.Scan() {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		return "", "", nil, fmt.Errorf("agent did not emit port")
 	}
 
@@ -672,7 +670,7 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 		Port int `json:"port"`
 	}
 	if err := json.Unmarshal(scanner.Bytes(), &portMsg); err != nil {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		return "", "", nil, fmt.Errorf("parse agent port: %w", err)
 	}
 
@@ -683,25 +681,25 @@ func spawnLocalAgent(cwd string) (string, string, func(), error) {
 	for i := 0; i < 10; i++ {
 		resp, err := http.Get(serverURL + "/health")
 		if err == nil && resp.StatusCode == 200 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			ready = true
 			break
 		}
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	if !ready {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		return "", "", nil, fmt.Errorf("agent did not become healthy")
 	}
 
 	cleanup := func() {
 		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
 	}
 

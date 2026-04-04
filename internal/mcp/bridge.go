@@ -32,7 +32,7 @@ func ConnectAndStore(ctx context.Context, store *Store, serverName string, cfg M
 
 	mcpTools, err := client.ListTools(ctx)
 	if err != nil {
-		client.Close(ctx)
+		_ = client.Close(ctx)
 		return nil, fmt.Errorf("list tools from %s: %w", serverName, err)
 	}
 

@@ -64,13 +64,13 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 
 	// Format the reflection entry
 	var entry strings.Builder
-	entry.WriteString(fmt.Sprintf("\n## Session Reflection - %s\n\n", time.Now().Format("2006-01-02 15:04")))
-	entry.WriteString(fmt.Sprintf("**Summary:** %s\n\n", summary))
+	fmt.Fprintf(&entry, "\n## Session Reflection - %s\n\n", time.Now().Format("2006-01-02 15:04"))
+	fmt.Fprintf(&entry, "**Summary:** %s\n\n", summary)
 
 	if len(mistakes) > 0 {
 		entry.WriteString("**Mistakes & Improvements:**\n")
 		for _, m := range mistakes {
-			entry.WriteString(fmt.Sprintf("- %s\n", m))
+			fmt.Fprintf(&entry, "- %s\n", m)
 		}
 		entry.WriteString("\n")
 	}
@@ -78,7 +78,7 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 	if len(successes) > 0 {
 		entry.WriteString("**Successful Patterns:**\n")
 		for _, s := range successes {
-			entry.WriteString(fmt.Sprintf("- %s\n", s))
+			fmt.Fprintf(&entry, "- %s\n", s)
 		}
 		entry.WriteString("\n")
 	}
@@ -86,7 +86,7 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 	if len(suggestions) > 0 {
 		entry.WriteString("**Future Suggestions:**\n")
 		for _, s := range suggestions {
-			entry.WriteString(fmt.Sprintf("- %s\n", s))
+			fmt.Fprintf(&entry, "- %s\n", s)
 		}
 		entry.WriteString("\n")
 	}
@@ -111,7 +111,7 @@ This file contains self-improvement learnings from agent sessions. The agent aut
 	if err != nil {
 		return types.ToolResult{IsError: true}, fmt.Errorf("open AGENTS.md: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := f.WriteString(entry.String()); err != nil {
 		return types.ToolResult{IsError: true}, fmt.Errorf("write to AGENTS.md: %v", err)

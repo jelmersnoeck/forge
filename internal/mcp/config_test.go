@@ -100,7 +100,7 @@ func TestLoadConfig(t *testing.T) {
 			// Override HOME for user config
 			origHome := os.Getenv("HOME")
 			t.Setenv("HOME", dir)
-			defer os.Setenv("HOME", origHome)
+			defer func() { _ = os.Setenv("HOME", origHome) }()
 
 			projectDir := filepath.Join(dir, "project")
 			r.NoError(os.MkdirAll(filepath.Join(dir, ".forge"), 0o755))

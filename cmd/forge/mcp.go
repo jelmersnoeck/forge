@@ -47,7 +47,7 @@ func runMCPAdd(args []string) int {
 	// Extract positional name from anywhere in the args, pass rest to flag parser.
 	// Supports both: "add datadog --url ..." and "add --url ... datadog"
 	name, flagArgs := extractPositional(args[1:])
-	fs.Parse(flagArgs)
+	_ = fs.Parse(flagArgs)
 
 	// If name wasn't before flags, check remaining args after flag parsing
 	if name == "" {
@@ -120,7 +120,7 @@ func runMCPRemove(args []string) int {
 	projectFlag := fs.Bool("project", false, "remove from project config instead of user config")
 
 	name, flagArgs := extractPositional(args[1:])
-	fs.Parse(flagArgs)
+	_ = fs.Parse(flagArgs)
 
 	if name == "" {
 		if fs.NArg() > 0 {
@@ -166,7 +166,7 @@ func runMCPList(args []string) int {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tURL\tAUTH")
+	_, _ = fmt.Fprintln(tw, "NAME\tURL\tAUTH")
 	for name, server := range cfg.Servers {
 		auth := "-"
 		switch {
@@ -175,9 +175,9 @@ func runMCPList(args []string) int {
 		case len(server.Headers) > 0:
 			auth = "headers"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, server.URL, auth)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", name, server.URL, auth)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	return 0
 }

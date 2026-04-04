@@ -37,18 +37,18 @@ func main() {
 	// Setup git worktree isolation unless explicitly disabled
 	worktreePath := absCwd
 	var worktreeMgr *backend.WorktreeManager
-	
+
 	if !*noWorktree {
 		worktreeDir := filepath.Join(filepath.Dir(absCwd), "forge-worktrees")
 		worktreeMgr = backend.NewWorktreeManager(absCwd, worktreeDir)
-		
+
 		isolatedPath, err := worktreeMgr.EnsureWorktree(*sessionID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fatal: create worktree: %v\n", err)
 			os.Exit(1)
 		}
 		worktreePath = isolatedPath
-		
+
 		// Register cleanup on exit
 		defer func() {
 			if err := worktreeMgr.RemoveWorktree(*sessionID); err != nil {
@@ -96,7 +96,7 @@ func loadEnv(dir string) {
 		if err != nil {
 			continue
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
@@ -111,7 +111,7 @@ func loadEnv(dir string) {
 			key := strings.TrimSpace(line[:eq])
 			val := strings.TrimSpace(line[eq+1:])
 			if _, exists := os.LookupEnv(key); !exists {
-				os.Setenv(key, val)
+				_ = os.Setenv(key, val)
 			}
 		}
 		return

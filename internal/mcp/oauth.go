@@ -109,7 +109,7 @@ func (o *OAuthClient) fullAuthFlow(ctx context.Context, mcpURL string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("start callback listener: %w", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
@@ -148,7 +148,7 @@ func (o *OAuthClient) discoverAuthServer(mcpURL string) (string, error) {
 	prmURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource%s", parsed.Scheme, parsed.Host, parsed.Path)
 	resp, err := o.httpClient.Get(prmURL)
 	if err == nil {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode == http.StatusOK {
 			var prm ProtectedResourceMetadata
 			if err := json.NewDecoder(resp.Body).Decode(&prm); err == nil && len(prm.AuthorizationServers) > 0 {
@@ -167,7 +167,7 @@ func (o *OAuthClient) discoverAuthServer(mcpURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("probe MCP endpoint: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		return "", fmt.Errorf("expected 401 from MCP endpoint, got %d", resp.StatusCode)
@@ -187,9 +187,7 @@ func parseResourceMetadataURL(header string) (string, error) {
 	// Parse: Bearer resource_metadata="https://..."
 	for _, part := range strings.Split(header, ",") {
 		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "Bearer ") {
-			part = strings.TrimPrefix(part, "Bearer ")
-		}
+		part = strings.TrimPrefix(part, "Bearer ")
 		if strings.HasPrefix(part, "resource_metadata=") {
 			val := strings.TrimPrefix(part, "resource_metadata=")
 			val = strings.Trim(val, "\"")
@@ -215,7 +213,7 @@ func (o *OAuthClient) fetchAuthServerMetadata(authServerURL string) (*AuthServer
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", wellKnown, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -254,7 +252,7 @@ func (o *OAuthClient) registerClient(metadata *AuthServerMetadata, redirectURI s
 	if err != nil {
 		return "", "", fmt.Errorf("DCR request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -329,7 +327,7 @@ func (o *OAuthClient) authorizeWithPKCE(ctx context.Context, metadata *AuthServe
 		if errParam := r.URL.Query().Get("error"); errParam != "" {
 			desc := r.URL.Query().Get("error_description")
 			errCh <- fmt.Errorf("auth error: %s: %s", errParam, desc)
-			fmt.Fprintf(w, "Authorization failed: %s\nYou can close this window.", desc)
+			_, _ = fmt.Fprintf(w, "Authorization failed: %s\nYou can close this window.", desc)
 			return
 		}
 		code := r.URL.Query().Get("code")
@@ -339,12 +337,12 @@ func (o *OAuthClient) authorizeWithPKCE(ctx context.Context, metadata *AuthServe
 			return
 		}
 		codeCh <- code
-		fmt.Fprintf(w, "Authorization successful! You can close this window.")
+		_, _ = fmt.Fprintf(w, "Authorization successful! You can close this window.")
 	})
 
 	srv := &http.Server{Handler: mux}
-	go srv.Serve(listener)
-	defer srv.Close()
+	go func() { _ = srv.Serve(listener) }()
+	defer func() { _ = srv.Close() }()
 
 	var code string
 	select {
@@ -375,7 +373,7 @@ func (o *OAuthClient) exchangeCode(metadata *AuthServerMetadata, clientID, clien
 	if err != nil {
 		return nil, fmt.Errorf("token exchange: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -421,7 +419,7 @@ func (o *OAuthClient) refreshToken(metadata *AuthServerMetadata, entry *TokenEnt
 	if err != nil {
 		return nil, fmt.Errorf("refresh request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

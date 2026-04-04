@@ -42,7 +42,7 @@ func (s *Store) Append(sessionID string, msg types.SessionMessage) error {
 	if err != nil {
 		return fmt.Errorf("open session file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Write JSON line
 	if err := json.NewEncoder(f).Encode(msg); err != nil {
@@ -69,7 +69,7 @@ func (s *Store) Load(sessionID string) ([]types.SessionMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open session file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var messages []types.SessionMessage
 	scanner := bufio.NewScanner(f)
