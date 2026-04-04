@@ -60,3 +60,22 @@ This file contains self-improvement learnings from agent sessions. The agent aut
 - The task manager is still set via package-level function (SetTaskManager) - could be cleaner with ToolContext injection but that would be a larger refactor
 - Sub-agent output only captures 'text' events - might want tool_use/error events too for debugging
 
+## Session Reflection - 2026-04-04 13:14
+
+**Summary:** Diagnosed and fixed broken WebSearch tool. Root cause: DuckDuckGo Instant Answer API is not a search engine (knowledge graph only) and now returns 202 for bot detection. Replaced with Anthropic server-side web_search via sub-call pattern (matching Claude Code's approach).
+
+**Mistakes & Improvements:**
+- Initially tried to inject web_search as a server-side tool directly into the main conversation loop, which would have required changes to types, provider, and loop. Pivoted to Claude Code's cleaner pattern after reading their source.
+- Wrote dead helper code (tryParseSearchResults) that wasn't needed — caught it during cleanup but should have thought more before writing.
+
+**Successful Patterns:**
+- Checked Claude Code's source to understand the established pattern before committing to an implementation
+- Properly tested the DDG API empirically to confirm the root cause (HTTP 202, empty results for real queries)
+- Clean revert of the over-engineered approach using git checkout before re-implementing the simpler pattern
+- ASCII art diagram in the code comment for the sub-call flow
+
+**Future Suggestions:**
+- When implementing features that interact with external APIs (like search), check how Claude Code handles it first — the codebase is at ~/Projects/claude-code/
+- The Anthropic SDK at v1.27.1 supports web_search_20250305 and web_search_20260209 server tools. Use the 20260209 variant.
+- For server-side tools, prefer the sub-call pattern (client tool wrapping a server tool) over injecting server tools into the main loop — keeps history clean and allows using cheaper models.
+
