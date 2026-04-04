@@ -86,7 +86,7 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	// Optional fields
 	var tools, disallowedTools []string
 	model := ""
-	maxTurns := 0
+	maxTurns := -1 // sentinel: not set by caller
 
 	if t, ok := input["tools"].([]interface{}); ok {
 		tools = make([]string, len(t))
