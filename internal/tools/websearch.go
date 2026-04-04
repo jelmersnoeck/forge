@@ -127,6 +127,8 @@ func searchViaAnthropic(ctx context.Context, apiKey, query string, numResults in
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
 	// Use haiku for the search sub-call — fast and cheap.
+	// AllowedCallers must include "direct" because most models don't support
+	// "programmatic" tool calling for server-side tools like web_search.
 	msg, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.ModelClaudeHaiku4_5,
 		MaxTokens: 1024,
@@ -140,7 +142,8 @@ func searchViaAnthropic(ctx context.Context, apiKey, query string, numResults in
 		},
 		Tools: []anthropic.ToolUnionParam{
 			{OfWebSearchTool20260209: &anthropic.WebSearchTool20260209Param{
-				MaxUses: anthropic.Int(int64(numResults)),
+				MaxUses:        anthropic.Int(int64(numResults)),
+				AllowedCallers: []string{"direct"},
 			}},
 		},
 		ToolChoice: anthropic.ToolChoiceUnionParam{
