@@ -14,10 +14,12 @@ func TestAssemble_BasePrompt(t *testing.T) {
 	bundle := types.ContextBundle{}
 	blocks := Assemble(bundle, "/home/troy/greendale")
 
-	// Should have base prompt + env info merged into one block
+	// Should have base prompt + spec prompt + env info merged into one block
 	r.GreaterOrEqual(len(blocks), 1)
 	r.Contains(blocks[0].Text, "Coding assistant")
 	r.Contains(blocks[0].Text, "/home/troy/greendale")
+	r.Contains(blocks[0].Text, "Spec-Driven Development")
+	r.Contains(blocks[0].Text, "forge/specs")
 }
 
 func TestAssemble_ClaudeMD(t *testing.T) {

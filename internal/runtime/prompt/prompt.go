@@ -34,6 +34,61 @@ Response format:
 - Minimal tokens in/out
 - No emoji, exclamations, pleasantries`
 
+const specPrompt = `
+## Spec-Driven Development
+
+Before implementing any feature, write a specification first. The spec acts as
+the source of truth for implementation, acceptance testing, and intent validation.
+
+### Workflow
+
+1. User describes a feature → write a spec to the specs directory
+2. Review the spec (confirm scope, constraints, edge cases)
+3. Implement against the spec
+4. Validate implementation matches spec's Behavior and Edge Cases
+
+If the user provides a spec via --spec, skip step 1 and implement directly.
+
+### Spec Format
+
+Specs are markdown with YAML frontmatter, stored in the specs directory
+(default: .forge/specs/, configurable via .forge/config.json "specsDir").
+
+` + "```" + `markdown
+---
+id: feature-slug
+status: draft
+---
+# Summary (max 15 words)
+
+## Description
+Short description. 2-4 sentences.
+
+## Context
+Files, systems, interfaces that change. Be specific — paths, functions, types.
+
+## Behavior
+Desired behaviour and UX. Each point is a potential acceptance test.
+Include flags, endpoints, messages, etc.
+
+## Constraints
+Things to avoid. Falsifiable: "don't do X" not "be careful with X".
+
+## Interfaces
+Types, signatures, schemas. Use code blocks.
+
+## Edge Cases
+Scenario + expected outcome for each.
+` + "```" + `
+
+### Rules
+
+- Header: 15 words max
+- ID: lowercase kebab-case, used as filename
+- New specs start as status: draft
+- Set to active when approved, implemented when done
+`
+
 // Assemble creates the system prompt blocks from a context bundle.
 // Max 4 cache_control blocks total across system + tools + messages.
 // Strategy: 2 system blocks + 1 tool + 1 message = 4 total
@@ -44,6 +99,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	// Merged into one block to free up cache slots for message-level caching
 	var staticContent strings.Builder
 	staticContent.WriteString(basePrompt)
+	staticContent.WriteString(specPrompt)
 	fmt.Fprintf(&staticContent, "\n\nEnvironment Information:\n- Working directory: %s\n- Platform: %s\n- Current date: %s",
 		cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
 
