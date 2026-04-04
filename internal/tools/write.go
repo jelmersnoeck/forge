@@ -44,6 +44,10 @@ func writeHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult
 		return types.ToolResult{IsError: true}, fmt.Errorf("content is required")
 	}
 
+	if isEnvFile(filePath) {
+		return envFileError(filePath), nil
+	}
+
 	// Create parent directories
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {

@@ -57,6 +57,11 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 		}, nil
 	}
 
+	// Check for .env file access
+	if target := commandAccessesEnvFile(command); target != "" {
+		return envFileError(target), nil
+	}
+
 	timeout := 0
 	if t, ok := input["timeout"].(float64); ok {
 		timeout = int(t)
@@ -89,13 +94,13 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 	// Build response message
 	var responseText strings.Builder
 	responseText.WriteString(fmt.Sprintf("Task created successfully:\n%s\n\n", resultJSON))
-	
+
 	// Warn if no timeout is set for potentially long-running commands
 	if timeout == 0 {
 		responseText.WriteString("⚠️  WARNING: This task has no timeout and may run indefinitely if stuck.\n")
 		responseText.WriteString("   Consider setting a timeout (e.g., timeout: 300 for 5 minutes) or use TaskStop() if needed.\n\n")
 	}
-	
+
 	responseText.WriteString(fmt.Sprintf("Use TaskGet(\"%s\") to check status or TaskOutput(\"%s\") to retrieve output when complete.", task.ID, task.ID))
 
 	return types.ToolResult{

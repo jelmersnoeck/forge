@@ -80,6 +80,11 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		return types.ToolResult{IsError: true}, fmt.Errorf("command is required")
 	}
 
+	// Check for .env file access
+	if target := commandAccessesEnvFile(command); target != "" {
+		return envFileError(target), nil
+	}
+
 	// Check for interactive commands
 	if warning := checkInteractiveCommand(command); warning != "" {
 		return types.ToolResult{

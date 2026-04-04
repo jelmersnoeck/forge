@@ -67,6 +67,11 @@ func grepHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		searchPath = p
 	}
 
+	// Block direct .env file access
+	if isEnvFile(searchPath) {
+		return envFileError(searchPath), nil
+	}
+
 	outputMode := "files_with_matches"
 	if om, ok := input["output_mode"].(string); ok {
 		outputMode = om
@@ -98,6 +103,9 @@ func grepHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	if glob, ok := input["glob"].(string); ok && glob != "" {
 		args = append(args, "--glob", glob)
 	}
+
+	// Always exclude .env files from search results
+	args = append(args, "--glob", "!.env", "--glob", "!.env.*")
 
 	// Pattern and path
 	args = append(args, pattern, searchPath)
