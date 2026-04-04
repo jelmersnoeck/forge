@@ -59,6 +59,31 @@ func TestReadHandler_AllowsNonEnvFile(t *testing.T) {
 	r.Contains(result.Content[0].Text, "key: value")
 }
 
+func TestReadHandler_AllowsEnvExample(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+
+	tests := map[string]struct {
+		filename string
+	}{
+		".env.example":  {filename: ".env.example"},
+		".env.template": {filename: ".env.template"},
+		".env.sample":   {filename: ".env.sample"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.filename)
+			os.WriteFile(path, []byte("ANTHROPIC_API_KEY=your-key-here"), 0644)
+
+			result, err := readHandler(map[string]any{"file_path": path}, newTestCtx(t, dir))
+			r.NoError(err)
+			r.False(result.IsError, "should allow reading %s", tc.filename)
+			r.Contains(result.Content[0].Text, "your-key-here")
+		})
+	}
+}
+
 func TestWriteHandler_BlocksEnvFile(t *testing.T) {
 	r := require.New(t)
 	dir := t.TempDir()
@@ -151,7 +176,7 @@ func TestGlobHandler_FiltersEnvFiles(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create a mix of files
-	for _, name := range []string{".env", ".env.local", "config.yaml", "main.go"} {
+	for _, name := range []string{".env", ".env.local", ".env.example", "config.yaml", "main.go"} {
 		os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644)
 	}
 
@@ -160,7 +185,16 @@ func TestGlobHandler_FiltersEnvFiles(t *testing.T) {
 	r.False(result.IsError)
 
 	output := result.Content[0].Text
-	r.NotContains(output, ".env")
+	lines := strings.Split(output, "\n")
+
+	// .env and .env.local must be filtered out
+	for _, line := range lines {
+		r.False(line == ".env", "glob should not return .env")
+		r.False(line == ".env.local", "glob should not return .env.local")
+	}
+
+	// .env.example, config.yaml, main.go should be present
+	r.Contains(output, ".env.example")
 	r.Contains(output, "config.yaml")
 	r.Contains(output, "main.go")
 }
@@ -181,11 +215,29 @@ func TestGrepHandler_BlocksEnvFilePath(t *testing.T) {
 	r.Contains(result.Content[0].Text, "blocked")
 }
 
+func TestGrepHandler_AllowsEnvExampleDirectly(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+
+	examplePath := filepath.Join(dir, ".env.example")
+	os.WriteFile(examplePath, []byte("ANTHROPIC_API_KEY=your-key-here"), 0644)
+
+	result, err := grepHandler(map[string]any{
+		"pattern":     "ANTHROPIC",
+		"path":        examplePath,
+		"output_mode": "content",
+	}, newTestCtx(t, dir))
+	r.NoError(err)
+	r.False(result.IsError, "should allow grepping .env.example directly")
+	r.Contains(result.Content[0].Text, "your-key-here")
+}
+
 func TestGrepHandler_ExcludesEnvFromDirectorySearch(t *testing.T) {
 	r := require.New(t)
 	dir := t.TempDir()
 
 	os.WriteFile(filepath.Join(dir, ".env"), []byte("DEAN_PELTON=secret"), 0644)
+	os.WriteFile(filepath.Join(dir, ".env.local"), []byte("DEAN_PELTON=also_secret"), 0644)
 	os.WriteFile(filepath.Join(dir, "config.go"), []byte("DEAN_PELTON=public"), 0644)
 
 	result, err := grepHandler(map[string]any{
@@ -195,12 +247,12 @@ func TestGrepHandler_ExcludesEnvFromDirectorySearch(t *testing.T) {
 	}, newTestCtx(t, dir))
 	r.NoError(err)
 
-	// Should find config.go but not .env
 	output := result.Content[0].Text
+	// .env contents must not appear (ripgrep skips hidden + explicit exclusion)
 	r.NotContains(output, "secret")
-	if !result.IsError {
-		r.Contains(output, "public")
-	}
+	// config.go should be found
+	r.False(result.IsError)
+	r.Contains(output, "public")
 }
 
 func TestTaskCreate_BlocksEnvFile(t *testing.T) {

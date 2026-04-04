@@ -104,7 +104,10 @@ func grepHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		args = append(args, "--glob", glob)
 	}
 
-	// Always exclude .env files from search results
+	// Ripgrep skips hidden files by default, so .env files are already
+	// excluded from directory searches. Direct .env path access is guarded
+	// by the isEnvFile check above. We add explicit exclusions as
+	// defense-in-depth in case hidden file search gets enabled upstream.
 	args = append(args, "--glob", "!.env", "--glob", "!.env.*")
 
 	// Pattern and path

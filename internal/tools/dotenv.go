@@ -12,14 +12,38 @@ import (
 // .env file. No overrides, no exceptions, no "but I really need it".
 const envFileErrMsg = "access to .env files is blocked — these files contain secrets and must not be read, written, or modified by tools"
 
-// isEnvFile reports whether path points to a .env file.
+// envFileSafeSuffixes are .env.* variants that contain no real secrets —
+// they exist to document required keys and are meant to be committed.
+var envFileSafeSuffixes = []string{
+	".example",
+	".template",
+	".sample",
+}
+
+// isEnvFile reports whether path points to a .env file that contains secrets.
 //
-// Matches: .env, .env.local, .env.production, .env.development, .env.test,
-// .env.staging, .env.example, .env.sample, .env.template, and any other
-// .env.* variant. The check is purely on the basename.
+// Blocked:  .env, .env.local, .env.production, .env.development, .env.test,
+//
+//	.env.staging, and any other .env.* variant.
+//
+// Allowed:  .env.example, .env.template, .env.sample — these are
+//
+//	documentation files meant to be committed.
 func isEnvFile(path string) bool {
 	base := filepath.Base(path)
-	return base == ".env" || strings.HasPrefix(base, ".env.")
+	switch {
+	case base == ".env":
+		return true
+	case strings.HasPrefix(base, ".env."):
+		for _, safe := range envFileSafeSuffixes {
+			if strings.HasSuffix(base, safe) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // envFileError returns the standard ToolResult error for .env access attempts.
