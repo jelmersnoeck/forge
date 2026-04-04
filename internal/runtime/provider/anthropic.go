@@ -24,6 +24,18 @@ func NewAnthropic(apiKey string) *AnthropicProvider {
 	}
 }
 
+// toCacheControl converts our CacheControl type to the Anthropic SDK param.
+func toCacheControl(cc *types.CacheControl) anthropic.CacheControlEphemeralParam {
+	param := anthropic.NewCacheControlEphemeralParam()
+	switch cc.TTL {
+	case "1h":
+		param.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+	case "5m":
+		param.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+	}
+	return param
+}
+
 // Chat creates a streaming messages request and returns a channel of deltas.
 func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	system := make([]anthropic.TextBlockParam, len(req.System))
@@ -31,22 +43,9 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		textBlock := anthropic.TextBlockParam{
 			Text: block.Text,
 		}
-
 		if block.CacheControl != nil {
-			cacheControl := anthropic.NewCacheControlEphemeralParam()
-
-			// Set TTL if specified (1h for extended cache, default is 5m)
-			if block.CacheControl.TTL == "1h" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
-			} else if block.CacheControl.TTL == "5m" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
-			}
-			// Note: Scope (global) not yet supported in Go SDK v1.27.1
-			// The API supports it but CacheControlEphemeralParam doesn't expose it
-
-			textBlock.CacheControl = cacheControl
+			textBlock.CacheControl = toCacheControl(block.CacheControl)
 		}
-
 		system[i] = textBlock
 	}
 
@@ -56,34 +55,31 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		for j, block := range msg.Content {
 			switch block.Type {
 			case "text":
-				// Create TextBlockParam with optional cache control
 				textBlock := anthropic.TextBlockParam{
 					Text: block.Text,
 				}
-				
-				// Add cache control if specified (for message-level caching)
 				if block.CacheControl != nil {
-					cacheControl := anthropic.NewCacheControlEphemeralParam()
-					if block.CacheControl.TTL == "1h" {
-						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
-					} else if block.CacheControl.TTL == "5m" {
-						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
-					}
-					textBlock.CacheControl = cacheControl
+					textBlock.CacheControl = toCacheControl(block.CacheControl)
 				}
-				
-				// Wrap in ContentBlockParamUnion
 				content[j] = anthropic.ContentBlockParamUnion{
 					OfText: &textBlock,
 				}
 			case "tool_use":
-				content[j] = anthropic.NewToolUseBlock(block.ID, block.Input, block.Name)
+				toolUse := anthropic.NewToolUseBlock(block.ID, block.Input, block.Name)
+				if block.CacheControl != nil && toolUse.OfToolUse != nil {
+					toolUse.OfToolUse.CacheControl = toCacheControl(block.CacheControl)
+				}
+				content[j] = toolUse
 			case "tool_result":
 				resultJSON, err := json.Marshal(block.Content)
 				if err != nil {
 					return nil, fmt.Errorf("marshal tool result: %w", err)
 				}
-				content[j] = anthropic.NewToolResultBlock(block.ToolUseID, string(resultJSON), false)
+				toolResult := anthropic.NewToolResultBlock(block.ToolUseID, string(resultJSON), false)
+				if block.CacheControl != nil && toolResult.OfToolResult != nil {
+					toolResult.OfToolResult.CacheControl = toCacheControl(block.CacheControl)
+				}
+				content[j] = toolResult
 			}
 		}
 
@@ -112,16 +108,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 
 		// Set cache control if provided (tools rarely change, so cache them)
 		if tool.CacheControl != nil {
-			cacheControl := anthropic.NewCacheControlEphemeralParam()
-
-			// Set TTL if specified
-			if tool.CacheControl.TTL == "1h" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
-			} else if tool.CacheControl.TTL == "5m" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
-			}
-
-			toolUnion.OfTool.CacheControl = cacheControl
+			toolUnion.OfTool.CacheControl = toCacheControl(tool.CacheControl)
 		}
 
 		tools[i] = toolUnion
