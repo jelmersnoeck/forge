@@ -151,6 +151,8 @@ func NewDefaultRegistry() *Registry {
 	r.Register(TaskListTool())
 	r.Register(TaskStopTool())
 	r.Register(TaskOutputTool())
+	// PR tools
+	r.Register(PRCreateTool())
 	// Sub-agent tools
 	r.Register(AgentTool())
 	r.Register(AgentGetTool())
