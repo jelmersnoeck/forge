@@ -39,6 +39,13 @@ var modelPricing = map[string]Pricing{
 		CacheWrite: 3.75,
 		CacheRead:  0.30,
 	},
+	// Claude Opus 4 (estimated from actual usage data)
+	"claude-opus-4-6": {
+		Input:      5.00,
+		Output:     25.00,
+		CacheWrite: 6.25,
+		CacheRead:  0.50,
+	},
 	// Claude 3 Opus
 	"claude-3-opus-20240229": {
 		Input:      15.00,
@@ -60,8 +67,15 @@ var modelPricing = map[string]Pricing{
 		CacheWrite: 0.30,
 		CacheRead:  0.03,
 	},
-	// Claude 3.5 Haiku
+	// Claude 3.5 Haiku (2024-10-22)
 	"claude-3-5-haiku-20241022": {
+		Input:      1.00,
+		Output:     5.00,
+		CacheWrite: 1.25,
+		CacheRead:  0.10,
+	},
+	// Claude Haiku 4.5 (2025-10-01)
+	"claude-haiku-4-5-20251001": {
 		Input:      1.00,
 		Output:     5.00,
 		CacheWrite: 1.25,
@@ -71,13 +85,22 @@ var modelPricing = map[string]Pricing{
 
 // Calculate computes the cost in USD for the given token usage and model.
 // Returns 0.0 if model is unknown.
+//
+// Note: Based on ccusage (the standard Claude usage tracking tool), all four token
+// types (input, output, cache_creation, cache_read) are treated as ADDITIVE, meaning:
+// - input_tokens = non-cached input tokens
+// - cache_creation_input_tokens = tokens written to cache (charged separately)
+// - cache_read_input_tokens = tokens read from cache (charged separately)
+// - Total billable input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+//
+// This interpretation matches how ccusage calculates costs and avoids double-counting.
 func Calculate(model string, usage types.TokenUsage) float64 {
 	pricing, ok := modelPricing[model]
 	if !ok {
 		return 0.0
 	}
 
-	// Convert tokens to millions and multiply by per-million-token costs
+	// All token types are charged separately (additive model)
 	inputCost := float64(usage.InputTokens) / 1_000_000.0 * pricing.Input
 	outputCost := float64(usage.OutputTokens) / 1_000_000.0 * pricing.Output
 	cacheWriteCost := float64(usage.CacheCreationTokens) / 1_000_000.0 * pricing.CacheWrite

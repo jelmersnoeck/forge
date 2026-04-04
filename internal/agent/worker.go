@@ -54,7 +54,7 @@ func (w *Worker) Run(ctx context.Context) {
 	store := session.NewStore(w.sessionsDir)
 
 	// Pick model: settings override if it's a real API model ID
-	const defaultModel = "claude-sonnet-4-5-20250929"
+	const defaultModel = "claude-opus-4-6"
 	model := defaultModel
 	if m := bundle.Settings.Model; m != "" && strings.HasPrefix(m, "claude-") {
 		model = m
