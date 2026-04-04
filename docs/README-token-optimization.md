@@ -55,7 +55,7 @@ Deep dive into what makes claude-code's caching implementation excellent.
 **Goal:** 70% cost reduction with minimal code changes
 
 - [ ] Add TTL and Scope to CacheControl type
-- [ ] Enable 1h TTL on CLAUDE.md blocks
+- [ ] Enable 1h TTL on AGENTS.md blocks
 - [ ] Update TokenUsage field names to match API
 - [ ] Add simple cache break detection
 - [ ] Test and validate cache hits
@@ -186,7 +186,7 @@ You've successfully implemented token optimization when:
 **Symptoms:** Cache works but costs still high
 
 **Solutions:**
-- Check if caching right content (CLAUDE.md, not env info)
+- Check if caching right content (AGENTS.md, not env info)
 - Verify cache scope is appropriate (global vs session)
 - Look for uncached tool results accumulation
 - Consider enabling API-side microcompaction

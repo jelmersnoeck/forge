@@ -14,7 +14,7 @@ through a unified binary with subcommands.
 - `internal/agent/` — agent HTTP server, single-session hub, conversation worker
 - `internal/runtime/loop/` — agentic conversation loop (tool execution cycle)
 - `internal/runtime/provider/` — LLM provider interface + Anthropic implementation
-- `internal/runtime/context/` — context loader (CLAUDE.md, AGENTS.md, specs, skills, agents, rules)
+- `internal/runtime/context/` — context loader (AGENTS.md, specs, skills, agents, rules)
 - `internal/runtime/prompt/` — system prompt assembly from context bundles
 - `internal/runtime/session/` — JSONL session persistence
 - `internal/runtime/cost/` — cost calculation + SQLite tracker
@@ -48,7 +48,7 @@ through a unified binary with subcommands.
 ## Constraints
 - No public Go API — all packages under `internal/`
 - No platform-specific code in server — `source` is free-form, `metadata` is opaque
-- Model aliases from `~/.claude/settings.json` (e.g. `opus[1m]`) must be filtered;
+- Model aliases from `~/.forge/settings.json` (e.g. `opus[1m]`) must be filtered;
   only values starting with `claude-` pass through to Anthropic API
 - `tool_result` blocks must immediately follow `tool_use` in message history
 - Deterministic tool schema ordering required for prompt cache stability

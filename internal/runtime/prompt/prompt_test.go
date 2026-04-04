@@ -24,18 +24,18 @@ func TestAssemble_BasePrompt(t *testing.T) {
 	r.Contains(blocks[0].Text, "MUST reconcile the spec")
 }
 
-func TestAssemble_ClaudeMD(t *testing.T) {
+func TestAssemble_AgentsMD_Instructions(t *testing.T) {
 	r := require.New(t)
 
 	bundle := types.ContextBundle{
-		ClaudeMD: []types.ClaudeMDEntry{
+		AgentsMD: []types.AgentsMDEntry{
 			{
-				Path:    "/home/troy/.claude/CLAUDE.md",
+				Path:    "/home/troy/AGENTS.md",
 				Content: "# Troy Barnes Rules\n\nAlways be cool. Cool cool cool.",
 				Level:   "user",
 			},
 			{
-				Path:    "/home/troy/greendale/CLAUDE.md",
+				Path:    "/home/troy/greendale/AGENTS.md",
 				Content: "# Study Group Guidelines\n\nNo Pierce.",
 				Level:   "project",
 			},
@@ -44,20 +44,41 @@ func TestAssemble_ClaudeMD(t *testing.T) {
 
 	blocks := Assemble(bundle, "/home/troy/greendale")
 
-	// Find the CLAUDE.md block (contains system-reminder and CLAUDE.md content)
-	var claudeBlock *types.SystemBlock
+	// Find the instructions block (static block with system-reminder)
+	var instructionsBlock *types.SystemBlock
 	for _, block := range blocks {
 		if block.CacheControl != nil && strings.Contains(block.Text, "Troy Barnes Rules") {
-			claudeBlock = &block
+			instructionsBlock = &block
 			break
 		}
 	}
 
-	r.NotNil(claudeBlock)
-	r.Contains(claudeBlock.Text, "Troy Barnes Rules")
-	r.Contains(claudeBlock.Text, "Study Group Guidelines")
-	r.Contains(claudeBlock.Text, "<system-reminder>")
-	r.Equal("ephemeral", claudeBlock.CacheControl.Type)
+	r.NotNil(instructionsBlock)
+	r.Contains(instructionsBlock.Text, "Troy Barnes Rules")
+	r.Contains(instructionsBlock.Text, "Study Group Guidelines")
+	r.Contains(instructionsBlock.Text, "<system-reminder>")
+	r.Equal("ephemeral", instructionsBlock.CacheControl.Type)
+}
+
+func TestAssemble_AgentsMD_Learnings(t *testing.T) {
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		AgentsMD: []types.AgentsMDEntry{
+			{
+				Path:    "/test/.forge/learnings/20260404-troy-session.md",
+				Content: "# Troy session\n\nLearned plumbing.",
+				Level:   "project",
+			},
+		},
+	}
+
+	blocks := Assemble(bundle, "/test")
+
+	// Learnings go into the dynamic (bundled) block
+	r.GreaterOrEqual(len(blocks), 2)
+	r.Contains(blocks[1].Text, "Self-improvement learnings")
+	r.Contains(blocks[1].Text, "Troy session")
 }
 
 func TestAssemble_Rules(t *testing.T) {
@@ -66,7 +87,7 @@ func TestAssemble_Rules(t *testing.T) {
 	bundle := types.ContextBundle{
 		Rules: []types.RuleEntry{
 			{
-				Path:    "/home/troy/greendale/.claude/rules/paintball.md",
+				Path:    "/home/troy/greendale/.forge/rules/paintball.md",
 				Content: "No paintball during finals week.",
 				Level:   "project",
 			},
@@ -163,11 +184,11 @@ func TestAssemble_AllFeatures(t *testing.T) {
 	r := require.New(t)
 
 	bundle := types.ContextBundle{
-		ClaudeMD: []types.ClaudeMDEntry{
-			{Path: "/test/CLAUDE.md", Content: "Test instructions", Level: "project"},
+		AgentsMD: []types.AgentsMDEntry{
+			{Path: "/test/AGENTS.md", Content: "Test instructions", Level: "project"},
 		},
 		Rules: []types.RuleEntry{
-			{Path: "/test/.claude/rules/test.md", Content: "Test rule", Level: "project"},
+			{Path: "/test/.forge/rules/test.md", Content: "Test rule", Level: "project"},
 		},
 		SkillDescriptions: []types.SkillDescription{
 			{Name: "test-skill", Description: "Test", IsUserInvocable: true},
@@ -179,11 +200,11 @@ func TestAssemble_AllFeatures(t *testing.T) {
 
 	blocks := Assemble(bundle, "/test")
 
-	// Should have: static(base+env+CLAUDE.md), bundled(rules+skills+agents) = 2 blocks
+	// Should have: static(base+env+instructions), bundled(rules+skills+agents) = 2 blocks
 	// This frees up cache slots for message-level caching (system 2 + tools 1 + messages 1 = 4)
 	r.Equal(2, len(blocks))
 
-	// Static block should contain base, env, and CLAUDE.md
+	// Static block should contain base, env, and instructions
 	staticBlock := blocks[0]
 	r.Contains(staticBlock.Text, "Coding assistant")
 	r.Contains(staticBlock.Text, "Working directory: /test")
@@ -202,14 +223,12 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 	r := require.New(t)
 
 	bundle := types.ContextBundle{
-		ClaudeMD: []types.ClaudeMDEntry{
-			{Path: "/test/CLAUDE.md", Content: "Test CLAUDE.md", Level: "project"},
-		},
 		AgentsMD: []types.AgentsMDEntry{
 			{Path: "/test/AGENTS.md", Content: "Test AGENTS.md", Level: "project"},
+			{Path: "/test/.forge/learnings/session.md", Content: "Test learnings", Level: "project"},
 		},
 		Rules: []types.RuleEntry{
-			{Path: "/test/.claude/rules/test.md", Content: "Test rule", Level: "project"},
+			{Path: "/test/.forge/rules/test.md", Content: "Test rule", Level: "project"},
 		},
 		SkillDescriptions: []types.SkillDescription{
 			{Name: "test-skill", Description: "Test", IsUserInvocable: true},
@@ -221,7 +240,7 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 
 	blocks := Assemble(bundle, "/test")
 
-	// Should have: static(base+env+CLAUDE.md), bundled(AGENTS.md+rules+skills+agents) = 2 blocks
+	// Should have: static(base+env+instructions), bundled(learnings+rules+skills+agents) = 2 blocks
 	// This leaves room for: system(2) + tools(1) + messages(1) = 4 cache_control blocks total
 	blockNames := []string{"static", "bundled"}
 	r.Equal(len(blockNames), len(blocks), "expected %d blocks", len(blockNames))
@@ -234,7 +253,7 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 
 	// Static block should have global scope (shared across sessions)
 	staticBlock := blocks[0]
-	r.Contains(staticBlock.Text, "CLAUDE.md")
+	r.Contains(staticBlock.Text, "AGENTS.md")
 	r.Equal("global", staticBlock.CacheControl.Scope)
 }
 

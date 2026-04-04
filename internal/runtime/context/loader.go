@@ -1,4 +1,4 @@
-// Package context loads CLAUDE.md, skills, agents, rules, and settings.
+// Package context loads AGENTS.md, skills, agents, rules, and settings.
 package context
 
 import (
@@ -60,10 +60,13 @@ func (l *Loader) Load(sources []string) (types.ContextBundle, error) {
 }
 
 // LoadSkillContent reads the content of a skill by name.
+// Checks .forge/skills/ first, falls back to .claude/skills/ for backward compat.
 func (l *Loader) LoadSkillContent(name string) (string, error) {
-	// Search in user and project skill directories
+	home := os.Getenv("HOME")
 	searchPaths := []string{
-		filepath.Join(os.Getenv("HOME"), ".claude", "skills", name, "SKILL.md"),
+		filepath.Join(home, ".forge", "skills", name, "SKILL.md"),
+		filepath.Join(home, ".claude", "skills", name, "SKILL.md"),
+		filepath.Join(l.cwd, ".forge", "skills", name, "SKILL.md"),
 		filepath.Join(l.cwd, ".claude", "skills", name, "SKILL.md"),
 	}
 
@@ -77,22 +80,24 @@ func (l *Loader) LoadSkillContent(name string) (string, error) {
 	return "", fmt.Errorf("skill not found: %s", name)
 }
 
+// configDir returns the first existing directory from candidates,
+// or the first candidate if none exist. Provides .forge/ → .claude/ fallback.
+func configDir(candidates ...string) string {
+	for _, dir := range candidates {
+		if _, err := os.Stat(dir); err == nil {
+			return dir
+		}
+	}
+	return candidates[0]
+}
+
 func (l *Loader) loadUserContext(bundle *types.ContextBundle) error {
 	home := os.Getenv("HOME")
 	if home == "" {
-		return nil // No home directory, skip
+		return nil
 	}
 
-	claudeDir := filepath.Join(home, ".claude")
-
-	// Load user CLAUDE.md
-	if content, err := os.ReadFile(filepath.Join(home, "CLAUDE.md")); err == nil {
-		bundle.ClaudeMD = append(bundle.ClaudeMD, types.ClaudeMDEntry{
-			Path:    filepath.Join(home, "CLAUDE.md"),
-			Content: string(content),
-			Level:   "user",
-		})
-	}
+	forgeDir := configDir(filepath.Join(home, ".forge"), filepath.Join(home, ".claude"))
 
 	// Load user AGENTS.md
 	if content, err := os.ReadFile(filepath.Join(home, "AGENTS.md")); err == nil {
@@ -103,8 +108,8 @@ func (l *Loader) loadUserContext(bundle *types.ContextBundle) error {
 		})
 	}
 
-	// Load rules from ~/.claude/rules/
-	rulesDir := filepath.Join(claudeDir, "rules")
+	// Load rules from ~/.forge/rules/ (fallback: ~/.claude/rules/)
+	rulesDir := filepath.Join(forgeDir, "rules")
 	if entries, err := os.ReadDir(rulesDir); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
@@ -126,13 +131,13 @@ func (l *Loader) loadUserContext(bundle *types.ContextBundle) error {
 	}
 
 	// Load user settings
-	settingsPath := filepath.Join(claudeDir, "settings.json")
+	settingsPath := filepath.Join(forgeDir, "settings.json")
 	if err := l.mergeSettings(bundle, settingsPath); err != nil {
 		return err
 	}
 
 	// Discover skills
-	if err := l.discoverSkills(bundle, filepath.Join(claudeDir, "skills"), "user"); err != nil {
+	if err := l.discoverSkills(bundle, filepath.Join(forgeDir, "skills"), "user"); err != nil {
 		return err
 	}
 
@@ -140,23 +145,12 @@ func (l *Loader) loadUserContext(bundle *types.ContextBundle) error {
 }
 
 func (l *Loader) loadParentContext(bundle *types.ContextBundle) error {
-	// Walk up from cwd to root, loading CLAUDE.md from each directory
 	dir := l.cwd
-	root := filepath.Dir(l.cwd) // Start from parent of cwd
 
 	for {
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			break // Reached root
-		}
-
-		claudePath := filepath.Join(parent, "CLAUDE.md")
-		if content, err := os.ReadFile(claudePath); err == nil {
-			bundle.ClaudeMD = append(bundle.ClaudeMD, types.ClaudeMDEntry{
-				Path:    claudePath,
-				Content: string(content),
-				Level:   "parent",
-			})
+			break
 		}
 
 		agentsPath := filepath.Join(parent, "AGENTS.md")
@@ -168,8 +162,7 @@ func (l *Loader) loadParentContext(bundle *types.ContextBundle) error {
 			})
 		}
 
-		// Stop if we've reached root or gone past the original cwd parent
-		if parent == root || parent == "/" {
+		if parent == filepath.Dir(l.cwd) || parent == "/" {
 			break
 		}
 
@@ -180,27 +173,7 @@ func (l *Loader) loadParentContext(bundle *types.ContextBundle) error {
 }
 
 func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
-	// Load CLAUDE.md from cwd or .claude/
-	claudePath := filepath.Join(l.cwd, "CLAUDE.md")
-	if content, err := os.ReadFile(claudePath); err == nil {
-		bundle.ClaudeMD = append(bundle.ClaudeMD, types.ClaudeMDEntry{
-			Path:    claudePath,
-			Content: string(content),
-			Level:   "project",
-		})
-	} else {
-		// Try .claude/CLAUDE.md
-		claudePath = filepath.Join(l.cwd, ".claude", "CLAUDE.md")
-		if content, err := os.ReadFile(claudePath); err == nil {
-			bundle.ClaudeMD = append(bundle.ClaudeMD, types.ClaudeMDEntry{
-				Path:    claudePath,
-				Content: string(content),
-				Level:   "project",
-			})
-		}
-	}
-
-	// Load AGENTS.md from cwd or .claude/ (read-only — never written to by Reflect)
+	// Load AGENTS.md from cwd or .forge/ (fallback: .claude/)
 	agentsPath := filepath.Join(l.cwd, "AGENTS.md")
 	if content, err := os.ReadFile(agentsPath); err == nil {
 		bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
@@ -209,14 +182,22 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 			Level:   "project",
 		})
 	} else {
-		// Try .claude/AGENTS.md
-		agentsPath = filepath.Join(l.cwd, ".claude", "AGENTS.md")
+		agentsPath = filepath.Join(l.cwd, ".forge", "AGENTS.md")
 		if content, err := os.ReadFile(agentsPath); err == nil {
 			bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
 				Path:    agentsPath,
 				Content: string(content),
 				Level:   "project",
 			})
+		} else {
+			agentsPath = filepath.Join(l.cwd, ".claude", "AGENTS.md")
+			if content, err := os.ReadFile(agentsPath); err == nil {
+				bundle.AgentsMD = append(bundle.AgentsMD, types.AgentsMDEntry{
+					Path:    agentsPath,
+					Content: string(content),
+					Level:   "project",
+				})
+			}
 		}
 	}
 
@@ -225,10 +206,10 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 		return err
 	}
 
-	claudeDir := filepath.Join(l.cwd, ".claude")
+	forgeDir := configDir(filepath.Join(l.cwd, ".forge"), filepath.Join(l.cwd, ".claude"))
 
 	// Load rules
-	rulesDir := filepath.Join(claudeDir, "rules")
+	rulesDir := filepath.Join(forgeDir, "rules")
 	if entries, err := os.ReadDir(rulesDir); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
@@ -250,18 +231,18 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 	}
 
 	// Load project settings
-	settingsPath := filepath.Join(claudeDir, "settings.json")
+	settingsPath := filepath.Join(forgeDir, "settings.json")
 	if err := l.mergeSettings(bundle, settingsPath); err != nil {
 		return err
 	}
 
 	// Discover skills
-	if err := l.discoverSkills(bundle, filepath.Join(claudeDir, "skills"), "project"); err != nil {
+	if err := l.discoverSkills(bundle, filepath.Join(forgeDir, "skills"), "project"); err != nil {
 		return err
 	}
 
 	// Load agents
-	agentsDir := filepath.Join(claudeDir, "agents")
+	agentsDir := filepath.Join(forgeDir, "agents")
 	if entries, err := os.ReadDir(agentsDir); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
@@ -291,16 +272,6 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 }
 
 func (l *Loader) loadLocalContext(bundle *types.ContextBundle) error {
-	// Load CLAUDE.local.md
-	localPath := filepath.Join(l.cwd, "CLAUDE.local.md")
-	if content, err := os.ReadFile(localPath); err == nil {
-		bundle.ClaudeMD = append(bundle.ClaudeMD, types.ClaudeMDEntry{
-			Path:    localPath,
-			Content: string(content),
-			Level:   "local",
-		})
-	}
-
 	// Load AGENTS.local.md
 	agentsLocalPath := filepath.Join(l.cwd, "AGENTS.local.md")
 	if content, err := os.ReadFile(agentsLocalPath); err == nil {
@@ -311,8 +282,9 @@ func (l *Loader) loadLocalContext(bundle *types.ContextBundle) error {
 		})
 	}
 
-	// Load local settings
-	localSettingsPath := filepath.Join(l.cwd, ".claude", "settings.local.json")
+	// Load local settings (.forge/ first, fallback .claude/)
+	forgeDir := configDir(filepath.Join(l.cwd, ".forge"), filepath.Join(l.cwd, ".claude"))
+	localSettingsPath := filepath.Join(forgeDir, "settings.local.json")
 	if err := l.mergeSettings(bundle, localSettingsPath); err != nil {
 		return err
 	}

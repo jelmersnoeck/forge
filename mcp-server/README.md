@@ -116,7 +116,7 @@ The MCP server exposes all of Forge's built-in tools:
 ## Resources
 
 - `forge://readme` — Project README
-- `forge://claude` — CLAUDE.md instructions
+- `forge://agents` — AGENTS.md instructions and learnings
 
 ## Architecture
 

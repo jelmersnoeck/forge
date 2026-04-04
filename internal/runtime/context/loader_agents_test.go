@@ -40,7 +40,20 @@ func TestLoader_LoadAgentsMD(t *testing.T) {
 			wantCount: 1,
 			wantLevel: "project",
 		},
-		"project AGENTS.md in .claude dir": {
+		"project AGENTS.md in .forge dir": {
+			setupFunc: func(dir string) error {
+				forgeDir := filepath.Join(dir, ".forge")
+				if err := os.MkdirAll(forgeDir, 0755); err != nil {
+					return err
+				}
+				content := `# Agent Learnings from .forge dir`
+				return os.WriteFile(filepath.Join(forgeDir, "AGENTS.md"), []byte(content), 0644)
+			},
+			sources:   []string{"project"},
+			wantCount: 1,
+			wantLevel: "project",
+		},
+		"project AGENTS.md in .claude dir (backward compat)": {
 			setupFunc: func(dir string) error {
 				claudeDir := filepath.Join(dir, ".claude")
 				if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -64,17 +77,6 @@ Only for this specific directory.
 			sources:   []string{"local"},
 			wantCount: 1,
 			wantLevel: "local",
-		},
-		"both CLAUDE.md and AGENTS.md": {
-			setupFunc: func(dir string) error {
-				if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# Project instructions"), 0644); err != nil {
-					return err
-				}
-				return os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Agent learnings"), 0644)
-			},
-			sources:   []string{"project"},
-			wantCount: 1,
-			wantLevel: "project",
 		},
 	}
 

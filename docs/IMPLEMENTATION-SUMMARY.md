@@ -38,7 +38,7 @@ type CacheControl struct {
 
 ---
 
-### 2. Enable 1h TTL on CLAUDE.md Blocks
+### 2. Enable 1h TTL on AGENTS.md Blocks
 
 **File:** `internal/runtime/prompt/prompt.go`
 
@@ -54,11 +54,11 @@ CacheControl: &types.CacheControl{
 CacheControl: &types.CacheControl{
     Type:  "ephemeral",
     TTL:   "1h",      // Extended cache lifetime (default is 5min)
-    Scope: "global",  // Share cache across sessions (safe for CLAUDE.md)
+    Scope: "global",  // Share cache across sessions (safe for AGENTS.md)
 },
 ```
 
-**Impact:** CLAUDE.md content now cached for 1 hour instead of 5 minutes
+**Impact:** AGENTS.md content now cached for 1 hour instead of 5 minutes
 
 ---
 
@@ -333,7 +333,7 @@ See `docs/token-optimization-*.md` for full implementation guides.
 
 **Check:**
 - Look for "CACHE BREAK" warnings in output
-- Check if CLAUDE.md or tool definitions are changing
+- Check if AGENTS.md or tool definitions are changing
 - Verify model string is stable
 - Check if TTL is set to "1h" not "5m"
 
@@ -342,7 +342,7 @@ See `docs/token-optimization-*.md` for full implementation guides.
 **Symptom:** Cache works but costs still high
 
 **Solutions:**
-- Check what's being cached (should include CLAUDE.md)
+- Check what's being cached (should include AGENTS.md)
 - Look for uncached tool results accumulating
 - Consider implementing token estimation to track context size
 - May need API-side microcompaction (future feature)
@@ -363,7 +363,7 @@ See `docs/token-optimization-implementation.md` for full Phase 2 & 3 guides.
 ## Files Changed
 
 - `internal/types/types.go` - Added TTL and Scope to CacheControl
-- `internal/runtime/prompt/prompt.go` - Enabled 1h TTL on CLAUDE.md
+- `internal/runtime/prompt/prompt.go` - Enabled 1h TTL on AGENTS.md
 - `internal/runtime/provider/anthropic.go` - Map TTL to SDK
 - `internal/runtime/loop/loop.go` - Add cache break detection
 - `cmd/agent/main.go` - Add automatic worktree isolation

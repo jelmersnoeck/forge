@@ -13,13 +13,13 @@ Following claude-code's proven approach, we use all 4 cache slots efficiently:
 **Block 1: Static Content** (global scope, 1h TTL)
 - Base system prompt
 - Environment information (working directory, platform, date)
-- CLAUDE.md content (project/user instructions)
+- AGENTS.md content (project/user instructions)
 
 This block has `scope: "global"` to share cache across sessions for the same project.
 
 **Block 2: Dynamic Content** (session scope, 1h TTL)
 - AGENTS.md learnings
-- Rules from `.claude/rules/`
+- Rules from `.forge/rules/`
 - Skill descriptions
 - Agent definitions
 
@@ -45,8 +45,8 @@ This block changes when learnings are added, but caches well within a session.
 
 See `internal/runtime/prompt/prompt.go`:
 - `Assemble()` creates 2 blocks instead of the previous 3
-- Static content (base+env+CLAUDE.md) merged into one block
-- Dynamic content (AGENTS.md+rules+skills+agents) in second block
+- Static content (base+env+AGENTS.md instructions) merged into one block
+- Dynamic content (learnings+rules+skills+agents) in second block
 
 ### Tools
 

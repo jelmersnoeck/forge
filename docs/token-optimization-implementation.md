@@ -99,7 +99,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
         Text: envInfo,
     })
     
-    // CLAUDE.md content - CACHE THIS with 1h TTL and global scope
+    // AGENTS.md content - CACHE THIS with 1h TTL and global scope
     if len(bundle.ClaudeMD) > 0 {
         blocks = append(blocks, types.SystemBlock{
             Type: "text",
@@ -586,8 +586,8 @@ curl -X POST http://localhost:8080/messages \
 ### Test 2: Cache Break Detection
 
 ```bash
-# Modify CLAUDE.md between calls
-echo "# New rule" >> CLAUDE.md
+# Modify AGENTS.md between calls
+echo "# New rule" >> AGENTS.md
 
 # Next message should trigger cache break warning:
 # [CACHE BREAK] Call #3: 5000 → 0 tokens (system prompt changed)
@@ -611,7 +611,7 @@ export FORGE_DEBUG=1
 - [ ] Enhanced TokenUsage type with cache fields
 - [ ] CacheControl with TTL and Scope support
 - [ ] Provider extracts all usage fields
-- [ ] 1h TTL enabled on CLAUDE.md blocks
+- [ ] 1h TTL enabled on AGENTS.md blocks
 - [ ] Global scope on appropriate blocks
 - [ ] CacheTracker implementation
 - [ ] Cache break detection integrated

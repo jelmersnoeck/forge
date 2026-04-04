@@ -139,7 +139,7 @@ See `docs/token-optimization-implementation.md` for details.
 
 ```
 ✏️  internal/types/types.go              (CacheControl + TTL/Scope)
-✏️  internal/runtime/prompt/prompt.go    (1h TTL on CLAUDE.md)
+✏️  internal/runtime/prompt/prompt.go    (1h TTL on AGENTS.md)
 ✏️  internal/runtime/provider/anthropic.go (Map TTL to SDK)
 ✏️  internal/runtime/loop/loop.go        (Cache break detection)
 📄 test-caching.sh                       (Test script)

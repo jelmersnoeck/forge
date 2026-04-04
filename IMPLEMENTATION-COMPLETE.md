@@ -8,7 +8,7 @@ Implemented token caching optimizations from claude-code analysis **AND** fixed 
 
 **Changes:**
 - ✅ Added 1h TTL and global scope to CacheControl
-- ✅ Enabled 1h cache on CLAUDE.md blocks
+- ✅ Enabled 1h cache on AGENTS.md blocks
 - ✅ Mapped TTL to Anthropic SDK properly
 - ✅ Added cache break detection (warns on >5% drop + >2K tokens)
 - ✅ Comprehensive documentation (7 docs + quick reference)
@@ -45,7 +45,7 @@ Implemented token caching optimizations from claude-code analysis **AND** fixed 
 ### Code
 ```
 M  internal/types/types.go              (CacheControl + TTL/Scope)
-M  internal/runtime/prompt/prompt.go    (1h TTL on CLAUDE.md)
+M  internal/runtime/prompt/prompt.go    (1h TTL on AGENTS.md)
 M  internal/runtime/provider/anthropic.go (Map TTL to SDK)
 M  internal/runtime/loop/loop.go        (Cache break detection)
 M  cmd/agent/main.go                    (Automatic worktree isolation)
@@ -140,7 +140,7 @@ Cache: Survives 1 hour, stable
 
 2. **Create PR:**
    ```bash
-   hp  # Uses hp command from CLAUDE.md
+   hp  # Uses hp command from AGENTS.md
    ```
 
 3. **Test thoroughly:**
@@ -160,7 +160,7 @@ Cache: Survives 1 hour, stable
 
 ### Cache Optimization
 - ✅ 1h TTL (12x longer than 5min default)
-- ✅ Global scope for CLAUDE.md (share across sessions)
+- ✅ Global scope for AGENTS.md (share across sessions)
 - ✅ Cache break detection (immediate feedback)
 - ✅ Proper token tracking (creation vs read)
 

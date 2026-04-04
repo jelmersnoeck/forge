@@ -15,7 +15,7 @@ Anthropic's prompt caching feature significantly reduces API costs by caching fr
 All blocks now have `TTL: "1h"` since they rarely change:
 - ✅ Base prompt (already had 1h)
 - ✅ Environment info (already had 1h)
-- ✅ CLAUDE.md (already had 1h)
+- ✅ AGENTS.md (already had 1h)
 - ✅ **AGENTS.md (fixed - now has 1h)**
 - ✅ **Rules (fixed - now has 1h)**
 - ✅ **Skills (fixed - now has 1h)**
@@ -89,7 +89,7 @@ Anthropic's cache persists for:
 - 1 hour: Extended TTL (what we're using)
 
 Our system blocks and tools are perfect for 1h caching because:
-- CLAUDE.md, AGENTS.md, Rules rarely change mid-session
+- AGENTS.md, AGENTS.md, Rules rarely change mid-session
 - Tools never change (they're code)
 - Base prompt is static
 - Environment info only changes daily (date)
@@ -103,7 +103,7 @@ Added tests to verify:
 
 ## Notes
 
-- **Scope field**: We set `Scope: "global"` on CLAUDE.md but the Go SDK (v1.27.1) doesn't expose this field yet. The API supports it for cross-session caching, but we're blocked by SDK support.
+- **Scope field**: We set `Scope: "global"` on AGENTS.md but the Go SDK (v1.27.1) doesn't expose this field yet. The API supports it for cross-session caching, but we're blocked by SDK support.
 - **API ordering requirement**: Anthropic requires cache control blocks to be ordered by TTL (1h before 5m) across tools → system → messages. We're using 1h everywhere so this is fine.
 - **Token counting**: Anthropic counts cached tokens differently:
   - `input_tokens`: Regular processing
