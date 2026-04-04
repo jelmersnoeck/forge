@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jelmersnoeck/forge/internal/config"
+	"github.com/jelmersnoeck/forge/internal/spec"
 	"github.com/jelmersnoeck/forge/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -275,6 +277,15 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 			bundle.AgentDefinitions[agent.Name] = agent
 		}
 	}
+
+	// Load specs
+	cfg, _ := config.Load(l.cwd)
+	specsDir := spec.FindSpecsDir(l.cwd, cfg)
+	specs, err := spec.LoadSpecs(specsDir)
+	if err != nil {
+		return fmt.Errorf("load specs: %w", err)
+	}
+	bundle.Specs = append(bundle.Specs, specs...)
 
 	return nil
 }

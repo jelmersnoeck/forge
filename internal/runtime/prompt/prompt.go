@@ -34,6 +34,98 @@ Response format:
 - Minimal tokens in/out
 - No emoji, exclamations, pleasantries`
 
+const specPrompt = `
+## Spec-Driven Development
+
+Before implementing any feature, write a specification first. The spec acts as
+the source of truth for implementation, acceptance testing, and intent validation.
+
+### Workflow
+
+1. User describes a feature → write a spec to the specs directory
+2. Review the spec (confirm scope, constraints, edge cases)
+3. Implement against the spec
+4. Validate implementation matches spec's Behavior and Edge Cases
+5. Reconcile the spec (see below)
+
+If the user provides a spec via --spec, skip step 1 and implement directly.
+
+### Spec Format
+
+Specs are markdown with YAML frontmatter, stored in the specs directory
+(default: .forge/specs/, configurable via .forge/config.json "specsDir").
+
+` + "```" + `markdown
+---
+id: feature-slug
+status: draft
+---
+# Summary (max 15 words)
+
+## Description
+Short description. 2-4 sentences.
+
+## Context
+Files, systems, interfaces that change. Be specific — paths, functions, types.
+
+## Behavior
+Desired behaviour and UX. Each point is a potential acceptance test.
+Include flags, endpoints, messages, etc.
+
+## Constraints
+Things to avoid. Falsifiable: "don't do X" not "be careful with X".
+
+## Interfaces
+Types, signatures, schemas. Use code blocks.
+
+## Edge Cases
+Scenario + expected outcome for each.
+` + "```" + `
+
+### Rules
+
+- Header: 15 words max
+- ID: lowercase kebab-case, used as filename
+- New specs start as status: draft
+- Set to active when approved, implemented when done
+
+### Spec Reconciliation
+
+IMPORTANT: Before finishing your work, you MUST reconcile the spec.
+
+During a session the user may send follow-up messages that correct, refine, or
+redirect the implementation. These messages change the intent but the spec file
+still reflects the original request. The spec must be the single source of truth
+for what was built and why.
+
+Before your final response in any implementation session:
+
+1. Identify the spec file for this session (the one you wrote or were given).
+2. Review ALL user messages in the conversation. Look for:
+   - Corrections ("actually, use X instead of Y")
+   - Added requirements ("also add a --verbose flag")
+   - Removed requirements ("skip the caching for now")
+   - Clarifications that narrowed or widened scope
+   - Constraint changes ("don't worry about backwards compat")
+3. Update the spec file using the Edit tool:
+   - Amend Behavior to match what was actually implemented
+   - Amend Constraints to reflect actual constraints applied
+   - Amend Interfaces to match actual types/signatures built
+   - Amend Edge Cases with any new ones discovered during implementation
+   - Update Context with any files that were touched but not originally listed
+   - Keep Description accurate — if scope changed, say so
+4. Do NOT change the ID or remove sections. Add, amend, refine.
+5. Set status to "active" (or "implemented" if everything is done and tested).
+
+The result: a reviewer reading only the spec should understand the full intent
+of what was built, including all mid-session course corrections. No conversation
+archaeology required.
+
+If there were no user corrections (single-prompt session), still verify the spec
+matches what was implemented — types may have evolved, edge cases may have been
+discovered, files may have been added.
+`
+
 // Assemble creates the system prompt blocks from a context bundle.
 // Max 4 cache_control blocks total across system + tools + messages.
 // Strategy: 2 system blocks + 1 tool + 1 message = 4 total
@@ -44,6 +136,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	// Merged into one block to free up cache slots for message-level caching
 	var staticContent strings.Builder
 	staticContent.WriteString(basePrompt)
+	staticContent.WriteString(specPrompt)
 	fmt.Fprintf(&staticContent, "\n\nEnvironment Information:\n- Working directory: %s\n- Platform: %s\n- Current date: %s",
 		cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
 
@@ -140,6 +233,25 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 			}
 		}
 		hasContent = true
+	}
+
+	// Active specs
+	if len(bundle.Specs) > 0 {
+		var activeSpecs []string
+		for _, s := range bundle.Specs {
+			if s.Status == "active" {
+				activeSpecs = append(activeSpecs, fmt.Sprintf("- **%s**: %s", s.ID, s.Header))
+			}
+		}
+		if len(activeSpecs) > 0 {
+			bundledContent.WriteString("Active Specs:\n\n")
+			for _, line := range activeSpecs {
+				bundledContent.WriteString(line)
+				bundledContent.WriteString("\n")
+			}
+			bundledContent.WriteString("\n")
+			hasContent = true
+		}
 	}
 
 	// Add bundled block with cache control if we have any content

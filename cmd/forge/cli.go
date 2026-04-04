@@ -76,6 +76,9 @@ type model struct {
 	worktreePath   string // path to worktree if created
 	worktreeBranch string // branch name if worktree created
 	cwd            string // working directory (worktree or original)
+
+	// Spec mode
+	initialPrompt string // auto-sent on startup (e.g. from --spec)
 }
 
 type serverEvent types.OutboundEvent
@@ -87,6 +90,7 @@ func runCLI(args []string) int {
 	resume := fs.String("resume", "", "session ID to resume")
 	server := fs.String("server", "", "connect to remote forge server (e.g. http://localhost:3000)")
 	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
+	specPath := fs.String("spec", "", "path to a spec file to implement directly")
 	_ = fs.Parse(args[1:])
 
 	cwd, err := os.Getwd()
@@ -146,6 +150,24 @@ func runCLI(args []string) int {
 		}()
 	}
 
+	// Handle --spec: read spec file and prepare initial prompt
+	var initialPrompt string
+	if *specPath != "" {
+		specContent, err := os.ReadFile(*specPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, errorStyle.Render("could not read spec file: "+err.Error()))
+			os.Exit(1)
+		}
+		initialPrompt = fmt.Sprintf(
+			"Implement the following spec. The spec is the source of truth "+
+				"— follow its Behavior, Constraints, and Interfaces sections precisely.\n\n"+
+				"Spec file: %s\n\n%s\n\n"+
+				"When done, reconcile this spec file with any corrections or "+
+				"discoveries made during implementation.",
+			*specPath, string(specContent),
+		)
+	}
+
 	// Renderer will be initialized with proper width after first WindowSizeMsg
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
@@ -185,6 +207,7 @@ func runCLI(args []string) int {
 		worktreePath:    worktreePath,
 		worktreeBranch:  worktreeBranch,
 		cwd:             effectiveCWD,
+		initialPrompt:   initialPrompt,
 	}
 
 	// Add welcome message
@@ -210,6 +233,12 @@ func runCLI(args []string) int {
 		}
 	}
 
+	// Add spec info if present
+	if *specPath != "" {
+		m.output = append(m.output, dimStyle.Render("spec: "+*specPath))
+		m.working = true // mark as working since we'll auto-send
+	}
+
 	m.output = append(m.output,
 		"",
 		resumeHint,
@@ -230,7 +259,11 @@ func runCLI(args []string) int {
 }
 
 func (m model) Init() tea.Cmd {
-	return tick()
+	cmds := []tea.Cmd{tick()}
+	if m.initialPrompt != "" {
+		cmds = append(cmds, m.sendMessage(m.initialPrompt))
+	}
+	return tea.Batch(cmds...)
 }
 
 func tick() tea.Cmd {

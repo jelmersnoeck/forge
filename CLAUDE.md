@@ -87,6 +87,17 @@ Key files:
 - `internal/mcp/token_store.go` — persistent OAuth token storage
 - `internal/tools/mcp_gateway.go` — UseMCPTool: single gateway tool for lazy MCP access
 
+## Spec-Driven Development
+
+Forge is spec-driven. The agent writes a spec before implementing any feature.
+Specs live in `.forge/specs/` (configurable via `.forge/config.json` `specsDir`).
+Use `forge --spec path/to/spec.md` to implement an existing spec directly.
+
+Key files:
+- `internal/spec/spec.go` — parser and loader
+- `internal/config/config.go` — forge config loader
+- `internal/runtime/prompt/prompt.go` — spec instructions in system prompt
+
 ## Repository layout
 
 ```
@@ -107,12 +118,14 @@ internal/
     bridge.go      bridges MCP tools into Forge's tool registry
     config.go      config loading (~/.forge/mcp.json)
     token_store.go persistent OAuth token storage
+  config/          forge-level configuration (.forge/config.json)
+  spec/            feature specification loader + parser
   types/           shared contracts (messages, events, tools, context, tasks)
   tools/           tool registry + implementations
   agent/           agent HTTP server, single-session hub, worker
   runtime/
     provider/      LLMProvider interface + Anthropic implementation
-    context/       ContextLoader (CLAUDE.md, AGENTS.md, skills, agents, rules)
+    context/       ContextLoader (CLAUDE.md, AGENTS.md, specs, skills, agents, rules)
     prompt/        system prompt assembly
     session/       JSONL session persistence
     loop/          ConversationLoop (agentic loop)

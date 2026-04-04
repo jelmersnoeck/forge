@@ -14,10 +14,14 @@ func TestAssemble_BasePrompt(t *testing.T) {
 	bundle := types.ContextBundle{}
 	blocks := Assemble(bundle, "/home/troy/greendale")
 
-	// Should have base prompt + env info merged into one block
+	// Should have base prompt + spec prompt + env info merged into one block
 	r.GreaterOrEqual(len(blocks), 1)
 	r.Contains(blocks[0].Text, "Coding assistant")
 	r.Contains(blocks[0].Text, "/home/troy/greendale")
+	r.Contains(blocks[0].Text, "Spec-Driven Development")
+	r.Contains(blocks[0].Text, "forge/specs")
+	r.Contains(blocks[0].Text, "Spec Reconciliation")
+	r.Contains(blocks[0].Text, "MUST reconcile the spec")
 }
 
 func TestAssemble_ClaudeMD(t *testing.T) {
@@ -271,4 +275,45 @@ func TestAssemble_AgentDefinitions_DeterministicOrder(t *testing.T) {
 		blocks := Assemble(bundle, "/greendale")
 		r.Equal(canonicalText, blocks[1].Text, "iteration %d: prompt text changed", i)
 	}
+}
+
+func TestAssemble_Specs(t *testing.T) {
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		Specs: []types.SpecEntry{
+			{ID: "paintball-defense", Status: "active", Header: "Campus-wide paintball defense system"},
+			{ID: "pillow-fort", Status: "draft", Header: "Blanket fort vs pillow fort warfare"},
+			{ID: "darkest-timeline", Status: "deprecated", Header: "Goatee-based timeline detection"},
+			{ID: "study-room-f", Status: "active", Header: "Study room scheduling and booking"},
+		},
+	}
+
+	blocks := Assemble(bundle, "/greendale")
+	r.GreaterOrEqual(len(blocks), 2)
+
+	bundled := blocks[1].Text
+	r.Contains(bundled, "Active Specs:")
+	r.Contains(bundled, "paintball-defense")
+	r.Contains(bundled, "Campus-wide paintball defense system")
+	r.Contains(bundled, "study-room-f")
+	r.Contains(bundled, "Study room scheduling and booking")
+
+	// Draft and deprecated specs should NOT appear
+	r.NotContains(bundled, "pillow-fort")
+	r.NotContains(bundled, "darkest-timeline")
+}
+
+func TestAssemble_Specs_NoneActive(t *testing.T) {
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		Specs: []types.SpecEntry{
+			{ID: "old-feature", Status: "implemented", Header: "Something already done"},
+		},
+	}
+
+	blocks := Assemble(bundle, "/greendale")
+	// Only base block, no bundled content block
+	r.Equal(1, len(blocks))
 }

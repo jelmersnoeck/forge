@@ -214,6 +214,7 @@ type ContextBundle struct {
 	Rules             []RuleEntry
 	SkillDescriptions []SkillDescription
 	AgentDefinitions  map[string]AgentDefinition
+	Specs             []SpecEntry
 	Settings          MergedSettings
 }
 
@@ -255,6 +256,34 @@ type AgentDefinition struct {
 	DisallowedTools []string `json:"disallowedTools,omitempty"`
 	Model           string   `json:"model,omitempty"`
 	MaxTurns        int      `json:"maxTurns,omitempty"`
+}
+
+// SpecDocument represents a feature specification — the source of truth
+// for implementation and acceptance testing.
+type SpecDocument struct {
+	// Metadata from YAML frontmatter
+	ID     string `json:"id" yaml:"id"`         // unique identifier (slug)
+	Status string `json:"status" yaml:"status"` // draft, active, implemented, deprecated
+
+	// Spec content sections (parsed from markdown)
+	Header      string `json:"header"`      // summary, max 15 words
+	Description string `json:"description"` // short description
+	Context     string `json:"context"`     // files/systems/interfaces to change
+	Behavior    string `json:"behavior"`    // desired behaviour and UX
+	Constraints string `json:"constraints"` // things to avoid
+	Interfaces  string `json:"interfaces"`  // types, signatures, schemas
+	EdgeCases   string `json:"edgeCases"`   // known edge cases
+
+	Path string `json:"path"` // filesystem path
+}
+
+// SpecEntry is a discovered spec for inclusion in the context bundle.
+type SpecEntry struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Header  string `json:"header"` // the 15-word summary
 }
 
 // MergedSettings is the merged result of user + project + local settings.
