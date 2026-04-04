@@ -340,9 +340,9 @@ export function createServer(): Server {
         mimeType: "text/markdown",
       },
       {
-        uri: "forge://claude",
+        uri: "forge://agents",
         name: "Project Instructions",
-        description: "CLAUDE.md project-level agent instructions",
+        description: "AGENTS.md project-level agent instructions and learnings",
         mimeType: "text/markdown",
       },
     ],
@@ -360,20 +360,20 @@ export function createServer(): Server {
             {
               uri,
               mimeType: "text/markdown",
-              text: "# Forge\n\nAsync coding agent — headless Claude Code behind a platform-agnostic HTTP API.",
+              text: "# Forge\n\nAsync coding agent — headless HTTP API with an Anthropic backend.",
             },
           ],
         };
       }
 
-      if (uri === "forge://claude") {
-        // TODO: Read from actual CLAUDE.md
+      if (uri === "forge://agents") {
+        // TODO: Read from actual AGENTS.md
         return {
           contents: [
             {
               uri,
               mimeType: "text/markdown",
-              text: "# Project Instructions\n\nSee CLAUDE.md in the forge repository.",
+              text: "# Project Instructions\n\nSee AGENTS.md in the forge repository.",
             },
           ],
         };

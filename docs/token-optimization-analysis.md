@@ -359,7 +359,7 @@ type CacheControl struct {
     Scope string `json:"scope,omitempty"` // "global"
 }
 
-// prompt/prompt.go - update CLAUDE.md block
+// prompt/prompt.go - update AGENTS.md block
 CacheControl: &types.CacheControl{
     Type: "ephemeral",
     TTL:  "1h",  // Hard-code for now, make configurable later

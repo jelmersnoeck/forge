@@ -3,6 +3,7 @@ package context
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,57 +12,77 @@ import (
 func TestLoader_LoadProjectContext(t *testing.T) {
 	r := require.New(t)
 
-	// Create temporary project directory
 	projectDir := t.TempDir()
 
-	// Write CLAUDE.md to project root
-	claudeMD := `# Greendale Community College
+	// Write AGENTS.md to project root
+	agentsMD := `# Greendale Community College
 
 This is the project instructions for the study group.
 `
-	err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte(claudeMD), 0644)
+	err := os.WriteFile(filepath.Join(projectDir, "AGENTS.md"), []byte(agentsMD), 0644)
 	r.NoError(err)
 
 	loader := NewLoader(projectDir)
 	bundle, err := loader.Load([]string{"project"})
 	r.NoError(err)
 
-	r.Len(bundle.ClaudeMD, 1)
-	r.Equal("project", bundle.ClaudeMD[0].Level)
-	r.Contains(bundle.ClaudeMD[0].Content, "Greendale Community College")
+	r.Len(bundle.AgentsMD, 1)
+	r.Equal("project", bundle.AgentsMD[0].Level)
+	r.Contains(bundle.AgentsMD[0].Content, "Greendale Community College")
 }
 
-func TestLoader_LoadProjectContext_ClaudeDir(t *testing.T) {
+func TestLoader_LoadProjectContext_ForgeDir(t *testing.T) {
 	r := require.New(t)
 
 	projectDir := t.TempDir()
 
-	// Write CLAUDE.md to .claude/ directory
-	claudeDir := filepath.Join(projectDir, ".claude")
-	err := os.MkdirAll(claudeDir, 0755)
+	// Write AGENTS.md to .forge/ directory
+	forgeDir := filepath.Join(projectDir, ".forge")
+	err := os.MkdirAll(forgeDir, 0755)
 	r.NoError(err)
 
-	claudeMD := `# Troy and Abed in the morning!`
-	err = os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte(claudeMD), 0644)
+	agentsMD := `# Troy and Abed in the morning!`
+	err = os.WriteFile(filepath.Join(forgeDir, "AGENTS.md"), []byte(agentsMD), 0644)
 	r.NoError(err)
 
 	loader := NewLoader(projectDir)
 	bundle, err := loader.Load([]string{"project"})
 	r.NoError(err)
 
-	r.Len(bundle.ClaudeMD, 1)
-	r.Contains(bundle.ClaudeMD[0].Content, "Troy and Abed")
+	r.Len(bundle.AgentsMD, 1)
+	r.Contains(bundle.AgentsMD[0].Content, "Troy and Abed")
+}
+
+func TestLoader_LoadProjectContext_ClaudeDirFallback(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+
+	// Write AGENTS.md to .claude/ directory (backward compat fallback)
+	claudeDir := filepath.Join(projectDir, ".claude")
+	err := os.MkdirAll(claudeDir, 0755)
+	r.NoError(err)
+
+	agentsMD := `# Streets ahead`
+	err = os.WriteFile(filepath.Join(claudeDir, "AGENTS.md"), []byte(agentsMD), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	r.Len(bundle.AgentsMD, 1)
+	r.Contains(bundle.AgentsMD[0].Content, "Streets ahead")
 }
 
 func TestLoader_LoadRules(t *testing.T) {
 	r := require.New(t)
 
 	projectDir := t.TempDir()
-	rulesDir := filepath.Join(projectDir, ".claude", "rules")
+	rulesDir := filepath.Join(projectDir, ".forge", "rules")
 	err := os.MkdirAll(rulesDir, 0755)
 	r.NoError(err)
 
-	// Write rule files
 	rule1 := `# No paintball
 
 Paintball is banned on campus after the incidents.
@@ -86,11 +107,31 @@ Paintball is banned on campus after the incidents.
 	r.Equal("project", bundle.Rules[1].Level)
 }
 
+func TestLoader_LoadRules_ClaudeDirFallback(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+	rulesDir := filepath.Join(projectDir, ".claude", "rules")
+	err := os.MkdirAll(rulesDir, 0755)
+	r.NoError(err)
+
+	rule := `# Old rule from .claude dir`
+	err = os.WriteFile(filepath.Join(rulesDir, "old.md"), []byte(rule), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	r.Len(bundle.Rules, 1)
+	r.Contains(bundle.Rules[0].Content, "Old rule from .claude dir")
+}
+
 func TestLoader_DiscoverSkills(t *testing.T) {
 	r := require.New(t)
 
 	projectDir := t.TempDir()
-	skillsDir := filepath.Join(projectDir, ".claude", "skills")
+	skillsDir := filepath.Join(projectDir, ".forge", "skills")
 
 	// Create two skill directories
 	deanSkillDir := filepath.Join(skillsDir, "dean-costume")
@@ -145,7 +186,7 @@ func TestLoader_LoadSkillContent(t *testing.T) {
 	r := require.New(t)
 
 	projectDir := t.TempDir()
-	skillsDir := filepath.Join(projectDir, ".claude", "skills", "troy-abed")
+	skillsDir := filepath.Join(projectDir, ".forge", "skills", "troy-abed")
 	err := os.MkdirAll(skillsDir, 0755)
 	r.NoError(err)
 
@@ -172,28 +213,28 @@ func TestLoader_LoadLocalContext(t *testing.T) {
 
 	projectDir := t.TempDir()
 
-	// Write CLAUDE.local.md
+	// Write AGENTS.local.md
 	localMD := `# Local overrides
 
 Using the Dreamatorium for testing.
 `
-	err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.local.md"), []byte(localMD), 0644)
+	err := os.WriteFile(filepath.Join(projectDir, "AGENTS.local.md"), []byte(localMD), 0644)
 	r.NoError(err)
 
 	loader := NewLoader(projectDir)
 	bundle, err := loader.Load([]string{"local"})
 	r.NoError(err)
 
-	r.Len(bundle.ClaudeMD, 1)
-	r.Equal("local", bundle.ClaudeMD[0].Level)
-	r.Contains(bundle.ClaudeMD[0].Content, "Dreamatorium")
+	r.Len(bundle.AgentsMD, 1)
+	r.Equal("local", bundle.AgentsMD[0].Level)
+	r.Contains(bundle.AgentsMD[0].Content, "Dreamatorium")
 }
 
 func TestLoader_DiscoverAgents(t *testing.T) {
 	r := require.New(t)
 
 	projectDir := t.TempDir()
-	agentsDir := filepath.Join(projectDir, ".claude", "agents")
+	agentsDir := filepath.Join(projectDir, ".forge", "agents")
 	err := os.MkdirAll(agentsDir, 0755)
 	r.NoError(err)
 
@@ -238,8 +279,8 @@ func TestLoader_MergeSettings(t *testing.T) {
 	r := require.New(t)
 
 	projectDir := t.TempDir()
-	claudeDir := filepath.Join(projectDir, ".claude")
-	err := os.MkdirAll(claudeDir, 0755)
+	forgeDir := filepath.Join(projectDir, ".forge")
+	err := os.MkdirAll(forgeDir, 0755)
 	r.NoError(err)
 
 	// Write settings.json
@@ -253,7 +294,7 @@ func TestLoader_MergeSettings(t *testing.T) {
     "GREENDALE_MOTTO": "Community College"
   }
 }`
-	err = os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0644)
+	err = os.WriteFile(filepath.Join(forgeDir, "settings.json"), []byte(settings), 0644)
 	r.NoError(err)
 
 	// Write settings.local.json
@@ -263,7 +304,7 @@ func TestLoader_MergeSettings(t *testing.T) {
     "STUDY_GROUP": "Troy and Abed"
   }
 }`
-	err = os.WriteFile(filepath.Join(claudeDir, "settings.local.json"), []byte(localSettings), 0644)
+	err = os.WriteFile(filepath.Join(forgeDir, "settings.local.json"), []byte(localSettings), 0644)
 	r.NoError(err)
 
 	loader := NewLoader(projectDir)
@@ -281,4 +322,144 @@ func TestLoader_MergeSettings(t *testing.T) {
 	// Env merged
 	r.Equal("Community College", bundle.Settings.Env["GREENDALE_MOTTO"])
 	r.Equal("Troy and Abed", bundle.Settings.Env["STUDY_GROUP"])
+}
+
+func TestLoader_ConfigDirFallback(t *testing.T) {
+	tests := map[string]struct {
+		setup     func(string) error
+		wantRules int
+	}{
+		"forge dir preferred over claude dir": {
+			setup: func(dir string) error {
+				forgeRules := filepath.Join(dir, ".forge", "rules")
+				claudeRules := filepath.Join(dir, ".claude", "rules")
+				if err := os.MkdirAll(forgeRules, 0755); err != nil {
+					return err
+				}
+				if err := os.MkdirAll(claudeRules, 0755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(forgeRules, "forge.md"), []byte("forge rule"), 0644); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(claudeRules, "claude.md"), []byte("claude rule"), 0644)
+			},
+			wantRules: 1, // only .forge/ rules, not .claude/
+		},
+		"claude dir used when no forge dir": {
+			setup: func(dir string) error {
+				claudeRules := filepath.Join(dir, ".claude", "rules")
+				if err := os.MkdirAll(claudeRules, 0755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(claudeRules, "legacy.md"), []byte("legacy rule"), 0644)
+			},
+			wantRules: 1,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			tmpDir := t.TempDir()
+
+			err := tc.setup(tmpDir)
+			r.NoError(err)
+
+			loader := NewLoader(tmpDir)
+			bundle, err := loader.Load([]string{"project"})
+			r.NoError(err)
+
+			r.Len(bundle.Rules, tc.wantRules)
+		})
+	}
+}
+
+func TestLoader_LoadProjectContext_ClaudeMD(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+
+	claudeMD := `# Greendale Community College
+
+Legacy CLAUDE.md project instructions.
+`
+	err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte(claudeMD), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	// CLAUDE.md should be loaded into AgentsMD
+	r.Len(bundle.AgentsMD, 1)
+	r.Equal("project", bundle.AgentsMD[0].Level)
+	r.Contains(bundle.AgentsMD[0].Content, "Greendale Community College")
+	r.Contains(bundle.AgentsMD[0].Path, "CLAUDE.md")
+}
+
+func TestLoader_LoadProjectContext_ClaudeMDInClaudeDir(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+	claudeDir := filepath.Join(projectDir, ".claude")
+	err := os.MkdirAll(claudeDir, 0755)
+	r.NoError(err)
+
+	err = os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("# Pierce Hawthorne memorial"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	r.Len(bundle.AgentsMD, 1)
+	r.Contains(bundle.AgentsMD[0].Content, "Pierce Hawthorne")
+}
+
+func TestLoader_LoadProjectContext_BothAgentsAndClaude(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(projectDir, "AGENTS.md"), []byte("# Forge instructions"), 0644)
+	r.NoError(err)
+	err = os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte("# Claude instructions"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	// Both should be loaded
+	r.Len(bundle.AgentsMD, 2)
+
+	var foundAgents, foundClaude bool
+	for _, entry := range bundle.AgentsMD {
+		switch {
+		case strings.Contains(entry.Content, "Forge instructions"):
+			foundAgents = true
+		case strings.Contains(entry.Content, "Claude instructions"):
+			foundClaude = true
+		}
+	}
+	r.True(foundAgents, "should load AGENTS.md")
+	r.True(foundClaude, "should load CLAUDE.md")
+}
+
+func TestLoader_LoadLocalContext_ClaudeLocalMD(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.local.md"), []byte("# Darkest timeline overrides"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"local"})
+	r.NoError(err)
+
+	r.Len(bundle.AgentsMD, 1)
+	r.Equal("local", bundle.AgentsMD[0].Level)
+	r.Contains(bundle.AgentsMD[0].Content, "Darkest timeline")
 }

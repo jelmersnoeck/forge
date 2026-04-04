@@ -24,7 +24,7 @@ type CacheControl struct {
 
 **File:** `internal/runtime/prompt/prompt.go`
 ```go
-// Line 71 - Update CLAUDE.md cache control
+// Line 71 - Update AGENTS.md cache control
 CacheControl: &types.CacheControl{
     Type:  "ephemeral",
     TTL:   "1h",       // ADD THIS - was default 5min
@@ -150,7 +150,7 @@ See full analysis docs for implementation details on these.
 ### Cache Optimization Principles
 
 1. **Cache the stable stuff**
-   - CLAUDE.md content (rarely changes)
+   - AGENTS.md content (rarely changes)
    - Tool schemas (only change on tool updates)
    - NOT environment info (changes per session)
 
@@ -178,7 +178,7 @@ See full analysis docs for implementation details on these.
 
 ### Common Cache Break Causes
 
-1. **System prompt changes** - Added/removed CLAUDE.md content
+1. **System prompt changes** - Added/removed AGENTS.md content
 2. **Tool schema changes** - Updated tool descriptions or parameters
 3. **Model changes** - Different models have different caches
 4. **TTL expiry** - Waited too long between calls

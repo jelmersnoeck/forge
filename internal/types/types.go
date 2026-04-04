@@ -209,7 +209,6 @@ type AuditLogger interface {
 
 // ContextBundle holds all discovered project context.
 type ContextBundle struct {
-	ClaudeMD          []ClaudeMDEntry
 	AgentsMD          []AgentsMDEntry
 	Rules             []RuleEntry
 	SkillDescriptions []SkillDescription
@@ -218,14 +217,8 @@ type ContextBundle struct {
 	Settings          MergedSettings
 }
 
-// ClaudeMDEntry is a single CLAUDE.md file.
-type ClaudeMDEntry struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-	Level   string `json:"level"` // "user", "project", "local", "parent"
-}
-
-// AgentsMDEntry is a single AGENTS.md file for self-improvement learnings.
+// AgentsMDEntry is a single AGENTS.md file carrying project instructions
+// and/or self-improvement learnings.
 type AgentsMDEntry struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -247,7 +240,7 @@ type SkillDescription struct {
 	IsUserInvocable bool   `json:"isUserInvocable"`
 }
 
-// AgentDefinition is a custom agent from .claude/agents/.
+// AgentDefinition is a custom agent from .forge/agents/.
 type AgentDefinition struct {
 	Name            string   `json:"name"`
 	Description     string   `json:"description"`

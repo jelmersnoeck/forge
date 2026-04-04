@@ -132,7 +132,20 @@ discovered, files may have been added.
 func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var blocks []types.SystemBlock
 
-	// 1. Base prompt + environment info + CLAUDE.md (static, global cache)
+	// Split AgentsMD into "instructions" (user/project/local/parent) and
+	// "learnings" (.forge/learnings/* files). Instructions go in the static
+	// block; learnings go in the dynamic block.
+	var instructions, learnings []types.AgentsMDEntry
+	for _, entry := range bundle.AgentsMD {
+		switch {
+		case strings.Contains(entry.Path, ".forge/learnings/"):
+			learnings = append(learnings, entry)
+		default:
+			instructions = append(instructions, entry)
+		}
+	}
+
+	// 1. Base prompt + environment info + project instructions (static, global cache)
 	// Merged into one block to free up cache slots for message-level caching
 	var staticContent strings.Builder
 	staticContent.WriteString(basePrompt)
@@ -140,11 +153,11 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	fmt.Fprintf(&staticContent, "\n\nEnvironment Information:\n- Working directory: %s\n- Platform: %s\n- Current date: %s",
 		cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
 
-	if len(bundle.ClaudeMD) > 0 {
+	if len(instructions) > 0 {
 		staticContent.WriteString("\n\n<system-reminder>\n")
 		staticContent.WriteString("Project and user instructions are shown below. Follow these instructions carefully.\n\n")
 
-		for _, entry := range bundle.ClaudeMD {
+		for _, entry := range instructions {
 			fmt.Fprintf(&staticContent, "## From %s (%s)\n\n", entry.Path, entry.Level)
 			staticContent.WriteString(entry.Content)
 			staticContent.WriteString("\n\n")
@@ -163,17 +176,17 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		},
 	})
 
-	// 2. Dynamic content: AGENTS.md + Rules + Skills + Agent definitions
+	// 2. Dynamic content: learnings + Rules + Skills + Agent definitions
 	// This is the only other system block, freeing up cache slots for message-level caching
 	// System blocks (2) + Tools (1) + Messages (1) = 4 total cache_control blocks
 	var bundledContent strings.Builder
 	hasContent := false
 
-	// AGENTS.md learnings
-	if len(bundle.AgentsMD) > 0 {
+	// Learnings from .forge/learnings/
+	if len(learnings) > 0 {
 		bundledContent.WriteString("<system-reminder>\n")
 		bundledContent.WriteString("Self-improvement learnings from previous sessions:\n\n")
-		for _, entry := range bundle.AgentsMD {
+		for _, entry := range learnings {
 			fmt.Fprintf(&bundledContent, "## From %s (%s)\n\n", entry.Path, entry.Level)
 			bundledContent.WriteString(entry.Content)
 			bundledContent.WriteString("\n\n")

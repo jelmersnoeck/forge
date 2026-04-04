@@ -213,7 +213,7 @@ internal/
   agent/           Agent HTTP server, hub, worker
   runtime/
     provider/      LLM provider (Anthropic)
-    context/       CLAUDE.md loader
+    context/       AGENTS.md loader
     prompt/        System prompt assembly
     session/       JSONL persistence
     loop/          Conversation loop
@@ -315,13 +315,13 @@ cp .env.example .env
 
 The server loads `.env` from the project root at startup.
 
-### CLAUDE.md Files
+### AGENTS.md Files
 
-The agent loads context from `CLAUDE.md` files:
+The agent loads context from `AGENTS.md` files:
 
-- `~/.claude/CLAUDE.md` - User-level instructions
-- `./CLAUDE.md` - Project-level instructions  
-- `./.local/CLAUDE.md` - Local overrides (gitignored)
+- `~/AGENTS.md` - User-level instructions
+- `./AGENTS.md` - Project-level instructions  
+- `./AGENTS.local.md` - Local overrides (gitignored)
 
 ## Examples
 
@@ -389,7 +389,7 @@ Agent:
 
 ## Documentation
 
-- **[CLAUDE.md](CLAUDE.md)** - Project instructions and architecture
+- **[AGENTS.md](AGENTS.md)** - Project instructions and architecture
 - **[docs/mcp-integration.md](docs/mcp-integration.md)** - MCP integration details and comparison with Claude Code
 - **[docs/CLI_TUI.md](docs/CLI_TUI.md)** - CLI TUI user guide
 - **[docs/CLI_TUI_VISUAL.md](docs/CLI_TUI_VISUAL.md)** - Visual examples
