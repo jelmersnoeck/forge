@@ -103,7 +103,7 @@ func (w *Worker) Run(ctx context.Context) {
 			SessionStore: store,
 			SessionID:    w.sessionID,
 			Model:        model,
-			MaxTurns:     100,
+			MaxTurns:     0, // unlimited
 			AuditLogger:  &StdAuditLogger{},
 		}
 		l := loop.New(opts)
@@ -248,9 +248,10 @@ func (w *Worker) makeAgentRunner(
 		}
 
 		maxTurns := agent.MaxTurns
-		if maxTurns <= 0 {
-			maxTurns = 50
+		if maxTurns < 0 {
+			maxTurns = 500 // default for sub-agents when caller didn't specify
 		}
+		// 0 = unlimited, positive = explicit limit
 
 		opts := loop.Options{
 			Provider:     prov,
