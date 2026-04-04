@@ -54,10 +54,13 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 	store := session.NewStore(w.sessionsDir)
 
-	// Connect to configured MCP servers and register their tools
-	mcpClients := w.connectMCPServers(ctx, registry)
+	// Connect to MCP servers — tools are stored lazily, not registered with the LLM.
+	// The UseMCPTool gateway provides on-demand access (~300 tokens vs ~15K+).
+	mcpStore := mcp.NewStore()
+	tools.SetMCPStore(mcpStore)
+	w.connectMCPServers(ctx, mcpStore)
 	defer func() {
-		for _, c := range mcpClients {
+		for _, c := range mcpStore.Clients() {
 			c.Close(context.Background())
 		}
 	}()
@@ -204,20 +207,19 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 }
 
 // connectMCPServers loads MCP config and connects to all configured servers,
-// registering their tools into the provided registry.
-func (w *Worker) connectMCPServers(ctx context.Context, registry *tools.Registry) []*mcp.Client {
+// storing their tool catalogs in the MCP store for lazy access.
+func (w *Worker) connectMCPServers(ctx context.Context, store *mcp.Store) {
 	cfg, err := mcp.LoadConfig(w.cwd)
 	if err != nil {
 		log.Printf("[agent:%s] MCP config load error (continuing without MCP): %v", w.sessionID, err)
-		return nil
+		return
 	}
 
 	if len(cfg.Servers) == 0 {
-		return nil
+		return
 	}
 
 	var tokenStore *mcp.TokenStore
-	var clients []*mcp.Client
 
 	for name, serverCfg := range cfg.Servers {
 		// Lazy-init token store only if an OAuth server exists
@@ -229,15 +231,12 @@ func (w *Worker) connectMCPServers(ctx context.Context, registry *tools.Registry
 			}
 		}
 
-		client, err := mcp.ConnectAndRegister(ctx, registry, name, serverCfg, tokenStore)
+		_, err := mcp.ConnectAndStore(ctx, store, name, serverCfg, tokenStore)
 		if err != nil {
 			log.Printf("[agent:%s] MCP server %q connect failed (skipping): %v", w.sessionID, name, err)
 			continue
 		}
 
-		clients = append(clients, client)
-		log.Printf("[agent:%s] MCP server %q connected", w.sessionID, name)
+		log.Printf("[agent:%s] MCP server %q connected (lazy tools)", w.sessionID, name)
 	}
-
-	return clients
 }

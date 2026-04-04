@@ -72,12 +72,20 @@ Authentication modes:
   PKCE authorization, and automatic token refresh. Tokens stored at `~/.forge/mcp-tokens.json`.
 - `"headers"` — Static headers (API keys, pre-configured bearer tokens).
 
+**Lazy tool loading:** MCP tool schemas are NOT sent to the LLM on every API call.
+Instead, a single `UseMCPTool` gateway tool (~300 tokens) lets the model discover
+and invoke MCP tools on demand via `list_servers` → `list_tools` → `call`. This
+avoids the ~15K+ token overhead per MCP server that would otherwise bloat every
+request's tool definitions.
+
 Key files:
 - `internal/mcp/client.go` — JSON-RPC 2.0 over Streamable HTTP, SSE support
 - `internal/mcp/oauth.go` — OAuth 2.1 + DCR + PKCE flow
-- `internal/mcp/bridge.go` — bridges MCP tools into Forge's tool registry
+- `internal/mcp/bridge.go` — connects to MCP servers, caches tool catalogs in Store
+- `internal/mcp/store.go` — holds MCP clients + tool catalogs for lazy access
 - `internal/mcp/config.go` — config loading (user + project merge)
 - `internal/mcp/token_store.go` — persistent OAuth token storage
+- `internal/tools/mcp_gateway.go` — UseMCPTool: single gateway tool for lazy MCP access
 
 ## Repository layout
 
@@ -210,7 +218,7 @@ forge stats --sessions         # per-session breakdown
 - `internal/runtime/provider/anthropic.go` — Anthropic Messages API streaming
 - `internal/runtime/task/manager.go` — background task & sub-agent manager
 - `internal/tools/registry.go` — tool registry + NewDefaultRegistry()
-- `internal/tools/*.go` — tool implementations (Read, Write, Edit, Bash, Grep, Glob, WebSearch, Reflect, TaskCreate, TaskGet, TaskList, TaskStop, TaskOutput, Agent, AgentGet, AgentList, AgentStop)
+- `internal/tools/*.go` — tool implementations (Read, Write, Edit, Bash, Grep, Glob, WebSearch, Reflect, TaskCreate, TaskGet, TaskList, TaskStop, TaskOutput, Agent, AgentGet, AgentList, AgentStop, UseMCPTool)
 - `internal/server/backend/backend.go` — Backend interface
 - `internal/server/backend/tmux.go` — tmux backend implementation
 - `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata

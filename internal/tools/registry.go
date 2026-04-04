@@ -172,5 +172,7 @@ func NewDefaultRegistry() *Registry {
 	r.Register(AgentGetTool())
 	r.Register(AgentListTool())
 	r.Register(AgentStopTool())
+	// MCP gateway (lazy tool loading — one tool instead of N*25)
+	r.Register(UseMCPTool())
 	return r
 }
