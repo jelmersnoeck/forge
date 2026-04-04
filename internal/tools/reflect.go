@@ -4,17 +4,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
+const (
+	learningsDir           = ".forge/learnings"
+	gitattributesLearnings = ".forge/learnings/** linguist-generated=true"
+)
+
 // ReflectTool returns the tool definition for session reflection.
 func ReflectTool() types.ToolDefinition {
 	return types.ToolDefinition{
 		Name:        "Reflect",
-		Description: "Reflect on the current session, capturing learnings, mistakes, and successful patterns. This information is automatically appended to AGENTS.md for future self-improvement.",
+		Description: "Reflect on the current session, capturing learnings, mistakes, and successful patterns. This information is saved to .forge/learnings/ for future self-improvement.",
 		ReadOnly:    false,
 		InputSchema: map[string]any{
 			"type": "object",
@@ -57,14 +63,15 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		return types.ToolResult{IsError: true}, fmt.Errorf("summary is required")
 	}
 
-	// Extract arrays safely
 	mistakes := extractStringArray(input, "mistakes")
 	successes := extractStringArray(input, "successes")
 	suggestions := extractStringArray(input, "suggestions")
 
-	// Format the reflection entry
+	now := time.Now()
+
+	// Format the reflection as a standalone markdown file.
 	var entry strings.Builder
-	fmt.Fprintf(&entry, "\n## Session Reflection - %s\n\n", time.Now().Format("2006-01-02 15:04"))
+	fmt.Fprintf(&entry, "# Session Reflection - %s\n\n", now.Format("2006-01-02 15:04"))
 	fmt.Fprintf(&entry, "**Summary:** %s\n\n", summary)
 
 	if len(mistakes) > 0 {
@@ -91,37 +98,71 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		entry.WriteString("\n")
 	}
 
-	// Determine AGENTS.md path (prefer project-level)
-	agentsPath := filepath.Join(ctx.CWD, "AGENTS.md")
-
-	// Create file if it doesn't exist
-	if _, err := os.Stat(agentsPath); os.IsNotExist(err) {
-		header := `# Agent Learnings
-
-This file contains self-improvement learnings from agent sessions. The agent automatically reflects on each session and appends insights here.
-
-`
-		if err := os.WriteFile(agentsPath, []byte(header), 0644); err != nil {
-			return types.ToolResult{IsError: true}, fmt.Errorf("create AGENTS.md: %v", err)
-		}
+	// Ensure .forge/learnings/ exists.
+	dir := filepath.Join(ctx.CWD, learningsDir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return types.ToolResult{IsError: true}, fmt.Errorf("create %s: %v", learningsDir, err)
 	}
 
-	// Append reflection
-	f, err := os.OpenFile(agentsPath, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return types.ToolResult{IsError: true}, fmt.Errorf("open AGENTS.md: %v", err)
-	}
-	defer func() { _ = f.Close() }()
+	// Write learning file: <timestamp>-<slug>.md
+	slug := slugify(summary, 50)
+	filename := fmt.Sprintf("%s-%s.md", now.Format("20060102-150405"), slug)
+	outPath := filepath.Join(dir, filename)
 
-	if _, err := f.WriteString(entry.String()); err != nil {
-		return types.ToolResult{IsError: true}, fmt.Errorf("write to AGENTS.md: %v", err)
+	if err := os.WriteFile(outPath, []byte(entry.String()), 0644); err != nil {
+		return types.ToolResult{IsError: true}, fmt.Errorf("write learning: %v", err)
+	}
+
+	// Ensure .gitattributes marks learnings as generated.
+	if err := ensureGitattributes(ctx.CWD); err != nil {
+		return types.ToolResult{IsError: true}, fmt.Errorf("update .gitattributes: %v", err)
 	}
 
 	return types.ToolResult{
 		Content: []types.ToolResultContent{
-			{Type: "text", Text: fmt.Sprintf("Reflection saved to %s", agentsPath)},
+			{Type: "text", Text: fmt.Sprintf("Reflection saved to %s", outPath)},
 		},
 	}, nil
+}
+
+var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// slugify lowercases, replaces non-alphanum runs with hyphens, and truncates.
+func slugify(s string, maxLen int) string {
+	s = strings.ToLower(s)
+	s = slugRe.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > maxLen {
+		s = s[:maxLen]
+		s = strings.TrimRight(s, "-")
+	}
+	if s == "" {
+		s = "reflection"
+	}
+	return s
+}
+
+// ensureGitattributes idempotently adds the learnings line to .gitattributes.
+func ensureGitattributes(cwd string) error {
+	path := filepath.Join(cwd, ".gitattributes")
+
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	content := string(existing)
+	if strings.Contains(content, gitattributesLearnings) {
+		return nil
+	}
+
+	// Ensure trailing newline before appending.
+	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += gitattributesLearnings + "\n"
+
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 func extractStringArray(input map[string]any, key string) []string {
