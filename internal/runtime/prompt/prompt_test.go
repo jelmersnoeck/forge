@@ -233,3 +233,42 @@ func TestAssemble_CacheControlTTL(t *testing.T) {
 	r.Contains(staticBlock.Text, "CLAUDE.md")
 	r.Equal("global", staticBlock.CacheControl.Scope)
 }
+
+func TestAssemble_AgentDefinitions_DeterministicOrder(t *testing.T) {
+	// Agent definitions are stored in a map. Without sorting, the prompt text
+	// changes every turn, busting the Anthropic prompt cache.
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		AgentDefinitions: map[string]types.AgentDefinition{
+			"troy":    {Name: "troy", Description: "Football and plumbing"},
+			"abed":    {Name: "abed", Description: "Film and TV analysis"},
+			"britta":  {Name: "britta", Description: "The worst"},
+			"jeff":    {Name: "jeff", Description: "Lawyer turned student"},
+			"shirley": {Name: "shirley", Description: "Baking and judgment"},
+		},
+	}
+
+	// Get canonical output
+	canonical := Assemble(bundle, "/greendale")
+	r.GreaterOrEqual(len(canonical), 2)
+	canonicalText := canonical[1].Text
+
+	// Must contain agents in alphabetical order
+	abedIdx := strings.Index(canonicalText, "abed")
+	brittaIdx := strings.Index(canonicalText, "britta")
+	jeffIdx := strings.Index(canonicalText, "jeff")
+	shirleyIdx := strings.Index(canonicalText, "shirley")
+	troyIdx := strings.Index(canonicalText, "troy")
+
+	r.Greater(brittaIdx, abedIdx, "agents not sorted: britta before abed")
+	r.Greater(jeffIdx, brittaIdx, "agents not sorted: jeff before britta")
+	r.Greater(shirleyIdx, jeffIdx, "agents not sorted: shirley before jeff")
+	r.Greater(troyIdx, shirleyIdx, "agents not sorted: troy before shirley")
+
+	// Run 50 more times — must be byte-identical for cache stability
+	for i := 0; i < 50; i++ {
+		blocks := Assemble(bundle, "/greendale")
+		r.Equal(canonicalText, blocks[1].Text, "iteration %d: prompt text changed", i)
+	}
+}

@@ -2,7 +2,9 @@
 package tools
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -49,7 +51,7 @@ func (r *Registry) IsReadOnly(name string) bool {
 	return ok && def.ReadOnly
 }
 
-// All returns all registered tool definitions.
+// All returns all registered tool definitions in deterministic name order.
 func (r *Registry) All() []types.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -57,13 +59,21 @@ func (r *Registry) All() []types.ToolDefinition {
 	for _, def := range r.tools {
 		defs = append(defs, def)
 	}
+	slices.SortFunc(defs, func(a, b types.ToolDefinition) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
 	return defs
 }
 
-// Schemas returns schemas for all registered tools.
+// Schemas returns schemas for all registered tools in deterministic name order.
 // Only the last tool gets cache_control — a single breakpoint caches the
 // entire tool list. Anthropic's API allows at most 4 cache_control blocks
 // across all system + tool blocks combined.
+//
+// Deterministic ordering is critical: Go map iteration is random, so without
+// sorting, the serialized tool list changes every turn, busting the Anthropic
+// prompt cache (~10-20% hit rate). With sorting, the prefix is byte-identical
+// across turns and the cache stays warm.
 func (r *Registry) Schemas() []types.ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -75,6 +85,10 @@ func (r *Registry) Schemas() []types.ToolSchema {
 			InputSchema: def.InputSchema,
 		})
 	}
+
+	slices.SortFunc(schemas, func(a, b types.ToolSchema) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
 
 	// Single cache breakpoint on the last tool covers all tools
 	if len(schemas) > 0 {

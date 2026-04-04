@@ -67,24 +67,16 @@ func TestRegistry(t *testing.T) {
 
 				schemas := reg.Schemas()
 				r.Len(schemas, 2)
-				names := make(map[string]bool)
-				for _, s := range schemas {
-					names[s.Name] = true
-				}
-				r.True(names["greendale_tool"])
-				r.True(names["chang_tool"])
+
+				// Must be sorted by name for deterministic cache prefix
+				r.Equal("chang_tool", schemas[0].Name)
+				r.Equal("greendale_tool", schemas[1].Name)
 
 				// Only the last tool should have cache control (single breakpoint covers all)
-				cacheCount := 0
-				for _, schema := range schemas {
-					if schema.CacheControl != nil {
-						cacheCount++
-						r.Equal("ephemeral", schema.CacheControl.Type, "tool %s wrong cache type", schema.Name)
-						r.Equal("1h", schema.CacheControl.TTL, "tool %s wrong TTL", schema.Name)
-					}
-				}
-				r.Equal(1, cacheCount, "exactly one tool should have cache control")
-				r.NotNil(schemas[len(schemas)-1].CacheControl, "last tool should have cache control")
+				r.Nil(schemas[0].CacheControl, "first tool should not have cache control")
+				r.NotNil(schemas[1].CacheControl, "last tool should have cache control")
+				r.Equal("ephemeral", schemas[1].CacheControl.Type)
+				r.Equal("1h", schemas[1].CacheControl.TTL)
 			},
 		},
 		"execute tool": {
@@ -268,4 +260,42 @@ func TestTruncateResult_ImagePassthrough(t *testing.T) {
 	r.NoError(err)
 	r.Equal("image", result.Content[0].Type)
 	r.Equal(10000, len(result.Content[0].Source.Data)) // untouched
+}
+
+func TestSchemas_DeterministicOrder(t *testing.T) {
+	// Map iteration order in Go is randomized. Without sorting, the tool list
+	// changes every turn, busting the Anthropic prompt cache. Run 50 iterations
+	// to catch non-determinism (probability of accidental pass ≈ 0 for 5+ tools).
+	r := require.New(t)
+
+	reg := NewRegistry()
+	names := []string{"Write", "Edit", "Bash", "Glob", "Grep", "Read", "WebSearch"}
+	for _, name := range names {
+		reg.Register(types.ToolDefinition{
+			Name:        name,
+			Description: "Greendale tool: " + name,
+			InputSchema: map[string]any{"type": "object"},
+			Handler:     func(map[string]any, types.ToolContext) (types.ToolResult, error) { return types.ToolResult{}, nil },
+		})
+	}
+
+	// Capture the canonical order
+	canonical := reg.Schemas()
+	canonicalNames := make([]string, len(canonical))
+	for i, s := range canonical {
+		canonicalNames[i] = s.Name
+	}
+
+	// Verify it's actually sorted
+	for i := 1; i < len(canonicalNames); i++ {
+		r.Less(canonicalNames[i-1], canonicalNames[i], "schemas not sorted: %s >= %s", canonicalNames[i-1], canonicalNames[i])
+	}
+
+	// Run 50 more times — must be identical every time
+	for i := 0; i < 50; i++ {
+		schemas := reg.Schemas()
+		for j, s := range schemas {
+			r.Equal(canonicalNames[j], s.Name, "iteration %d: order changed at index %d", i, j)
+		}
+	}
 }

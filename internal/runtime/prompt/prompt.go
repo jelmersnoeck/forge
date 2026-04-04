@@ -2,8 +2,10 @@
 package prompt
 
 import (
+	"cmp"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -114,10 +116,18 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		hasContent = true
 	}
 
-	// Agent definitions
+	// Agent definitions (sorted for deterministic output / prompt caching)
 	if len(bundle.AgentDefinitions) > 0 {
 		bundledContent.WriteString("Available Agents:\n\n")
-		for name, agent := range bundle.AgentDefinitions {
+		names := make([]string, 0, len(bundle.AgentDefinitions))
+		for name := range bundle.AgentDefinitions {
+			names = append(names, name)
+		}
+		slices.SortFunc(names, func(a, b string) int {
+			return cmp.Compare(a, b)
+		})
+		for _, name := range names {
+			agent := bundle.AgentDefinitions[name]
 			bundledContent.WriteString(fmt.Sprintf("- **%s**: %s\n", name, agent.Description))
 			if agent.Model != "" {
 				bundledContent.WriteString(fmt.Sprintf("  Model: %s\n", agent.Model))
