@@ -1,19 +1,21 @@
 package tools
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"strings"
-	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
 // WebSearchTool returns the WebSearch tool definition.
+// Under the hood it makes a sub-call to the Anthropic API with the server-side
+// web_search tool, then reformats the results as plain text. This keeps the
+// main conversation free of opaque server_tool_use / web_search_tool_result
+// blocks and lets us use a cheaper model for the search.
 func WebSearchTool() types.ToolDefinition {
 	return types.ToolDefinition{
 		Name: "WebSearch",
@@ -54,237 +56,151 @@ func webSearchHandler(input map[string]any, ctx types.ToolContext) (types.ToolRe
 	numResults := 5
 	if n, ok := input["num_results"].(float64); ok {
 		numResults = int(n)
-		if numResults > 10 {
+		switch {
+		case numResults > 10:
 			numResults = 10
-		}
-		if numResults < 1 {
+		case numResults < 1:
 			numResults = 1
 		}
 	}
 
-	// Check which search provider is configured
-	provider := os.Getenv("SEARCH_PROVIDER")
-	if provider == "" {
-		provider = "duckduckgo" // default
-	}
-
-	var results []SearchResult
-	var err error
-
-	switch provider {
-	case "brave":
-		results, err = searchBrave(query, numResults)
-	case "duckduckgo":
-		results, err = searchDuckDuckGo(query, numResults)
-	default:
-		return types.ToolResult{IsError: true}, fmt.Errorf("unknown search provider: %s", provider)
-	}
-
-	if err != nil {
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{
 				Type: "text",
-				Text: fmt.Sprintf("Search failed: %v\n\nTip: Set SEARCH_PROVIDER=brave and BRAVE_API_KEY if you have a Brave Search API key.", err),
+				Text: "WebSearch requires ANTHROPIC_API_KEY to be set.",
 			}},
 			IsError: true,
 		}, nil
 	}
 
-	if len(results) == 0 {
+	results, err := searchViaAnthropic(ctx.Ctx, apiKey, query, numResults)
+	if err != nil {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{
 				Type: "text",
-				Text: fmt.Sprintf("No results found for: %s", query),
+				Text: fmt.Sprintf("Search failed: %v", err),
 			}},
+			IsError: true,
 		}, nil
 	}
-
-	// Format results
-	var output strings.Builder
-	output.WriteString(fmt.Sprintf("Search results for: %s\n\n", query))
-
-	for i, result := range results {
-		output.WriteString(fmt.Sprintf("%d. %s\n", i+1, result.Title))
-		output.WriteString(fmt.Sprintf("   %s\n", result.URL))
-		if result.Description != "" {
-			output.WriteString(fmt.Sprintf("   %s\n", result.Description))
-		}
-		output.WriteString("\n")
-	}
-
-	output.WriteString(fmt.Sprintf("Found %d result(s). Use the URLs to get more detailed information if needed.", len(results)))
 
 	return types.ToolResult{
 		Content: []types.ToolResultContent{{
 			Type: "text",
-			Text: output.String(),
+			Text: results,
 		}},
 	}, nil
 }
 
-type SearchResult struct {
-	Title       string
-	URL         string
-	Description string
+// searchResult is a single hit from web search.
+type searchResult struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
-// searchDuckDuckGo uses DuckDuckGo's instant answer API
-func searchDuckDuckGo(query string, numResults int) ([]SearchResult, error) {
-	// Use DuckDuckGo's instant answer API
-	// Note: This is limited compared to full search, but doesn't require API key
-	apiURL := fmt.Sprintf("https://api.duckduckgo.com/?q=%s&format=json&no_html=1&skip_disambig=1",
-		url.QueryEscape(query))
+// searchViaAnthropic makes a sub-call to the Anthropic API with the server-side
+// web_search tool, collects the results, and formats them as plain text.
+//
+//	┌──────────────────────┐
+//	│   Main conversation  │
+//	│ (model asks to       │
+//	│  use WebSearch tool) │
+//	└────────┬─────────────┘
+//	         │ tool handler
+//	         ▼
+//	┌──────────────────────┐
+//	│  Sub-call to API     │
+//	│  with web_search     │
+//	│  server tool         │
+//	└────────┬─────────────┘
+//	         │ response contains:
+//	         │  server_tool_use + web_search_tool_result + text
+//	         ▼
+//	┌──────────────────────┐
+//	│  Extract results,    │
+//	│  format as text      │
+//	│  → tool_result       │
+//	└──────────────────────┘
+func searchViaAnthropic(ctx context.Context, apiKey, query string, numResults int) (string, error) {
+	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(apiURL)
+	// Use haiku for the search sub-call — fast and cheap.
+	// AllowedCallers must include "direct" because most models don't support
+	// "programmatic" tool calling for server-side tools like web_search.
+	msg, err := client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeHaiku4_5,
+		MaxTokens: 1024,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(
+				anthropic.NewTextBlock("Perform a web search for: " + query),
+			),
+		},
+		System: []anthropic.TextBlockParam{
+			{Text: "You are a web search assistant. Search for the query and present the results."},
+		},
+		Tools: []anthropic.ToolUnionParam{
+			{OfWebSearchTool20260209: &anthropic.WebSearchTool20260209Param{
+				MaxUses:        anthropic.Int(int64(numResults)),
+				AllowedCallers: []string{"direct"},
+			}},
+		},
+		ToolChoice: anthropic.ToolChoiceUnionParam{
+			OfAny: &anthropic.ToolChoiceAnyParam{},
+		},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+		return "", fmt.Errorf("API call: %w", err)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
+	return formatSearchResponse(msg.Content, query), nil
+}
 
-	var data struct {
-		Abstract       string `json:"Abstract"`
-		AbstractText   string `json:"AbstractText"`
-		AbstractSource string `json:"AbstractSource"`
-		AbstractURL    string `json:"AbstractURL"`
-		RelatedTopics  []struct {
-			Text     string `json:"Text"`
-			FirstURL string `json:"FirstURL"`
-		} `json:"RelatedTopics"`
-		Results []struct {
-			Text     string `json:"Text"`
-			FirstURL string `json:"FirstURL"`
-		} `json:"Results"`
-	}
+// formatSearchResponse extracts search results from the API response content
+// blocks and formats them as readable text.
+func formatSearchResponse(blocks []anthropic.ContentBlockUnion, query string) string {
+	var allResults []searchResult
+	var textParts []string
 
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-
-	var results []SearchResult
-
-	// Add abstract if available
-	if data.AbstractText != "" {
-		results = append(results, SearchResult{
-			Title:       data.AbstractSource,
-			URL:         data.AbstractURL,
-			Description: truncate(data.AbstractText, 200),
-		})
-	}
-
-	// Add related topics
-	for _, topic := range data.RelatedTopics {
-		if len(results) >= numResults {
-			break
-		}
-		if topic.FirstURL != "" {
-			title := topic.Text
-			if len(title) > 100 {
-				parts := strings.Split(title, " - ")
-				if len(parts) > 0 {
-					title = parts[0]
-				}
+	for _, block := range blocks {
+		switch block.Type {
+		case "web_search_tool_result":
+			ws := block.AsWebSearchToolResult()
+			results := ws.Content.AsWebSearchResultBlockArray()
+			for _, r := range results {
+				allResults = append(allResults, searchResult{
+					Title: r.Title,
+					URL:   r.URL,
+				})
 			}
-			results = append(results, SearchResult{
-				Title:       title,
-				URL:         topic.FirstURL,
-				Description: truncate(topic.Text, 200),
-			})
+
+		case "text":
+			if text := strings.TrimSpace(block.Text); text != "" {
+				textParts = append(textParts, text)
+			}
 		}
 	}
 
-	// If we still don't have enough results, suggest using Brave
-	if len(results) == 0 {
-		return nil, fmt.Errorf("no results from DuckDuckGo API. For better search results, configure Brave Search API:\n" +
-			"1. Get API key from https://brave.com/search/api/\n" +
-			"2. Set SEARCH_PROVIDER=brave\n" +
-			"3. Set BRAVE_API_KEY=your_key")
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("Search results for: %s\n\n", query))
+
+	for i, r := range allResults {
+		out.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, r.Title, r.URL))
 	}
 
-	return results, nil
-}
-
-// searchBrave uses Brave Search API (requires API key)
-func searchBrave(query string, numResults int) ([]SearchResult, error) {
-	apiKey := os.Getenv("BRAVE_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("BRAVE_API_KEY environment variable not set.\n\n" +
-			"To use Brave Search:\n" +
-			"1. Get a free API key from https://brave.com/search/api/\n" +
-			"2. Set BRAVE_API_KEY=your_key_here\n" +
-			"3. Free tier includes 2,000 queries/month")
+	if len(textParts) > 0 {
+		out.WriteString("Summary:\n")
+		out.WriteString(strings.Join(textParts, "\n\n"))
+		out.WriteString("\n\n")
 	}
 
-	apiURL := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
-		url.QueryEscape(query), numResults)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	switch {
+	case len(allResults) == 0 && len(textParts) == 0:
+		return fmt.Sprintf("No results found for: %s", query)
+	case len(allResults) > 0:
+		out.WriteString(fmt.Sprintf("Found %d result(s).", len(allResults)))
 	}
 
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Subscription-Token", apiKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("invalid BRAVE_API_KEY. Get a key from https://brave.com/search/api/")
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	var data struct {
-		Web struct {
-			Results []struct {
-				Title       string `json:"title"`
-				URL         string `json:"url"`
-				Description string `json:"description"`
-			} `json:"results"`
-		} `json:"web"`
-	}
-
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-
-	var results []SearchResult
-	for _, item := range data.Web.Results {
-		results = append(results, SearchResult{
-			Title:       item.Title,
-			URL:         item.URL,
-			Description: truncate(item.Description, 200),
-		})
-	}
-
-	return results, nil
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
+	return out.String()
 }

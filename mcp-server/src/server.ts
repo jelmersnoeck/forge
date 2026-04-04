@@ -227,18 +227,6 @@ async function fetchForgeTools(): Promise<any[]> {
           },
         },
         {
-          name: "WebSearch",
-          description: "Search the web for information",
-          inputSchema: {
-            type: "object",
-            properties: {
-              query: { type: "string", description: "Search query" },
-              num_results: { type: "number", description: "Number of results (default 5, max 10)" },
-            },
-            required: ["query"],
-          },
-        },
-        {
           name: "Reflect",
           description: "Reflect on the session and capture learnings",
           inputSchema: {
