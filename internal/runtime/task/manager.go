@@ -88,21 +88,26 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Already killed/stopped — don't overwrite terminal state.
+	if task.Status.IsTerminal() {
+		return
+	}
+
 	task.EndTime = &now
 	task.Output = string(output)
 
 	if err != nil {
 		task.Status = types.TaskStatusFailed
 
-		// Check if it was a timeout
-		if ctx.Err() == context.DeadlineExceeded {
+		switch {
+		case ctx.Err() == context.DeadlineExceeded:
 			task.Error = fmt.Sprintf("command timed out after %d seconds", task.Timeout)
 			task.Output += fmt.Sprintf("\n\n⏱️  TIMEOUT: Command exceeded %d second limit.\n", task.Timeout)
 			task.Output += "Consider:\n"
 			task.Output += "  - Increasing the timeout if the task legitimately needs more time\n"
 			task.Output += "  - Breaking the task into smaller steps\n"
 			task.Output += "  - Checking if the command is stuck waiting for input\n"
-		} else {
+		default:
 			task.Error = err.Error()
 		}
 

@@ -97,6 +97,9 @@ func TestManager_StopTask(t *testing.T) {
 	err = m.StopTask(task.ID)
 	r.NoError(err)
 
+	// Let the background goroutine finish (it will see terminal status and bail).
+	time.Sleep(200 * time.Millisecond)
+
 	retrieved, found := m.GetTask(task.ID)
 	r.True(found)
 	r.Equal(types.TaskStatusKilled, retrieved.Status)
