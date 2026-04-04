@@ -117,3 +117,14 @@ func FormatNumber(n int) string {
 	}
 	return string(result)
 }
+
+// FormatNumberWithPercent formats an integer with thousands separators and percentage.
+// Example: FormatNumberWithPercent(1500, 10000) -> "1,500 (15%)"
+func FormatNumberWithPercent(n, total int) string {
+	formatted := FormatNumber(n)
+	if total == 0 {
+		return formatted
+	}
+	percent := float64(n) / float64(total) * 100.0
+	return fmt.Sprintf("%s (%.0f%%)", formatted, percent)
+}

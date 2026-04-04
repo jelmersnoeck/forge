@@ -161,3 +161,54 @@ func TestFormatNumber(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatNumberWithPercent(t *testing.T) {
+	tests := map[string]struct {
+		num   int
+		total int
+		want  string
+	}{
+		"zero total": {
+			num:   100,
+			total: 0,
+			want:  "100",
+		},
+		"zero value": {
+			num:   0,
+			total: 1000,
+			want:  "0 (0%)",
+		},
+		"15 percent": {
+			num:   1500,
+			total: 10000,
+			want:  "1,500 (15%)",
+		},
+		"50 percent": {
+			num:   50,
+			total: 100,
+			want:  "50 (50%)",
+		},
+		"100 percent": {
+			num:   1000,
+			total: 1000,
+			want:  "1,000 (100%)",
+		},
+		"small percent rounds to zero": {
+			num:   1,
+			total: 1000,
+			want:  "1 (0%)",
+		},
+		"large numbers": {
+			num:   250000,
+			total: 1000000,
+			want:  "250,000 (25%)",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := FormatNumberWithPercent(tc.num, tc.total)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
