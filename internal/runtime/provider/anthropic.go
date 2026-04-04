@@ -24,30 +24,67 @@ func NewAnthropic(apiKey string) *AnthropicProvider {
 	}
 }
 
-// Chat creates a streaming messages request and returns a channel of deltas.
-func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+// toCacheControl converts our CacheControl type to the Anthropic SDK param.
+func toCacheControl(cc *types.CacheControl) anthropic.CacheControlEphemeralParam {
+	param := anthropic.NewCacheControlEphemeralParam()
+	switch cc.TTL {
+	case "1h":
+		param.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+	case "5m":
+		param.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+	}
+	return param
+}
+
+// maxCacheBreakpoints is the Anthropic API limit on cache_control blocks
+// across the entire request (system + tools + messages combined).
+const maxCacheBreakpoints = 4
+
+// buildRequest converts a ChatRequest into Anthropic SDK params, enforcing
+// the cache_control breakpoint limit.
+//
+//	Priority (highest to lowest):
+//	  1. System blocks  -- most stable, biggest token savings
+//	  2. Tool schemas   -- stable across turns
+//	  3. Messages       -- changes every turn but caches growing history
+func buildRequest(req types.ChatRequest) (anthropic.MessageNewParams, error) {
+	cacheRemaining := maxCacheBreakpoints
+
 	system := make([]anthropic.TextBlockParam, len(req.System))
 	for i, block := range req.System {
 		textBlock := anthropic.TextBlockParam{
 			Text: block.Text,
 		}
+		if block.CacheControl != nil && cacheRemaining > 0 {
+			textBlock.CacheControl = toCacheControl(block.CacheControl)
+			cacheRemaining--
+		}
+		system[i] = textBlock
+	}
 
-		if block.CacheControl != nil {
-			cacheControl := anthropic.NewCacheControlEphemeralParam()
-
-			// Set TTL if specified (1h for extended cache, default is 5m)
-			if block.CacheControl.TTL == "1h" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
-			} else if block.CacheControl.TTL == "5m" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
-			}
-			// Note: Scope (global) not yet supported in Go SDK v1.27.1
-			// The API supports it but CacheControlEphemeralParam doesn't expose it
-
-			textBlock.CacheControl = cacheControl
+	tools := make([]anthropic.ToolUnionParam, len(req.Tools))
+	for i, tool := range req.Tools {
+		schemaBytes, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			return anthropic.MessageNewParams{}, fmt.Errorf("marshal tool input schema: %w", err)
 		}
 
-		system[i] = textBlock
+		var inputSchema anthropic.ToolInputSchemaParam
+		if err := json.Unmarshal(schemaBytes, &inputSchema); err != nil {
+			return anthropic.MessageNewParams{}, fmt.Errorf("unmarshal tool input schema: %w", err)
+		}
+
+		toolUnion := anthropic.ToolUnionParamOfTool(inputSchema, tool.Name)
+		if tool.Description != "" {
+			toolUnion.OfTool.Description = anthropic.Opt(tool.Description)
+		}
+
+		if tool.CacheControl != nil && cacheRemaining > 0 {
+			toolUnion.OfTool.CacheControl = toCacheControl(tool.CacheControl)
+			cacheRemaining--
+		}
+
+		tools[i] = toolUnion
 	}
 
 	messages := make([]anthropic.MessageParam, len(req.Messages))
@@ -56,34 +93,34 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		for j, block := range msg.Content {
 			switch block.Type {
 			case "text":
-				// Create TextBlockParam with optional cache control
 				textBlock := anthropic.TextBlockParam{
 					Text: block.Text,
 				}
-				
-				// Add cache control if specified (for message-level caching)
-				if block.CacheControl != nil {
-					cacheControl := anthropic.NewCacheControlEphemeralParam()
-					if block.CacheControl.TTL == "1h" {
-						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
-					} else if block.CacheControl.TTL == "5m" {
-						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
-					}
-					textBlock.CacheControl = cacheControl
+				if block.CacheControl != nil && cacheRemaining > 0 {
+					textBlock.CacheControl = toCacheControl(block.CacheControl)
+					cacheRemaining--
 				}
-				
-				// Wrap in ContentBlockParamUnion
 				content[j] = anthropic.ContentBlockParamUnion{
 					OfText: &textBlock,
 				}
 			case "tool_use":
-				content[j] = anthropic.NewToolUseBlock(block.ID, block.Input, block.Name)
+				toolUse := anthropic.NewToolUseBlock(block.ID, block.Input, block.Name)
+				if block.CacheControl != nil && cacheRemaining > 0 && toolUse.OfToolUse != nil {
+					toolUse.OfToolUse.CacheControl = toCacheControl(block.CacheControl)
+					cacheRemaining--
+				}
+				content[j] = toolUse
 			case "tool_result":
 				resultJSON, err := json.Marshal(block.Content)
 				if err != nil {
-					return nil, fmt.Errorf("marshal tool result: %w", err)
+					return anthropic.MessageNewParams{}, fmt.Errorf("marshal tool result: %w", err)
 				}
-				content[j] = anthropic.NewToolResultBlock(block.ToolUseID, string(resultJSON), false)
+				toolResult := anthropic.NewToolResultBlock(block.ToolUseID, string(resultJSON), false)
+				if block.CacheControl != nil && cacheRemaining > 0 && toolResult.OfToolResult != nil {
+					toolResult.OfToolResult.CacheControl = toCacheControl(block.CacheControl)
+					cacheRemaining--
+				}
+				content[j] = toolResult
 			}
 		}
 
@@ -93,41 +130,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		}
 	}
 
-	tools := make([]anthropic.ToolUnionParam, len(req.Tools))
-	for i, tool := range req.Tools {
-		schemaBytes, err := json.Marshal(tool.InputSchema)
-		if err != nil {
-			return nil, fmt.Errorf("marshal tool input schema: %w", err)
-		}
-
-		var inputSchema anthropic.ToolInputSchemaParam
-		if err := json.Unmarshal(schemaBytes, &inputSchema); err != nil {
-			return nil, fmt.Errorf("unmarshal tool input schema: %w", err)
-		}
-
-		toolUnion := anthropic.ToolUnionParamOfTool(inputSchema, tool.Name)
-		if tool.Description != "" {
-			toolUnion.OfTool.Description = anthropic.Opt(tool.Description)
-		}
-
-		// Set cache control if provided (tools rarely change, so cache them)
-		if tool.CacheControl != nil {
-			cacheControl := anthropic.NewCacheControlEphemeralParam()
-
-			// Set TTL if specified
-			if tool.CacheControl.TTL == "1h" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
-			} else if tool.CacheControl.TTL == "5m" {
-				cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
-			}
-
-			toolUnion.OfTool.CacheControl = cacheControl
-		}
-
-		tools[i] = toolUnion
-	}
-
-	streamParams := anthropic.MessageNewParams{
+	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
 		MaxTokens: int64(req.MaxTokens),
 		Messages:  messages,
@@ -135,7 +138,17 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 	}
 
 	if len(tools) > 0 {
-		streamParams.Tools = tools
+		params.Tools = tools
+	}
+
+	return params, nil
+}
+
+// Chat creates a streaming messages request and returns a channel of deltas.
+func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	streamParams, err := buildRequest(req)
+	if err != nil {
+		return nil, err
 	}
 
 	stream := p.client.Messages.NewStreaming(ctx, streamParams)
