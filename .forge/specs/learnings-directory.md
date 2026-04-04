@@ -1,6 +1,6 @@
 ---
 id: learnings-directory
-status: draft
+status: implemented
 ---
 # Move learnings from AGENTS.md to .forge/learnings/
 
