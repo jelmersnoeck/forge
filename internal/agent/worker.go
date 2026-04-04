@@ -249,7 +249,7 @@ func (w *Worker) makeAgentRunner(
 
 		maxTurns := agent.MaxTurns
 		if maxTurns < 0 {
-			maxTurns = 200 // default for sub-agents when caller didn't specify
+			maxTurns = 500 // default for sub-agents when caller didn't specify
 		}
 		// 0 = unlimited, positive = explicit limit
 
