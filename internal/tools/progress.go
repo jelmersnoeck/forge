@@ -28,13 +28,6 @@ type GrepProgress struct {
 	MatchCount   int    `json:"matchCount"`
 }
 
-// WebSearchProgress tracks web search progress.
-type WebSearchProgress struct {
-	Query       string `json:"query"`
-	ResultCount int    `json:"resultCount"`
-	Status      string `json:"status"`
-}
-
 // EmitBashProgress emits a bash progress event.
 func EmitBashProgress(ctx types.ToolContext, toolUseID string, progress BashProgress) {
 	ctx.Emit(types.OutboundEvent{
@@ -52,17 +45,6 @@ func EmitGrepProgress(ctx types.ToolContext, toolUseID string, progress GrepProg
 		SessionID: ctx.SessionID,
 		Type:      "tool_progress",
 		ToolName:  "Grep",
-		Content:   "",
-		Timestamp: time.Now().UnixMilli(),
-	})
-}
-
-// EmitWebSearchProgress emits a web search progress event.
-func EmitWebSearchProgress(ctx types.ToolContext, toolUseID string, progress WebSearchProgress) {
-	ctx.Emit(types.OutboundEvent{
-		SessionID: ctx.SessionID,
-		Type:      "tool_progress",
-		ToolName:  "WebSearch",
 		Content:   "",
 		Timestamp: time.Now().UnixMilli(),
 	})
