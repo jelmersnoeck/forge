@@ -26,12 +26,15 @@ func TestCalculate(t *testing.T) {
 		"sonnet 3.5 with cache": {
 			model: "claude-3-5-sonnet-20241022",
 			usage: types.TokenUsage{
-				InputTokens:         1000,
+				InputTokens:         1000, // Non-cached input
 				OutputTokens:        500,
-				CacheCreationTokens: 5000,
-				CacheReadTokens:     10000,
+				CacheCreationTokens: 5000, // Separate from InputTokens
+				CacheReadTokens:     10000, // Separate from InputTokens
 			},
-			want: 0.03225, // 0.003 + 0.0075 + (5000/1M * 3.75) + (10000/1M * 0.30) = 0.003 + 0.0075 + 0.01875 + 0.003
+			// Cost: (1000/1M * $3) + (500/1M * $15) + (5000/1M * $3.75) + (10000/1M * $0.30)
+			//     = $0.003 + $0.0075 + $0.01875 + $0.003
+			//     = $0.03225
+			want: 0.03225,
 		},
 		"opus high cost": {
 			model: "claude-3-opus-20240229",
