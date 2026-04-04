@@ -11,13 +11,19 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
+// AgentRunner executes a sub-agent's conversation loop.
+// It receives the sub-agent metadata and should block until the agent finishes.
+// The runner must update agent.Output and agent.Error before returning.
+type AgentRunner func(ctx context.Context, agent *types.SubAgent) error
+
 // Manager handles background task lifecycle.
 type Manager struct {
-	mu       sync.RWMutex
-	tasks    map[string]*types.Task
-	agents   map[string]*types.SubAgent
-	warnings chan string // Channel for timeout warnings
-	stopMon  chan struct{}
+	mu          sync.RWMutex
+	tasks       map[string]*types.Task
+	agents      map[string]*types.SubAgent
+	agentRunner AgentRunner
+	warnings    chan string // Channel for timeout warnings
+	stopMon     chan struct{}
 }
 
 // NewManager creates a task manager.
@@ -87,7 +93,7 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 
 	if err != nil {
 		task.Status = types.TaskStatusFailed
-		
+
 		// Check if it was a timeout
 		if ctx.Err() == context.DeadlineExceeded {
 			task.Error = fmt.Sprintf("command timed out after %d seconds", task.Timeout)
@@ -99,7 +105,7 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 		} else {
 			task.Error = err.Error()
 		}
-		
+
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code := exitErr.ExitCode()
 			task.ExitCode = &code
@@ -108,6 +114,73 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 		task.Status = types.TaskStatusCompleted
 		code := 0
 		task.ExitCode = &code
+	}
+}
+
+// SetAgentRunner configures the function used to execute sub-agents.
+// Must be called before any Agent tool invocations (typically during worker setup).
+func (m *Manager) SetAgentRunner(runner AgentRunner) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agentRunner = runner
+}
+
+// RunAgent spawns a sub-agent in a background goroutine using the configured AgentRunner.
+// Returns immediately; the agent's status/output are updated asynchronously.
+func (m *Manager) RunAgent(agentID string) error {
+	m.mu.Lock()
+	agent, ok := m.agents[agentID]
+	runner := m.agentRunner
+	m.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("agent not found: %s", agentID)
+	}
+
+	if runner == nil {
+		return fmt.Errorf("no agent runner configured — sub-agent execution unavailable")
+	}
+
+	go func() {
+		m.updateAgentStatus(agentID, types.TaskStatusRunning)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Store cancel so StopAgent can interrupt
+		m.mu.Lock()
+		agent.Cancel = cancel
+		m.mu.Unlock()
+
+		err := runner(ctx, agent)
+
+		now := time.Now()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		// Don't overwrite terminal status (e.g., StopAgent already set "killed")
+		if agent.Status.IsTerminal() {
+			return
+		}
+
+		agent.EndTime = &now
+		if err != nil {
+			agent.Status = types.TaskStatusFailed
+			agent.Error = err.Error()
+		} else {
+			agent.Status = types.TaskStatusCompleted
+		}
+	}()
+
+	return nil
+}
+
+// updateAgentStatus updates a sub-agent's status.
+func (m *Manager) updateAgentStatus(agentID string, status types.TaskStatus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if agent, ok := m.agents[agentID]; ok {
+		agent.Status = status
 	}
 }
 
@@ -222,6 +295,10 @@ func (m *Manager) StopAgent(agentID string) error {
 
 	if agent.Status.IsTerminal() {
 		return fmt.Errorf("agent already terminated: %s", agent.Status)
+	}
+
+	if agent.Cancel != nil {
+		agent.Cancel()
 	}
 
 	now := time.Now()

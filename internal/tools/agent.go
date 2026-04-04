@@ -114,7 +114,7 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		maxTurns = int(m)
 	}
 
-	agent, err := taskManager.CreateAgent(ctx.SessionID, agentType, description, prompt, model, tools, disallowedTools, maxTurns)
+	agent, err := taskMgr.CreateAgent(ctx.SessionID, agentType, description, prompt, model, tools, disallowedTools, maxTurns)
 	if err != nil {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to create agent: %v", err)}},
@@ -129,13 +129,21 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		Content:   fmt.Sprintf("Sub-agent created: %s (ID: %s, Session: %s)", description, agent.ID, agent.SessionID),
 	})
 
+	// Start the agent's conversation loop in the background
+	if err := taskMgr.RunAgent(agent.ID); err != nil {
+		return types.ToolResult{
+			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("agent created but failed to start: %v", err)}},
+			IsError: true,
+		}, nil
+	}
+
 	result := map[string]any{
-		"agentId":    agent.ID,
-		"sessionId":  agent.SessionID,
-		"type":       agent.Type,
-		"status":     string(agent.Status),
-		"maxTurns":   agent.MaxTurns,
-		"turnCount":  agent.TurnCount,
+		"agentId":   agent.ID,
+		"sessionId": agent.SessionID,
+		"type":      agent.Type,
+		"status":    string(agent.Status),
+		"maxTurns":  agent.MaxTurns,
+		"turnCount": agent.TurnCount,
 	}
 
 	if len(agent.Tools) > 0 {
@@ -151,7 +159,7 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		Content: []types.ToolResultContent{
 			{
 				Type: "text",
-				Text: fmt.Sprintf("Sub-agent created:\n%s\n\nNote: Sub-agent execution is not yet implemented. This tool creates the agent metadata only.", resultJSON),
+				Text: fmt.Sprintf("Sub-agent created and running:\n%s\n\nUse AgentGet(\"%s\") to check status or AgentStop(\"%s\") to stop.", resultJSON, agent.ID, agent.ID),
 			},
 		},
 	}, nil
@@ -186,7 +194,7 @@ func handleAgentGet(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		}, nil
 	}
 
-	agent, found := taskManager.GetAgent(agentID)
+	agent, found := taskMgr.GetAgent(agentID)
 	if !found {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("agent not found: %s", agentID)}},
@@ -245,7 +253,7 @@ func AgentListTool() types.ToolDefinition {
 }
 
 func handleAgentList(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	agents := taskManager.ListAgents(ctx.SessionID)
+	agents := taskMgr.ListAgents(ctx.SessionID)
 
 	if len(agents) == 0 {
 		return types.ToolResult{
@@ -316,7 +324,7 @@ func handleAgentStop(input map[string]any, ctx types.ToolContext) (types.ToolRes
 		}, nil
 	}
 
-	if err := taskManager.StopAgent(agentID); err != nil {
+	if err := taskMgr.StopAgent(agentID); err != nil {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to stop agent: %v", err)}},
 			IsError: true,

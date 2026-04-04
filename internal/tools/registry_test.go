@@ -299,3 +299,87 @@ func TestSchemas_DeterministicOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestFiltered(t *testing.T) {
+	nopHandler := func(map[string]any, types.ToolContext) (types.ToolResult, error) {
+		return types.ToolResult{}, nil
+	}
+
+	makeRegistry := func() *Registry {
+		reg := NewRegistry()
+		for _, name := range []string{"Read", "Write", "Edit", "Bash", "Glob"} {
+			reg.Register(types.ToolDefinition{
+				Name:    name,
+				Handler: nopHandler,
+			})
+		}
+		return reg
+	}
+
+	tests := map[string]struct {
+		allow []string
+		deny  []string
+		want  []string
+	}{
+		"no filters": {
+			want: []string{"Bash", "Edit", "Glob", "Read", "Write"},
+		},
+		"allow list only": {
+			allow: []string{"Read", "Glob"},
+			want:  []string{"Glob", "Read"},
+		},
+		"deny list only": {
+			deny: []string{"Bash", "Write"},
+			want: []string{"Edit", "Glob", "Read"},
+		},
+		"allow and deny": {
+			allow: []string{"Read", "Write", "Bash"},
+			deny:  []string{"Bash"},
+			want:  []string{"Read", "Write"},
+		},
+		"deny everything": {
+			deny: []string{"Read", "Write", "Edit", "Bash", "Glob"},
+			want: []string{},
+		},
+		"allow nonexistent": {
+			allow: []string{"DeanPeltonTool"},
+			want:  []string{},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			reg := makeRegistry()
+			filtered := reg.Filtered(tc.allow, tc.deny)
+
+			got := filtered.All()
+			gotNames := make([]string, len(got))
+			for i, d := range got {
+				gotNames[i] = d.Name
+			}
+			r.Equal(tc.want, gotNames)
+
+			// Original registry unchanged
+			r.Len(reg.All(), 5)
+		})
+	}
+}
+
+func TestFiltered_Independence(t *testing.T) {
+	r := require.New(t)
+	nopHandler := func(map[string]any, types.ToolContext) (types.ToolResult, error) {
+		return types.ToolResult{}, nil
+	}
+
+	reg := NewRegistry()
+	reg.Register(types.ToolDefinition{Name: "Read", Handler: nopHandler})
+	reg.Register(types.ToolDefinition{Name: "Write", Handler: nopHandler})
+
+	filtered := reg.Filtered([]string{"Read"}, nil)
+
+	// Mutate filtered — should not affect original
+	filtered.Register(types.ToolDefinition{Name: "Troy", Handler: nopHandler})
+	r.Len(reg.All(), 2)
+	r.Len(filtered.All(), 2)
+}
