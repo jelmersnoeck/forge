@@ -57,6 +57,10 @@ func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		return types.ToolResult{IsError: true}, fmt.Errorf("new_string is required")
 	}
 
+	if isEnvFile(filePath) {
+		return envFileError(filePath), nil
+	}
+
 	replaceAll := false
 	if ra, ok := input["replace_all"].(bool); ok {
 		replaceAll = ra

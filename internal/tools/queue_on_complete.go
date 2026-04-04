@@ -39,6 +39,11 @@ func handleQueueOnComplete(input map[string]any, ctx types.ToolContext) (types.T
 		}, fmt.Errorf("command is required")
 	}
 
+	// Check for .env file access
+	if target := commandAccessesEnvFile(command); target != "" {
+		return envFileError(target), nil
+	}
+
 	description := ""
 	if desc, ok := input["description"].(string); ok {
 		description = desc
@@ -46,8 +51,8 @@ func handleQueueOnComplete(input map[string]any, ctx types.ToolContext) (types.T
 
 	// Emit a special event that the worker can intercept
 	ctx.Emit(types.OutboundEvent{
-		Type:    "queue_on_complete",
-		Content: command,
+		Type:     "queue_on_complete",
+		Content:  command,
 		ToolName: "Bash",
 	})
 

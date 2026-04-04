@@ -91,6 +91,11 @@ func globHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 			continue
 		}
 
+		// Never expose .env files
+		if isEnvFile(match) {
+			continue
+		}
+
 		files = append(files, fileInfo{
 			path:    match, // Return relative path from the match
 			modTime: info.ModTime().Unix(),

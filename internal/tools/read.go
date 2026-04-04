@@ -64,6 +64,10 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		limit = int(l)
 	}
 
+	if isEnvFile(filePath) {
+		return envFileError(filePath), nil
+	}
+
 	// Check if file exists
 	info, err := os.Stat(filePath)
 	if err != nil {

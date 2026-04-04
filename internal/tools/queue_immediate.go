@@ -39,6 +39,11 @@ func handleQueueImmediate(input map[string]any, ctx types.ToolContext) (types.To
 		}, fmt.Errorf("command is required")
 	}
 
+	// Check for .env file access
+	if target := commandAccessesEnvFile(command); target != "" {
+		return envFileError(target), nil
+	}
+
 	description := ""
 	if desc, ok := input["description"].(string); ok {
 		description = desc
@@ -46,10 +51,9 @@ func handleQueueImmediate(input map[string]any, ctx types.ToolContext) (types.To
 
 	// Emit a special event that the worker can intercept
 	ctx.Emit(types.OutboundEvent{
-		Type:    "queue_immediate",
-		Content: command,
+		Type:     "queue_immediate",
+		Content:  command,
 		ToolName: "Bash",
-		// Store description in a custom field if needed
 	})
 
 	resultMsg := fmt.Sprintf("✓ Queued to run after each tool: %s", command)

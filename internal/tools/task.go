@@ -69,6 +69,11 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 		}, nil
 	}
 
+	// Check for .env file access
+	if target := commandAccessesEnvFile(command); target != "" {
+		return envFileError(target), nil
+	}
+
 	timeout := 0
 	if t, ok := input["timeout"].(float64); ok {
 		timeout = int(t)

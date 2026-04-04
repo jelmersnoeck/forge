@@ -67,6 +67,11 @@ func grepHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		searchPath = p
 	}
 
+	// Block direct .env file access
+	if isEnvFile(searchPath) {
+		return envFileError(searchPath), nil
+	}
+
 	outputMode := "files_with_matches"
 	if om, ok := input["output_mode"].(string); ok {
 		outputMode = om
@@ -98,6 +103,12 @@ func grepHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	if glob, ok := input["glob"].(string); ok && glob != "" {
 		args = append(args, "--glob", glob)
 	}
+
+	// Ripgrep skips hidden files by default, so .env files are already
+	// excluded from directory searches. Direct .env path access is guarded
+	// by the isEnvFile check above. We add explicit exclusions as
+	// defense-in-depth in case hidden file search gets enabled upstream.
+	args = append(args, "--glob", "!.env", "--glob", "!.env.*")
 
 	// Pattern and path
 	args = append(args, pattern, searchPath)
