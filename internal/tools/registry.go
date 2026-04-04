@@ -146,6 +146,38 @@ func (r *Registry) truncateResult(result *types.ToolResult) {
 	}
 }
 
+// Filtered creates a new Registry containing only tools matching the constraints.
+//
+//   - If allowList is non-empty, only those tools are included.
+//   - Any tool in denyList is excluded regardless of the allow list.
+//
+// The returned registry is independent — mutations don't affect the original.
+func (r *Registry) Filtered(allowList, denyList []string) *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	allow := make(map[string]bool, len(allowList))
+	for _, name := range allowList {
+		allow[name] = true
+	}
+	deny := make(map[string]bool, len(denyList))
+	for _, name := range denyList {
+		deny[name] = true
+	}
+
+	filtered := NewRegistry()
+	for name, def := range r.tools {
+		if deny[name] {
+			continue
+		}
+		if len(allow) > 0 && !allow[name] {
+			continue
+		}
+		filtered.tools[name] = def
+	}
+	return filtered
+}
+
 // NewDefaultRegistry creates a registry with all built-in tools.
 func NewDefaultRegistry() *Registry {
 	r := NewRegistry()

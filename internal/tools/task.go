@@ -10,7 +10,19 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
-var taskManager = task.NewManager()
+// taskMgr is set by SetTaskManager during worker init.
+// Falls back to a default manager if not set.
+var taskMgr *task.Manager
+
+func init() {
+	taskMgr = task.NewManager()
+}
+
+// SetTaskManager configures the task manager used by task and agent tools.
+// Must be called before any task/agent tool invocations (typically during worker setup).
+func SetTaskManager(m *task.Manager) {
+	taskMgr = m
+}
 
 // TaskCreateTool creates background tasks (bash commands).
 func TaskCreateTool() types.ToolDefinition {
@@ -62,7 +74,7 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 		timeout = int(t)
 	}
 
-	task, err := taskManager.CreateBashTask(ctx.SessionID, description, command, ctx.CWD, timeout)
+	task, err := taskMgr.CreateBashTask(ctx.SessionID, description, command, ctx.CWD, timeout)
 	if err != nil {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to create task: %v", err)}},
@@ -89,13 +101,13 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 	// Build response message
 	var responseText strings.Builder
 	responseText.WriteString(fmt.Sprintf("Task created successfully:\n%s\n\n", resultJSON))
-	
+
 	// Warn if no timeout is set for potentially long-running commands
 	if timeout == 0 {
 		responseText.WriteString("⚠️  WARNING: This task has no timeout and may run indefinitely if stuck.\n")
 		responseText.WriteString("   Consider setting a timeout (e.g., timeout: 300 for 5 minutes) or use TaskStop() if needed.\n\n")
 	}
-	
+
 	responseText.WriteString(fmt.Sprintf("Use TaskGet(\"%s\") to check status or TaskOutput(\"%s\") to retrieve output when complete.", task.ID, task.ID))
 
 	return types.ToolResult{
@@ -137,7 +149,7 @@ func handleTaskGet(input map[string]any, ctx types.ToolContext) (types.ToolResul
 		}, nil
 	}
 
-	task, found := taskManager.GetTask(taskID)
+	task, found := taskMgr.GetTask(taskID)
 	if !found {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("task not found: %s", taskID)}},
@@ -193,7 +205,7 @@ func TaskListTool() types.ToolDefinition {
 }
 
 func handleTaskList(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	tasks := taskManager.ListTasks(ctx.SessionID)
+	tasks := taskMgr.ListTasks(ctx.SessionID)
 
 	if len(tasks) == 0 {
 		return types.ToolResult{
@@ -261,7 +273,7 @@ func handleTaskStop(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		}, nil
 	}
 
-	if err := taskManager.StopTask(taskID); err != nil {
+	if err := taskMgr.StopTask(taskID); err != nil {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to stop task: %v", err)}},
 			IsError: true,
@@ -313,7 +325,7 @@ func handleTaskOutput(input map[string]any, ctx types.ToolContext) (types.ToolRe
 		}, nil
 	}
 
-	task, found := taskManager.GetTask(taskID)
+	task, found := taskMgr.GetTask(taskID)
 	if !found {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("task not found: %s", taskID)}},

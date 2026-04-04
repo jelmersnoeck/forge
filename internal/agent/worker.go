@@ -14,6 +14,7 @@ import (
 	"github.com/jelmersnoeck/forge/internal/runtime/loop"
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/runtime/session"
+	"github.com/jelmersnoeck/forge/internal/runtime/task"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -53,6 +54,12 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 	}
 	store := session.NewStore(w.sessionsDir)
+
+	// Set up task manager with agent runner for sub-agent execution.
+	mgr := task.NewManager()
+	tools.SetTaskManager(mgr)
+	mgr.SetAgentRunner(w.makeAgentRunner(prov, registry, bundle, store))
+	defer mgr.Stop()
 
 	// Connect to MCP servers — tools are stored lazily, not registered with the LLM.
 	// The UseMCPTool gateway provides on-demand access (~300 tokens vs ~15K+).
@@ -203,6 +210,78 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 			Content:  fmt.Sprintf("[%s queue] %s\n%s", queueType, command, result.Content[0].Text),
 			ToolName: "Bash",
 		})
+	}
+}
+
+// makeAgentRunner returns an AgentRunner that spawns a conversation loop for sub-agents.
+//
+//	Parent Worker
+//	    │
+//	    ├─ creates task.Manager with AgentRunner
+//	    │
+//	    └─ Agent tool invoked by LLM
+//	         │
+//	         └─ RunAgent(id)
+//	              │
+//	              └─ goroutine: AgentRunner(ctx, subAgent)
+//	                   │
+//	                   ├─ Filtered tool registry (allow/deny lists)
+//	                   ├─ Sub-agent prompt as system context
+//	                   ├─ loop.New(opts).Send(ctx, prompt, emit)
+//	                   └─ Captures text output → agent.Output
+func (w *Worker) makeAgentRunner(
+	prov types.LLMProvider,
+	parentRegistry *tools.Registry,
+	bundle types.ContextBundle,
+	store *session.Store,
+) task.AgentRunner {
+	return func(ctx context.Context, agent *types.SubAgent) error {
+		subRegistry := parentRegistry.Filtered(agent.Tools, agent.DisallowedTools)
+
+		model := agent.Model
+		if model == "" {
+			const defaultModel = "claude-opus-4-6"
+			model = defaultModel
+			if m := bundle.Settings.Model; m != "" && strings.HasPrefix(m, "claude-") {
+				model = m
+			}
+		}
+
+		maxTurns := agent.MaxTurns
+		if maxTurns <= 0 {
+			maxTurns = 50
+		}
+
+		opts := loop.Options{
+			Provider:     prov,
+			Tools:        subRegistry,
+			Context:      bundle,
+			CWD:          w.cwd,
+			SessionStore: store,
+			SessionID:    agent.SessionID,
+			Model:        model,
+			MaxTurns:     maxTurns,
+			AuditLogger:  &StdAuditLogger{},
+		}
+
+		l := loop.New(opts)
+
+		// Collect text output from the sub-agent.
+		var output strings.Builder
+		emit := func(event types.OutboundEvent) {
+			switch event.Type {
+			case "text":
+				output.WriteString(event.Content)
+			}
+		}
+
+		if err := l.Send(ctx, agent.Prompt, emit); err != nil {
+			agent.Output = output.String()
+			return err
+		}
+
+		agent.Output = output.String()
+		return nil
 	}
 }
 

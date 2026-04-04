@@ -1,6 +1,8 @@
 package task
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -204,4 +206,113 @@ func TestTaskStatus_IsTerminal(t *testing.T) {
 			r.Equal(tc.terminal, tc.status.IsTerminal())
 		})
 	}
+}
+
+func TestManager_RunAgent_NoRunner(t *testing.T) {
+	r := require.New(t)
+
+	m := NewManager()
+	defer m.Stop()
+	agent, err := m.CreateAgent("session1", "test", "Test", "prompt", "", nil, nil, 0)
+	r.NoError(err)
+
+	err = m.RunAgent(agent.ID)
+	r.Error(err)
+	r.Contains(err.Error(), "no agent runner configured")
+}
+
+func TestManager_RunAgent_NotFound(t *testing.T) {
+	r := require.New(t)
+
+	m := NewManager()
+	defer m.Stop()
+	err := m.RunAgent("nonexistent")
+	r.Error(err)
+	r.Contains(err.Error(), "not found")
+}
+
+func TestManager_RunAgent_Success(t *testing.T) {
+	r := require.New(t)
+
+	m := NewManager()
+	defer m.Stop()
+
+	m.SetAgentRunner(func(ctx context.Context, agent *types.SubAgent) error {
+		agent.Output = "Greendale is where I belong"
+		return nil
+	})
+
+	agent, err := m.CreateAgent("session1", "test_agent", "Dean Pelton's helper", "Tell me about Greendale Community College", "", nil, nil, 10)
+	r.NoError(err)
+
+	err = m.RunAgent(agent.ID)
+	r.NoError(err)
+
+	// Wait for goroutine
+	time.Sleep(100 * time.Millisecond)
+
+	retrieved, found := m.GetAgent(agent.ID)
+	r.True(found)
+	r.Equal(types.TaskStatusCompleted, retrieved.Status)
+	r.Equal("Greendale is where I belong", retrieved.Output)
+	r.NotNil(retrieved.EndTime)
+	r.Empty(retrieved.Error)
+}
+
+func TestManager_RunAgent_Failure(t *testing.T) {
+	r := require.New(t)
+
+	m := NewManager()
+	defer m.Stop()
+
+	m.SetAgentRunner(func(ctx context.Context, agent *types.SubAgent) error {
+		agent.Output = "partial output from Troy Barnes"
+		return fmt.Errorf("streets ahead of what I can handle")
+	})
+
+	agent, err := m.CreateAgent("session1", "test_agent", "Failing agent", "Do the impossible", "", nil, nil, 0)
+	r.NoError(err)
+
+	err = m.RunAgent(agent.ID)
+	r.NoError(err)
+
+	time.Sleep(100 * time.Millisecond)
+
+	retrieved, found := m.GetAgent(agent.ID)
+	r.True(found)
+	r.Equal(types.TaskStatusFailed, retrieved.Status)
+	r.Contains(retrieved.Error, "streets ahead")
+	r.Equal("partial output from Troy Barnes", retrieved.Output)
+}
+
+func TestManager_RunAgent_Cancellation(t *testing.T) {
+	r := require.New(t)
+
+	m := NewManager()
+	defer m.Stop()
+
+	started := make(chan struct{})
+	m.SetAgentRunner(func(ctx context.Context, agent *types.SubAgent) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	agent, err := m.CreateAgent("session1", "test_agent", "Cancellable agent", "Wait forever", "", nil, nil, 0)
+	r.NoError(err)
+
+	err = m.RunAgent(agent.ID)
+	r.NoError(err)
+
+	// Wait for runner to start
+	<-started
+
+	err = m.StopAgent(agent.ID)
+	r.NoError(err)
+
+	time.Sleep(100 * time.Millisecond)
+
+	retrieved, found := m.GetAgent(agent.ID)
+	r.True(found)
+	r.Equal(types.TaskStatusKilled, retrieved.Status)
 }

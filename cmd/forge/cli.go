@@ -76,6 +76,7 @@ type model struct {
 	// Worktree info
 	worktreePath   string // path to worktree if created
 	worktreeBranch string // branch name if worktree created
+	cwd            string // working directory (worktree or original)
 }
 
 type serverEvent types.OutboundEvent
@@ -166,6 +167,12 @@ func runCLI(args []string) int {
 	ti.CharLimit = 0 // no limit
 	ti.Width = 80    // will be updated on WindowSizeMsg
 
+	// Determine effective working directory
+	effectiveCWD := cwd
+	if worktreePath != "" {
+		effectiveCWD = worktreePath
+	}
+
 	m := model{
 		server:          serverURL,
 		sessionID:       sessionID,
@@ -178,6 +185,7 @@ func runCLI(args []string) int {
 		costTracker:     costTracker,
 		worktreePath:    worktreePath,
 		worktreeBranch:  worktreeBranch,
+		cwd:             effectiveCWD,
 	}
 
 	// Add welcome message
@@ -424,12 +432,9 @@ func (m model) getOutputHeight() int {
 	if m.thinking {
 		thinkingHeight = 1 // thinking indicator
 	}
-	costHeight := 0
-	if m.modelName != "" && (m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0) {
-		costHeight = 1 // cost tracker line
-	}
-	inputHeight := 3 // border + content
-	return m.height - queueHeight - thinkingHeight - costHeight - inputHeight - 1
+	inputHeight := 3  // border + content
+	statusHeight := 1 // cwd + cost line (always shown)
+	return m.height - queueHeight - thinkingHeight - inputHeight - statusHeight - 1
 }
 
 func (m model) spinner() string {
@@ -502,16 +507,38 @@ func (m model) View() string {
 		promptStyle.Render("> ") + m.textInput.View(),
 	)
 
-	// Build cost tracker (below input, transparent)
-	costTrackerStyle := lipgloss.NewStyle().
+	// Build status line below input: cwd (left) | cost (right)
+	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("8")).
 		Faint(true)
-	var costTracker string
+
+	cwdDisplay := m.cwd
+	// Shorten home directory prefix
+	if home, err := os.UserHomeDir(); err == nil {
+		cwdDisplay = strings.Replace(cwdDisplay, home, "~", 1)
+	}
+
+	var costPart string
 	if m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0 {
 		tokens := fmt.Sprintf("in: %d | out: %d", m.totalUsage.InputTokens, m.totalUsage.OutputTokens)
 		totalCost := cost.Calculate(m.modelName, m.totalUsage)
 		costStr := cost.FormatCost(totalCost)
-		costTracker = costTrackerStyle.Render(fmt.Sprintf("  %s | %s", tokens, costStr))
+		costPart = fmt.Sprintf("%s | %s", tokens, costStr)
+	}
+
+	// Layout: "  cwd" on left, cost on right, padded to terminal width
+	left := statusStyle.Render("  " + cwdDisplay)
+	var statusLine string
+	switch {
+	case costPart != "":
+		right := statusStyle.Render(costPart + "  ")
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		statusLine = left + strings.Repeat(" ", gap) + right
+	default:
+		statusLine = left
 	}
 
 	// Combine all areas
@@ -526,9 +553,7 @@ func (m model) View() string {
 		parts = append(parts, queueArea)
 	}
 	parts = append(parts, inputArea)
-	if costTracker != "" {
-		parts = append(parts, costTracker)
-	}
+	parts = append(parts, statusLine)
 
 	return strings.Join(parts, "\n")
 }
