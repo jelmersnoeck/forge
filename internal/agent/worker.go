@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jelmersnoeck/forge/internal/mcp"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
 	"github.com/jelmersnoeck/forge/internal/runtime/loop"
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
@@ -53,6 +54,14 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 	store := session.NewStore(w.sessionsDir)
 
+	// Connect to configured MCP servers and register their tools
+	mcpClients := w.connectMCPServers(ctx, registry)
+	defer func() {
+		for _, c := range mcpClients {
+			c.Close(context.Background())
+		}
+	}()
+
 	// Pick model: settings override if it's a real API model ID
 	const defaultModel = "claude-opus-4-6"
 	model := defaultModel
@@ -90,7 +99,7 @@ func (w *Worker) Run(ctx context.Context) {
 		l := loop.New(opts)
 
 		var emit func(types.OutboundEvent)
-	emit = func(event types.OutboundEvent) {
+		emit = func(event types.OutboundEvent) {
 			if event.ID == "" {
 				event.ID = uuid.New().String()
 			}
@@ -192,4 +201,43 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 			ToolName: "Bash",
 		})
 	}
+}
+
+// connectMCPServers loads MCP config and connects to all configured servers,
+// registering their tools into the provided registry.
+func (w *Worker) connectMCPServers(ctx context.Context, registry *tools.Registry) []*mcp.Client {
+	cfg, err := mcp.LoadConfig(w.cwd)
+	if err != nil {
+		log.Printf("[agent:%s] MCP config load error (continuing without MCP): %v", w.sessionID, err)
+		return nil
+	}
+
+	if len(cfg.Servers) == 0 {
+		return nil
+	}
+
+	var tokenStore *mcp.TokenStore
+	var clients []*mcp.Client
+
+	for name, serverCfg := range cfg.Servers {
+		// Lazy-init token store only if an OAuth server exists
+		if serverCfg.Auth == "oauth" && tokenStore == nil {
+			tokenStore, err = mcp.NewTokenStore()
+			if err != nil {
+				log.Printf("[agent:%s] failed to create MCP token store: %v", w.sessionID, err)
+				continue
+			}
+		}
+
+		client, err := mcp.ConnectAndRegister(ctx, registry, name, serverCfg, tokenStore)
+		if err != nil {
+			log.Printf("[agent:%s] MCP server %q connect failed (skipping): %v", w.sessionID, name, err)
+			continue
+		}
+
+		clients = append(clients, client)
+		log.Printf("[agent:%s] MCP server %q connected", w.sessionID, name)
+	}
+
+	return clients
 }
