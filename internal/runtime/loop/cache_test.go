@@ -18,7 +18,7 @@ func TestAddMessageCacheControl(t *testing.T) {
 				r.Empty(result)
 			},
 		},
-		"single message with one block": {
+		"single user message falls back to last": {
 			input: []types.ChatMessage{
 				{
 					Role: "user",
@@ -37,41 +37,87 @@ func TestAddMessageCacheControl(t *testing.T) {
 				r.Equal("1h", lastBlock.CacheControl.TTL)
 			},
 		},
-		"multiple messages": {
+		"two user messages tags the first user message": {
+			// user → assistant → user: breakpoint on first user (second-to-last user msg)
 			input: []types.ChatMessage{
 				{
-					Role: "user",
-					Content: []types.ChatContentBlock{
-						{Type: "text", Text: "First"},
-					},
+					Role:    "user",
+					Content: []types.ChatContentBlock{{Type: "text", Text: "First"}},
+				},
+				{
+					Role:    "assistant",
+					Content: []types.ChatContentBlock{{Type: "text", Text: "Reply"}},
+				},
+				{
+					Role:    "user",
+					Content: []types.ChatContentBlock{{Type: "text", Text: "Second"}},
+				},
+			},
+			check: func(r *require.Assertions, result []types.ChatMessage) {
+				r.Len(result, 3)
+
+				// First user message (second-to-last user) gets the breakpoint
+				r.NotNil(result[0].Content[0].CacheControl, "first user msg should have cache control")
+				r.Equal("ephemeral", result[0].Content[0].CacheControl.Type)
+				r.Equal("1h", result[0].Content[0].CacheControl.TTL)
+
+				// Assistant and last user message should NOT
+				r.Nil(result[1].Content[0].CacheControl, "assistant msg should not have cache control")
+				r.Nil(result[2].Content[0].CacheControl, "last user msg should not have cache control")
+			},
+		},
+		"agentic loop: user + assistant + tool_results": {
+			// Typical tool-use turn: user, assistant(tool_use), user(tool_results)
+			// Only 1 user msg in the "old" part — falls back to last message.
+			input: []types.ChatMessage{
+				{
+					Role:    "user",
+					Content: []types.ChatContentBlock{{Type: "text", Text: "Do something"}},
 				},
 				{
 					Role: "assistant",
 					Content: []types.ChatContentBlock{
-						{Type: "text", Text: "Second"},
+						{Type: "tool_use", ID: "tu_01", Name: "Read", Input: map[string]any{"file_path": "/paintball.txt"}},
 					},
 				},
 				{
 					Role: "user",
 					Content: []types.ChatContentBlock{
-						{Type: "text", Text: "Third"},
+						{Type: "tool_result", ToolUseID: "tu_01", Content: []types.ToolResultContent{{Type: "text", Text: "streets ahead"}}},
 					},
 				},
 			},
 			check: func(r *require.Assertions, result []types.ChatMessage) {
 				r.Len(result, 3)
 
-				// Only last message should have cache control
-				r.Nil(result[0].Content[0].CacheControl, "first message should not have cache control")
-				r.Nil(result[1].Content[0].CacheControl, "second message should not have cache control")
-				r.NotNil(result[2].Content[0].CacheControl, "last message should have cache control")
-
-				lastBlock := result[2].Content[0]
-				r.Equal("ephemeral", lastBlock.CacheControl.Type)
-				r.Equal("1h", lastBlock.CacheControl.TTL)
+				// Two user messages → breakpoint on first user msg
+				r.NotNil(result[0].Content[0].CacheControl, "first user msg should get breakpoint")
+				r.Nil(result[1].Content[0].CacheControl, "assistant msg should not")
+				r.Nil(result[2].Content[0].CacheControl, "tool_result msg should not")
 			},
 		},
-		"last message with multiple blocks": {
+		"multi-turn conversation caches completed turns": {
+			// user → assistant → user(tool_results) → assistant → user(new question)
+			// Three user messages: breakpoint on the second-to-last = tool_results msg
+			input: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Turn 1"}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{{Type: "tool_use", ID: "t1", Name: "Read"}}},
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "tool_result", ToolUseID: "t1"}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: "Done"}}},
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Turn 2"}}},
+			},
+			check: func(r *require.Assertions, result []types.ChatMessage) {
+				r.Len(result, 5)
+
+				// Second-to-last user message is result[2] (tool_result)
+				r.Nil(result[0].Content[0].CacheControl, "first user msg")
+				r.Nil(result[1].Content[0].CacheControl, "first assistant msg")
+				r.NotNil(result[2].Content[0].CacheControl, "tool_result user msg should get breakpoint")
+				r.Nil(result[3].Content[0].CacheControl, "second assistant msg")
+				r.Nil(result[4].Content[0].CacheControl, "last user msg should NOT get breakpoint")
+			},
+		},
+		"target message with multiple blocks tags last block": {
 			input: []types.ChatMessage{
 				{
 					Role: "user",
@@ -86,7 +132,7 @@ func TestAddMessageCacheControl(t *testing.T) {
 				r.Len(result, 1)
 				r.Len(result[0].Content, 3)
 
-				// Only the last block should have cache control
+				// Falls back to last message (only 1 user msg). Tags last block.
 				r.Nil(result[0].Content[0].CacheControl, "first block should not have cache control")
 				r.Nil(result[0].Content[1].CacheControl, "second block should not have cache control")
 				r.NotNil(result[0].Content[2].CacheControl, "last block should have cache control")
@@ -106,8 +152,19 @@ func TestAddMessageCacheControl(t *testing.T) {
 				},
 			},
 			check: func(r *require.Assertions, result []types.ChatMessage) {
-				// Result should have cache control
 				r.NotNil(result[0].Content[0].CacheControl, "result should have cache control added")
+			},
+		},
+		"assistant-only messages are ignored for user counting": {
+			// assistant → user: only 1 user msg, falls back to last
+			input: []types.ChatMessage{
+				{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: "Hi"}}},
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Hey"}}},
+			},
+			check: func(r *require.Assertions, result []types.ChatMessage) {
+				r.Len(result, 2)
+				r.Nil(result[0].Content[0].CacheControl, "assistant should not get breakpoint")
+				r.NotNil(result[1].Content[0].CacheControl, "only user msg falls back to last")
 			},
 		},
 	}
@@ -116,7 +173,7 @@ func TestAddMessageCacheControl(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			// Make a deep copy of input for mutation check
+			// Deep copy input for mutation check
 			original := make([]types.ChatMessage, len(tc.input))
 			for i, msg := range tc.input {
 				original[i] = types.ChatMessage{
@@ -128,10 +185,9 @@ func TestAddMessageCacheControl(t *testing.T) {
 
 			result := addMessageCacheControl(tc.input)
 
-			// Run the test check
 			tc.check(r, result)
 
-			// Verify original was not mutated (except for the "does not mutate" test which expects mutation)
+			// Verify original was not mutated
 			if name != "does not mutate original" {
 				for i, msg := range tc.input {
 					for j, block := range msg.Content {

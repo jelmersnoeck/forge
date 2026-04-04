@@ -679,27 +679,58 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 	l.lastCacheRead = usage.CacheReadTokens
 }
 
-// addMessageCacheControl adds cache_control to the last content block of the last message.
-// This is critical for prompt caching efficiency - allows the API to cache conversation history.
-// Max 4 cache_control blocks total: system(2) + tools(1) + messages(1) = 4
+// addMessageCacheControl adds cache_control breakpoints to conversation history.
+//
+// Strategy: tag the second-to-last user message's last content block. This
+// creates a stable cache prefix covering all completed turns:
+//
+//	Call N:   [msg0 … msgK-2•, msgK-1, msgK]   ← breakpoint on K-2
+//	Call N+1: [msg0 … msgK-2•, msgK-1, msgK, msgK+1, msgK+2]  ← breakpoint on K
+//
+// The prefix up to the breakpoint is identical between Call N and N+1's later
+// iterations, so system+tools+history all hit cache. Only the newest messages
+// (past the breakpoint) are uncached input — cheap because they're small.
+//
+// Previously the breakpoint sat on the absolute last message, which changed
+// every single API call, causing ~50% cache miss rate on the 24K system+tools
+// prefix.
+//
+// Max 4 cache_control blocks: system(2) + tools(1) + messages(1) = 4
 func addMessageCacheControl(messages []types.ChatMessage) []types.ChatMessage {
 	if len(messages) == 0 {
 		return messages
 	}
 
-	// Deep copy to avoid mutating the original history
+	// Find the second-to-last user message — that's the last "completed"
+	// exchange boundary. Everything up to (and including) it is stable
+	// across consecutive agentic-loop calls.
+	targetIdx := -1
+	userCount := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			userCount++
+			if userCount == 2 {
+				targetIdx = i
+				break
+			}
+		}
+	}
+
+	// Not enough history for a stable breakpoint — fall back to last message.
+	if targetIdx < 0 {
+		targetIdx = len(messages) - 1
+	}
+
+	// Deep copy to avoid mutating the original history.
 	result := make([]types.ChatMessage, len(messages))
 	copy(result, messages)
 
-	// Add cache control to the last content block of the last message
-	lastMsg := &result[len(result)-1]
-	if len(lastMsg.Content) > 0 {
-		// Deep copy the content array
-		lastMsg.Content = make([]types.ChatContentBlock, len(messages[len(messages)-1].Content))
-		copy(lastMsg.Content, messages[len(messages)-1].Content)
+	msg := &result[targetIdx]
+	if len(msg.Content) > 0 {
+		msg.Content = make([]types.ChatContentBlock, len(messages[targetIdx].Content))
+		copy(msg.Content, messages[targetIdx].Content)
 
-		// Add cache control to the last content block
-		lastBlock := &lastMsg.Content[len(lastMsg.Content)-1]
+		lastBlock := &msg.Content[len(msg.Content)-1]
 		lastBlock.CacheControl = &types.CacheControl{
 			Type: "ephemeral",
 			TTL:  "1h",
