@@ -87,6 +87,54 @@ Key files:
 - `internal/mcp/token_store.go` — persistent OAuth token storage
 - `internal/tools/mcp_gateway.go` — UseMCPTool: single gateway tool for lazy MCP access
 
+## Spec-Driven Development
+
+Every feature starts as a spec before implementation. Specs are the source of
+truth for coding agents, acceptance tests, and intent validation.
+
+### Spec format
+
+Markdown with YAML frontmatter, stored in `.forge/specs/` (configurable via
+`.forge/config.json` `specsDir` field):
+
+```markdown
+---
+id: feature-slug
+status: active    # draft | active | implemented | deprecated
+---
+# Summary header (max 15 words)
+
+## Description
+## Context
+## Behavior
+## Constraints
+## Interfaces
+## Edge Cases
+```
+
+### Workflow
+
+1. User describes a feature
+2. **Spec agent** (`.forge/agents/spec.md`) generates a spec file
+3. Spec is reviewed and set to `status: active`
+4. **Coding agent** sees active specs in the system prompt
+5. Implementation validated against spec's Behavior and Edge Cases
+6. Spec set to `status: implemented` when done
+
+### Config
+
+`.forge/config.json` (user or project level):
+```json
+{
+  "specsDir": "docs/specs"
+}
+```
+
+Key files:
+- `internal/spec/spec.go` — parser and loader
+- `internal/config/config.go` — forge config loader
+- `.forge/agents/spec.md` — spec agent definition
+
 ## Repository layout
 
 ```
@@ -107,12 +155,14 @@ internal/
     bridge.go      bridges MCP tools into Forge's tool registry
     config.go      config loading (~/.forge/mcp.json)
     token_store.go persistent OAuth token storage
+  config/          forge-level configuration (.forge/config.json)
+  spec/            feature specification loader + parser
   types/           shared contracts (messages, events, tools, context, tasks)
   tools/           tool registry + implementations
   agent/           agent HTTP server, single-session hub, worker
   runtime/
     provider/      LLMProvider interface + Anthropic implementation
-    context/       ContextLoader (CLAUDE.md, AGENTS.md, skills, agents, rules)
+    context/       ContextLoader (CLAUDE.md, AGENTS.md, specs, skills, agents, rules)
     prompt/        system prompt assembly
     session/       JSONL session persistence
     loop/          ConversationLoop (agentic loop)
