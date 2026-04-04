@@ -56,14 +56,14 @@ func TestDailySummaries(t *testing.T) {
 	r.NoError(err)
 	defer tracker.Close()
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	// Track costs on different days
 	tracker.Track("session-1", "claude-3-5-sonnet-20241022", 1000, 500, 0, 0, 0.0225)
 	time.Sleep(time.Millisecond * 10) // Ensure different timestamps
 
 	// Get daily summaries for current month
-	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 1, 0)
 
 	summaries, err := tracker.GetDailySummaries(start, end)

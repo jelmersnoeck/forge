@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 )
+
+// idCounter provides unique, monotonically increasing IDs.
+var idCounter atomic.Int64
 
 // Manager handles background task lifecycle.
 type Manager struct {
@@ -253,12 +257,12 @@ func generateTaskID(taskType string) string {
 	case "agent":
 		prefix = "a"
 	}
-	return fmt.Sprintf("%s%d", prefix, time.Now().UnixNano())
+	return fmt.Sprintf("%s%d", prefix, idCounter.Add(1))
 }
 
 // generateSessionID creates a unique session ID for sub-agents.
 func generateSessionID() string {
-	return fmt.Sprintf("subagent-%d", time.Now().UnixNano())
+	return fmt.Sprintf("subagent-%d", idCounter.Add(1))
 }
 
 // monitorTasks periodically checks for long-running tasks without timeouts.

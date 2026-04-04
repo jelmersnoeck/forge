@@ -1,13 +1,8 @@
-// Package bus provides an in-memory message queue and event pub/sub for
-// session-based communication between the gateway and workers.
+// Package bus provides an in-memory event pub/sub and session metadata store
+// for communication between the gateway and agents.
 //
-//   pushMessage  → gateway enqueues work
-//   pullMessage  → worker blocks until a message arrives
-//   publishEvent → worker emits output
+//   publishEvent → agent relay emits output
 //   subscribe    → SSE handler receives output
-//
-// Uses a waiter list: if a worker is already waiting when a message
-// arrives, we resolve its channel directly — no polling, no timers.
 package bus
 
 import (
@@ -21,16 +16,6 @@ var (
 		sync.RWMutex
 		m map[string]*types.SessionMeta
 	}{m: make(map[string]*types.SessionMeta)}
-
-	queues = struct {
-		sync.Mutex
-		m map[string][]types.InboundMessage
-	}{m: make(map[string][]types.InboundMessage)}
-
-	waiters = struct {
-		sync.Mutex
-		m map[string][]chan types.InboundMessage
-	}{m: make(map[string][]chan types.InboundMessage)}
 
 	subs = struct {
 		sync.RWMutex
@@ -55,42 +40,6 @@ func SetSession(meta *types.SessionMeta) {
 	sessions.Lock()
 	defer sessions.Unlock()
 	sessions.m[meta.SessionID] = meta
-}
-
-// PushMessage enqueues a message for a session's worker.
-func PushMessage(sessionID string, msg types.InboundMessage) {
-	waiters.Lock()
-	if ws, ok := waiters.m[sessionID]; ok && len(ws) > 0 {
-		ch := ws[0]
-		waiters.m[sessionID] = ws[1:]
-		waiters.Unlock()
-		ch <- msg
-		return
-	}
-	waiters.Unlock()
-
-	queues.Lock()
-	defer queues.Unlock()
-	queues.m[sessionID] = append(queues.m[sessionID], msg)
-}
-
-// PullMessage blocks until a message is available for the session.
-func PullMessage(sessionID string) types.InboundMessage {
-	queues.Lock()
-	if q, ok := queues.m[sessionID]; ok && len(q) > 0 {
-		msg := q[0]
-		queues.m[sessionID] = q[1:]
-		queues.Unlock()
-		return msg
-	}
-	queues.Unlock()
-
-	ch := make(chan types.InboundMessage, 1)
-	waiters.Lock()
-	waiters.m[sessionID] = append(waiters.m[sessionID], ch)
-	waiters.Unlock()
-
-	return <-ch
 }
 
 // PublishEvent sends an event to all subscribers for a session.

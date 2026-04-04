@@ -273,11 +273,6 @@ func TestLoader_MergeSettings(t *testing.T) {
 	// Local overrides project
 	r.Equal("claude-sonnet-4-5-20250929", bundle.Settings.Model)
 
-	// Permissions from project
-	r.NotNil(bundle.Settings.Permissions)
-	r.Contains(bundle.Settings.Permissions.Allow, "read")
-	r.Contains(bundle.Settings.Permissions.Deny, "bash")
-
 	// Env merged
 	r.Equal("Community College", bundle.Settings.Env["GREENDALE_MOTTO"])
 	r.Equal("Troy and Abed", bundle.Settings.Env["STUDY_GROUP"])

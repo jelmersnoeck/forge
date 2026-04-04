@@ -418,14 +418,6 @@ func (l *Loader) mergeSettings(bundle *types.ContextBundle, path string) error {
 		bundle.Settings.Model = settings.Model
 	}
 
-	if settings.Permissions != nil {
-		if bundle.Settings.Permissions == nil {
-			bundle.Settings.Permissions = &types.PermissionConfig{}
-		}
-		bundle.Settings.Permissions.Allow = append(bundle.Settings.Permissions.Allow, settings.Permissions.Allow...)
-		bundle.Settings.Permissions.Deny = append(bundle.Settings.Permissions.Deny, settings.Permissions.Deny...)
-	}
-
 	if settings.Env != nil {
 		if bundle.Settings.Env == nil {
 			bundle.Settings.Env = make(map[string]string)

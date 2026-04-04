@@ -89,9 +89,6 @@ type ChatContentBlock struct {
 	CacheControl *CacheControl       `json:"cache_control,omitempty"`
 }
 
-// ContentBlock is an alias for ToolResultContent (for backwards compatibility with MCP).
-type ContentBlock = ToolResultContent
-
 // ChatDelta is a streaming event from the LLM.
 type ChatDelta struct {
 	Type        string      `json:"type"` // "text_delta", "tool_use_start", "tool_use_delta", "tool_use_end", "message_stop", "error"
@@ -185,7 +182,6 @@ type ToolDefinition struct {
 	InputSchema map[string]any
 	Handler     ToolHandler
 	ReadOnly    bool
-	Destructive bool
 }
 
 // ── Audit Logging ────────────────────────────────────────────
@@ -259,15 +255,8 @@ type AgentDefinition struct {
 
 // MergedSettings is the merged result of user + project + local settings.
 type MergedSettings struct {
-	Model       string            `json:"model,omitempty"`
-	Permissions *PermissionConfig `json:"permissions,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-}
-
-// PermissionConfig holds allow/deny lists.
-type PermissionConfig struct {
-	Allow []string `json:"allow"`
-	Deny  []string `json:"deny"`
+	Model string            `json:"model,omitempty"`
+	Env   map[string]string `json:"env,omitempty"`
 }
 
 // ── Session Persistence ──────────────────────────────────────

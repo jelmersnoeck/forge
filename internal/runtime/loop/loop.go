@@ -39,10 +39,17 @@ type Loop struct {
 
 	// Cache tracking for break detection
 	lastCacheRead int
+	cacheBaseSet  bool // whether lastCacheRead has been set at least once
 	callCount     int
 
 	// Per-session file read dedup state, shared across all tool calls.
 	readState types.ReadState
+
+	// Cached per-session (stable across turns within a session).
+	systemBlocks     []types.SystemBlock
+	toolSchemas      []types.ToolSchema
+	systemTokensEst  int
+	toolTokensEst    int
 }
 
 // Options configures the conversation loop.
@@ -77,21 +84,29 @@ func New(opts Options) *Loop {
 		retryPolicy = *opts.RetryPolicy
 	}
 
+	// Pre-compute system prompt and tool schemas once per session.
+	systemBlocks := prompt.Assemble(opts.Context, opts.CWD)
+	toolSchemas := opts.Tools.Schemas()
+
 	return &Loop{
-		provider:     opts.Provider,
-		tools:        opts.Tools,
-		context:      opts.Context,
-		cwd:          opts.CWD,
-		sessionStore: opts.SessionStore,
-		sessionID:    opts.SessionID,
-		model:        opts.Model,
-		maxTurns:     opts.MaxTurns,
-		historyID:    uuid.New().String(),
-		history:      []types.ChatMessage{},
-		audit:        audit,
-		budget:       budget,
-		retryPolicy:  retryPolicy,
-		readState:    make(types.ReadState),
+		provider:        opts.Provider,
+		tools:           opts.Tools,
+		context:         opts.Context,
+		cwd:             opts.CWD,
+		sessionStore:    opts.SessionStore,
+		sessionID:       opts.SessionID,
+		model:           opts.Model,
+		maxTurns:        opts.MaxTurns,
+		historyID:       uuid.New().String(),
+		history:         []types.ChatMessage{},
+		audit:           audit,
+		budget:          budget,
+		retryPolicy:     retryPolicy,
+		readState:       make(types.ReadState),
+		systemBlocks:    systemBlocks,
+		toolSchemas:     toolSchemas,
+		systemTokensEst: tokens.EstimateSystem(systemBlocks),
+		toolTokensEst:   tokens.EstimateTools(toolSchemas),
 	}
 }
 
@@ -197,19 +212,18 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			Timestamp: time.Now().Unix(),
 		})
 
-		// Assemble system prompt and tool schemas (stable across turns).
-		systemBlocks := prompt.Assemble(l.context, l.cwd)
-		toolSchemas := l.tools.Schemas()
+		// Assemble system prompt and tool schemas (cached per session).
+		systemBlocks := l.systemBlocks
+		toolSchemas := l.toolSchemas
+		systemTokens := l.systemTokensEst
+		toolTokens := l.toolTokensEst
 
-		// Add cache control to the last message (critical for caching efficiency)
+		// Add cache control to the last message (critical for caching efficiency).
 		// Max 4 cache_control blocks: system(2) + tools(1) + messages(1) = 4
 		messagesWithCache := addMessageCacheControl(l.history)
 
 		// ── Context window management ──────────────────────────
-		// Check if we need to compact before sending to the LLM.
-		systemTokens := tokens.EstimateSystem(systemBlocks)
 		historyTokens := tokens.EstimateHistory(messagesWithCache)
-		toolTokens := tokens.EstimateTools(toolSchemas)
 
 		if l.budget.ShouldCompact(systemTokens, historyTokens, toolTokens) {
 			compacted, removed := tokens.Compact(messagesWithCache, l.budget, systemTokens, toolTokens)
@@ -446,7 +460,7 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 						SessionID: l.sessionID,
 						Type:      "tool_use",
 						ToolName:  currentToolUse.Name,
-						Content:   toolUseSummary(currentToolUse.Name, currentToolUse.Input),
+						Content:   tools.CallSummary(currentToolUse.Name, currentToolUse.Input),
 						Timestamp: time.Now().Unix(),
 					})
 
@@ -597,35 +611,6 @@ func (l *Loop) executeSingleTool(ctx context.Context, block types.ChatContentBlo
 	}
 }
 
-// toolUseSummary returns a short description of what a tool call is doing.
-func toolUseSummary(name string, input map[string]any) string {
-	str := func(key string) string {
-		if v, ok := input[key]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
-		}
-		return ""
-	}
-
-	switch name {
-	case "Bash":
-		return str("command")
-	case "Read":
-		return str("file_path")
-	case "Write":
-		return str("file_path")
-	case "Edit":
-		return str("file_path")
-	case "Glob":
-		return str("pattern")
-	case "Grep":
-		return str("pattern")
-	default:
-		return ""
-	}
-}
-
 // nopAuditLogger discards all events.
 type nopAuditLogger struct{}
 
@@ -648,7 +633,14 @@ func (l *Loop) persistMessage(msgType string, msg types.ChatMessage) error {
 func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.OutboundEvent)) {
 	l.callCount++
 
-	// First call - just record baseline
+	// First call — just record baseline.
+	if !l.cacheBaseSet {
+		l.lastCacheRead = usage.CacheReadTokens
+		l.cacheBaseSet = true
+		return
+	}
+
+	// Guard against division by zero when previous cache read was 0.
 	if l.lastCacheRead == 0 {
 		l.lastCacheRead = usage.CacheReadTokens
 		return
@@ -656,7 +648,7 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 
 	// Check for cache break (>5% drop and >2K tokens)
 	tokenDrop := l.lastCacheRead - usage.CacheReadTokens
-	percentDrop := float64(l.lastCacheRead-usage.CacheReadTokens) / float64(l.lastCacheRead)
+	percentDrop := float64(tokenDrop) / float64(l.lastCacheRead)
 
 	if percentDrop > 0.05 && tokenDrop > 2000 {
 		// Cache broke unexpectedly

@@ -11,7 +11,6 @@ Forge uses a unified binary architecture with subcommands:
   - **`forge agent`** — run agent server (spawned by interactive mode or server mode)
   - **`forge server`** — session management gateway (spawns agents via `forge agent`)
   - **`forge stats`** — cost analytics (daily/monthly/session breakdowns)
-- **Legacy binaries** (`cmd/{cli,agent,server}/`) — deprecated, for backward compatibility only
 
 ## Cost Tracking
 
@@ -84,15 +83,13 @@ Key files:
 ```
 cmd/
   forge/           unified binary (cli + server + agent + stats)
-  server/          legacy server binary (use 'forge server' instead)
-  agent/           agent binary (still needed by server backend)
-  cli/             legacy CLI binary (use 'forge' instead)
 mcp-server/        MCP server (TypeScript) — exposes Forge as MCP server
   src/
     server.ts      MCP server implementation
     index.ts       STDIO entrypoint
     http.ts        HTTP entrypoint
 internal/
+  env/             .env file loading (shared across subcommands)
   mcp/             MCP client (Go) — connects to remote MCP servers
     client.go      JSON-RPC over Streamable HTTP transport
     oauth.go       OAuth 2.1 + DCR + PKCE
@@ -122,7 +119,6 @@ Go module: `github.com/jelmersnoeck/forge`
 
 ```bash
 just build              # build unified forge binary
-just build-all          # build forge + legacy binaries
 just dev                # build + run interactive CLI
 just dev-server         # build + run server (foreground)
 just dev-server-daemon  # build + run server daemon

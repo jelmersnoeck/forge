@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -48,17 +47,44 @@ func TestClassify(t *testing.T) {
 			want:       CategoryFatal,
 			wantRetry:  false,
 		},
+		"server 500": {
+			err:        errors.New("internal server error"),
+			statusCode: 500,
+			want:       CategoryRetryable,
+			wantRetry:  true,
+		},
+		"client 400": {
+			err:        errors.New("bad request"),
+			statusCode: 400,
+			want:       CategoryInvalidRequest,
+			wantRetry:  false,
+		},
+		"deadline exceeded": {
+			err:        context.DeadlineExceeded,
+			statusCode: 0,
+			want:       CategoryRetryable,
+			wantRetry:  true,
+		},
+		"nil error": {
+			err:        nil,
+			statusCode: 0,
+		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			
+
 			classified := Classify(tc.err, tc.statusCode)
+			if tc.err == nil {
+				r.Nil(classified)
+				return
+			}
+
 			r.NotNil(classified)
 			r.Equal(tc.want, classified.Category)
 			r.Equal(tc.wantRetry, classified.IsRetryable)
-			
+
 			if tc.wantTokens {
 				r.Greater(classified.TokensActual, 0)
 				r.Greater(classified.TokensLimit, 0)
@@ -66,89 +92,4 @@ func TestClassify(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestRetry_SuccessOnFirstAttempt(t *testing.T) {
-	r := require.New(t)
-	
-	attempts := 0
-	config := DefaultRetryConfig()
-	
-	err := Retry(context.Background(), config, func() error {
-		attempts++
-		return nil // Success
-	})
-	
-	r.NoError(err)
-	r.Equal(1, attempts)
-}
-
-func TestRetry_SuccessAfterRetries(t *testing.T) {
-	r := require.New(t)
-	
-	attempts := 0
-	config := DefaultRetryConfig()
-	config.InitialBackoff = 10 * time.Millisecond
-	
-	err := Retry(context.Background(), config, func() error {
-		attempts++
-		if attempts < 3 {
-			return &ClassifiedError{
-				Original: errors.New("retry me"),
-				Category: CategoryRetryable,
-				IsRetryable: true,
-			}
-		}
-		return nil
-	})
-	
-	r.NoError(err)
-	r.Equal(3, attempts)
-}
-
-func TestRetry_NonRetryableError(t *testing.T) {
-	r := require.New(t)
-	
-	attempts := 0
-	config := DefaultRetryConfig()
-	
-	err := Retry(context.Background(), config, func() error {
-		attempts++
-		return errors.New("invalid api key")
-	})
-	
-	r.Error(err)
-	r.Equal(1, attempts) // No retries
-}
-
-func TestRetry_ExponentialBackoff(t *testing.T) {
-	r := require.New(t)
-	
-	config := DefaultRetryConfig()
-	config.InitialBackoff = 10 * time.Millisecond
-	config.MaxBackoff = 50 * time.Millisecond
-	config.BackoffMultiplier = 2.0
-	config.MaxAttempts = 2
-	
-	attempts := 0
-	start := time.Now()
-	
-	err := Retry(context.Background(), config, func() error {
-		attempts++
-		if attempts < 3 {
-			return &ClassifiedError{
-				Original: errors.New("mock"),
-				Category: CategoryRetryable,
-				IsRetryable: true,
-			}
-		}
-		return nil
-	})
-	
-	elapsed := time.Since(start)
-	
-	r.NoError(err)
-	r.Equal(3, attempts)
-	r.Greater(elapsed, 25*time.Millisecond)
-	r.Less(elapsed, 60*time.Millisecond)
 }

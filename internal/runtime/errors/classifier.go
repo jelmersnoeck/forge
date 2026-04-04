@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// NOTE: Retry logic lives in internal/runtime/retry/retry.go.
+// This package only provides error classification.
+
 // ── Error Categories ─────────────────────────────────────────
 
 // Category represents the class of error encountered.
@@ -223,79 +226,4 @@ func Classify(err error, statusCode int) *ClassifiedError {
 	}
 }
 
-// ── Retry Logic ──────────────────────────────────────────────
 
-// RetryConfig controls retry behavior.
-type RetryConfig struct {
-	MaxAttempts        int           // Maximum number of retry attempts (0 = no retries)
-	InitialBackoff     time.Duration // Initial backoff duration
-	MaxBackoff         time.Duration // Maximum backoff duration
-	BackoffMultiplier  float64       // Backoff multiplier for exponential backoff
-	OnRetry            func(attempt int, err *ClassifiedError) // Called before each retry
-}
-
-// DefaultRetryConfig returns sensible defaults.
-func DefaultRetryConfig() RetryConfig {
-	return RetryConfig{
-		MaxAttempts:       3,
-		InitialBackoff:    1 * time.Second,
-		MaxBackoff:        30 * time.Second,
-		BackoffMultiplier: 2.0,
-		OnRetry:           nil,
-	}
-}
-
-// Retry executes fn with automatic retry logic based on error classification.
-func Retry(ctx context.Context, config RetryConfig, fn func() error) error {
-	var lastErr *ClassifiedError
-	
-	for attempt := 0; attempt <= config.MaxAttempts; attempt++ {
-		err := fn()
-		if err == nil {
-			return nil // Success
-		}
-
-		// Classify the error (unless it's already classified)
-		classified, ok := err.(*ClassifiedError)
-		if !ok {
-			classified = Classify(err, 0)
-		}
-		lastErr = classified
-
-		// Don't retry if:
-		// - This was the last attempt
-		// - Error is not retryable
-		// - Context is cancelled
-		if attempt == config.MaxAttempts || !classified.IsRetryable || ctx.Err() != nil {
-			return classified
-		}
-
-		// Calculate backoff
-		backoff := classified.RetryAfter
-		if backoff == 0 {
-			backoff = config.InitialBackoff
-			for i := 0; i < attempt; i++ {
-				backoff = time.Duration(float64(backoff) * config.BackoffMultiplier)
-				if backoff > config.MaxBackoff {
-					backoff = config.MaxBackoff
-					break
-				}
-			}
-		}
-
-		// Notify callback
-		if config.OnRetry != nil {
-			config.OnRetry(attempt+1, classified)
-		}
-
-		// Wait before retry
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-			// Continue to next attempt
-		}
-	}
-
-	return lastErr
-}

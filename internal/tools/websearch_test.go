@@ -15,7 +15,6 @@ func TestWebSearchTool(t *testing.T) {
 	require.Equal(t, "WebSearch", tool.Name)
 	require.NotEmpty(t, tool.Description)
 	require.True(t, tool.ReadOnly)
-	require.False(t, tool.Destructive)
 }
 
 func TestWebSearchDuckDuckGo(t *testing.T) {

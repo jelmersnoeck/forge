@@ -13,16 +13,41 @@ import (
 )
 
 // Store persists session messages to JSONL files.
+// File handles are kept open for the lifetime of the session to avoid
+// repeated open/close syscalls on every tool result.
 type Store struct {
 	baseDir string
 	mu      sync.RWMutex
+	files   map[string]*os.File // sessionID → open file handle
 }
 
 // NewStore creates a new session store.
 func NewStore(baseDir string) *Store {
 	return &Store{
 		baseDir: baseDir,
+		files:   make(map[string]*os.File),
 	}
+}
+
+// getFile returns a persistent file handle for the session, creating it
+// if necessary. Caller must hold s.mu (write lock).
+func (s *Store) getFile(sessionID string) (*os.File, error) {
+	if f, ok := s.files[sessionID]; ok {
+		return f, nil
+	}
+
+	if err := os.MkdirAll(s.baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("create session dir: %w", err)
+	}
+
+	path := filepath.Join(s.baseDir, sessionID+".jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open session file: %w", err)
+	}
+
+	s.files[sessionID] = f
+	return f, nil
 }
 
 // Append writes a session message to the JSONL file for the given session.
@@ -30,21 +55,11 @@ func (s *Store) Append(sessionID string, msg types.SessionMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Ensure base directory exists
-	if err := os.MkdirAll(s.baseDir, 0755); err != nil {
-		return fmt.Errorf("create session dir: %w", err)
-	}
-
-	path := filepath.Join(s.baseDir, sessionID+".jsonl")
-
-	// Open file in append mode
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := s.getFile(sessionID)
 	if err != nil {
-		return fmt.Errorf("open session file: %w", err)
+		return err
 	}
-	defer f.Close()
 
-	// Write JSON line
 	if err := json.NewEncoder(f).Encode(msg); err != nil {
 		return fmt.Errorf("encode session message: %w", err)
 	}
@@ -60,7 +75,6 @@ func (s *Store) Load(sessionID string) ([]types.SessionMessage, error) {
 
 	path := filepath.Join(s.baseDir, sessionID+".jsonl")
 
-	// Check if file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return []types.SessionMessage{}, nil
 	}
@@ -73,6 +87,10 @@ func (s *Store) Load(sessionID string) ([]types.SessionMessage, error) {
 
 	var messages []types.SessionMessage
 	scanner := bufio.NewScanner(f)
+
+	// Large tool results can produce long lines.
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024)
 
 	for scanner.Scan() {
 		var msg types.SessionMessage
@@ -87,4 +105,19 @@ func (s *Store) Load(sessionID string) ([]types.SessionMessage, error) {
 	}
 
 	return messages, nil
+}
+
+// Close flushes and closes all open file handles.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var firstErr error
+	for id, f := range s.files {
+		if err := f.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(s.files, id)
+	}
+	return firstErr
 }

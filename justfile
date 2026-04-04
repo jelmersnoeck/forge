@@ -13,36 +13,21 @@ default:
 build:
   go build -o forge ./cmd/forge
 
-# Build server binary (legacy)
-build-server:
-  go build -o forge-server ./cmd/server
-
-# Build CLI binary (legacy)
-build-cli:
-  go build -o forge-cli ./cmd/cli
-
-# Build agent binary (legacy - deprecated, use 'forge agent' instead)
-build-agent:
-  go build -o forge-agent ./cmd/agent
-
-# Build everything (new + legacy)
-build-all: build build-agent build-server build-cli
-
 # Install unified forge binary to GOBIN (defaults to ~/go/bin)
 install:
   go install ./cmd/forge
 
 # ── Dev ──────────────────────────────────────────────────────
 
-# Run interactive CLI (unified binary)
+# Run interactive CLI
 dev: build
   ./forge
 
-# Build and run server (unified binary)
+# Build and run server
 dev-server: build
   ./forge server
 
-# Build and run server in daemon mode (unified binary)
+# Build and run server in daemon mode
 dev-server-daemon: build
   ./forge server -daemon
 
@@ -57,10 +42,6 @@ stop-server:
 # Tail server logs (daemon mode)
 tail-server:
   tail -f /tmp/forge/sessions/forge.log
-
-# Build and run CLI
-dev-cli: build
-  ./forge
 
 # ── Test ──────────────────────────────────────────────────────
 
@@ -110,5 +91,5 @@ mcp-http: build-mcp
 
 # Remove build artifacts
 clean:
-  rm -f forge forge-server forge-cli forge-agent
+  rm -f forge
   rm -rf mcp-server/dist mcp-server/node_modules

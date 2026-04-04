@@ -123,7 +123,6 @@ func TestPRCreateTool_Schema(t *testing.T) {
 	tool := PRCreateTool()
 	r.Equal("PRCreate", tool.Name)
 	r.False(tool.ReadOnly)
-	r.False(tool.Destructive)
 
 	props, ok := tool.InputSchema["properties"].(map[string]any)
 	r.True(ok)

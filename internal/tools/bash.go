@@ -70,7 +70,6 @@ func BashTool() types.ToolDefinition {
 		},
 		Handler:     bashHandler,
 		ReadOnly:    false,
-		Destructive: false,
 	}
 }
 

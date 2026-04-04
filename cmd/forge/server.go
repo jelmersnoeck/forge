@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"log"
@@ -10,10 +9,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
+	"github.com/jelmersnoeck/forge/internal/env"
 	"github.com/jelmersnoeck/forge/internal/server/backend"
 	"github.com/jelmersnoeck/forge/internal/server/gateway"
 )
@@ -25,7 +24,7 @@ func runServer(args []string) int {
 	logFile := fs.String("log-file", "", "path to log file (default: $SESSIONS_DIR/forge.log)")
 	fs.Parse(args[1:])
 
-	loadServerEnv()
+	env.LoadDotenv(".")
 
 	port := envInt("GATEWAY_PORT", 3000)
 	host := envStr("GATEWAY_HOST", "0.0.0.0")
@@ -100,43 +99,6 @@ func runServer(args []string) int {
 	}
 
 	return 0
-}
-
-// loadServerEnv reads a .env file from the working directory or the binary's
-// directory. Existing env vars are not overridden.
-func loadServerEnv() {
-	candidates := []string{
-		filepath.Join(".", ".env"),
-	}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), ".env"))
-	}
-
-	for _, path := range candidates {
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		defer f.Close()
-
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			eq := strings.IndexByte(line, '=')
-			if eq < 0 {
-				continue
-			}
-			key := strings.TrimSpace(line[:eq])
-			val := strings.TrimSpace(line[eq+1:])
-			if _, exists := os.LookupEnv(key); !exists {
-				os.Setenv(key, val)
-			}
-		}
-		return
-	}
 }
 
 func envStr(key, fallback string) string {

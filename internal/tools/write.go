@@ -29,7 +29,6 @@ func WriteTool() types.ToolDefinition {
 		},
 		Handler:     writeHandler,
 		ReadOnly:    false,
-		Destructive: false,
 	}
 }
 

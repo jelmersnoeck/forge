@@ -51,7 +51,6 @@ The PR is always created in draft mode. Requires the 'gh' CLI to be installed an
 		},
 		Handler:     prCreateHandler,
 		ReadOnly:    false,
-		Destructive: false,
 	}
 }
 

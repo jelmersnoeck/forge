@@ -37,7 +37,6 @@ func EditTool() types.ToolDefinition {
 		},
 		Handler:     editHandler,
 		ReadOnly:    false,
-		Destructive: false,
 	}
 }
 

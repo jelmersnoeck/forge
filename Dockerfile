@@ -1,23 +1,21 @@
 FROM golang:1.23-alpine AS builder
 
-RUN apk add --no-cache git
+RUN apk add --no-cache git gcc musl-dev
 
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -o /forge-server ./cmd/server
-RUN CGO_ENABLED=0 go build -o /forge-agent ./cmd/agent
+RUN go build -o /forge ./cmd/forge
 
 # ── Runtime ───────────────────────────────────────────────────
 FROM alpine:3.21
 
 RUN apk add --no-cache git bash ripgrep curl tmux
 
-COPY --from=builder /forge-server /usr/local/bin/forge-server
-COPY --from=builder /forge-agent /usr/local/bin/forge-agent
+COPY --from=builder /forge /usr/local/bin/forge
 
 ENV GATEWAY_HOST=0.0.0.0
-ENV AGENT_BIN=/usr/local/bin/forge-agent
-CMD ["forge-server"]
+ENV FORGE_BIN=/usr/local/bin/forge
+CMD ["forge", "server"]

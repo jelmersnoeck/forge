@@ -41,7 +41,6 @@ Examples of when to use:
 		},
 		Handler:     webSearchHandler,
 		ReadOnly:    true,
-		Destructive: false,
 	}
 }
 
