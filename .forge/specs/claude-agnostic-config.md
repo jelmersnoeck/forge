@@ -26,9 +26,10 @@ implementation stays unchanged — this is config/context only.
 - `docs/` — multiple doc files updated
 
 ## Behavior
-- `CLAUDE.md` at any level (user/project/parent/local) is no longer loaded
+- `CLAUDE.md` at any level (user/project/parent/local) is still loaded into `AgentsMD`
 - `ClaudeMDEntry` type is removed; `ContextBundle.ClaudeMD` field is removed
 - All content that was in `ClaudeMD` entries is now loaded as `AgentsMD` entries
+- Both `AGENTS.md` and `CLAUDE.md` are loaded when present (both go into `AgentsMD`)
 - `.claude/` directory references become `.forge/`:
   - `~/.claude/rules/` → `~/.forge/rules/`
   - `~/.claude/settings.json` → `~/.forge/settings.json`
@@ -39,8 +40,9 @@ implementation stays unchanged — this is config/context only.
   - `.claude/CLAUDE.md` fallback → removed (use `AGENTS.md` at project root)
   - `.claude/AGENTS.md` fallback → `.forge/AGENTS.md` fallback
 - Backward compat: also check legacy `.claude/` paths as fallback, but prefer `.forge/`
-- `CLAUDE.local.md` → `AGENTS.local.md` (already supported)
-- Parent directory walk loads `AGENTS.md` (already does), stops loading `CLAUDE.md`
+- `CLAUDE.local.md` also loaded alongside `AGENTS.local.md`
+- `~/CLAUDE.md` also loaded alongside `~/AGENTS.md`
+- Parent directory walk loads both `AGENTS.md` and `CLAUDE.md`
 - `prompt.go` Assemble: splits AgentsMD into instructions (static block) and learnings (dynamic block) based on `.forge/learnings/` path prefix
 - Reflect tool continues writing to `.forge/learnings/` (unchanged)
 - `LoadSkillContent` searches `.forge/skills/` then `.claude/skills/` for backward compat
@@ -78,10 +80,11 @@ type ContextBundle struct {
 ```
 
 ## Edge Cases
-- Project has only `CLAUDE.md`, no `AGENTS.md` → `CLAUDE.md` is NOT loaded (breaking change — intentional)
+- Project has only `CLAUDE.md`, no `AGENTS.md` → `CLAUDE.md` is loaded into `AgentsMD`
+- Project has both `AGENTS.md` and `CLAUDE.md` → both loaded into `AgentsMD`
 - Project has `.claude/` but no `.forge/` → `.claude/` paths are used as fallback
 - Project has both `.forge/settings.json` and `.claude/settings.json` → `.forge/` wins
 - `AGENTS.md` at project root AND `.forge/AGENTS.md` → project root wins (same as current CLAUDE.md behavior)
-- User home has `~/AGENTS.md` → loaded as user-level instructions (replaces `~/CLAUDE.md`)
+- User home has `~/AGENTS.md` and `~/CLAUDE.md` → both loaded as user-level
 - User home has `~/.forge/` but no `~/.claude/` → works fine
 - `LoadSkillContent` checks `.forge/skills/` then `.claude/skills/` for backward compat

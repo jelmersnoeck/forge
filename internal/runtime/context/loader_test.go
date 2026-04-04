@@ -3,6 +3,7 @@ package context
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -372,4 +373,93 @@ func TestLoader_ConfigDirFallback(t *testing.T) {
 			r.Len(bundle.Rules, tc.wantRules)
 		})
 	}
+}
+
+func TestLoader_LoadProjectContext_ClaudeMD(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+
+	claudeMD := `# Greendale Community College
+
+Legacy CLAUDE.md project instructions.
+`
+	err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte(claudeMD), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	// CLAUDE.md should be loaded into AgentsMD
+	r.Len(bundle.AgentsMD, 1)
+	r.Equal("project", bundle.AgentsMD[0].Level)
+	r.Contains(bundle.AgentsMD[0].Content, "Greendale Community College")
+	r.Contains(bundle.AgentsMD[0].Path, "CLAUDE.md")
+}
+
+func TestLoader_LoadProjectContext_ClaudeMDInClaudeDir(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+	claudeDir := filepath.Join(projectDir, ".claude")
+	err := os.MkdirAll(claudeDir, 0755)
+	r.NoError(err)
+
+	err = os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("# Pierce Hawthorne memorial"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	r.Len(bundle.AgentsMD, 1)
+	r.Contains(bundle.AgentsMD[0].Content, "Pierce Hawthorne")
+}
+
+func TestLoader_LoadProjectContext_BothAgentsAndClaude(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(projectDir, "AGENTS.md"), []byte("# Forge instructions"), 0644)
+	r.NoError(err)
+	err = os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte("# Claude instructions"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	// Both should be loaded
+	r.Len(bundle.AgentsMD, 2)
+
+	var foundAgents, foundClaude bool
+	for _, entry := range bundle.AgentsMD {
+		switch {
+		case strings.Contains(entry.Content, "Forge instructions"):
+			foundAgents = true
+		case strings.Contains(entry.Content, "Claude instructions"):
+			foundClaude = true
+		}
+	}
+	r.True(foundAgents, "should load AGENTS.md")
+	r.True(foundClaude, "should load CLAUDE.md")
+}
+
+func TestLoader_LoadLocalContext_ClaudeLocalMD(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.local.md"), []byte("# Darkest timeline overrides"), 0644)
+	r.NoError(err)
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"local"})
+	r.NoError(err)
+
+	r.Len(bundle.AgentsMD, 1)
+	r.Equal("local", bundle.AgentsMD[0].Level)
+	r.Contains(bundle.AgentsMD[0].Content, "Darkest timeline")
 }
