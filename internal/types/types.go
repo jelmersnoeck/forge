@@ -147,6 +147,24 @@ type ImageSource struct {
 	Data      string `json:"data"`
 }
 
+// ReadFileEntry tracks the state of a previously read file for dedup.
+//
+//	Read("foo.go", offset=1, limit=2000)
+//	   → store {MtimeUnix, Offset:1, Limit:2000}
+//	Read("foo.go", offset=1, limit=2000)  // same params, file untouched
+//	   → return stub instead of 25K tokens of content
+//
+// Edit/Write delete the entry so the next Read sees fresh content.
+type ReadFileEntry struct {
+	MtimeUnix int64 // from os.Stat, seconds
+	Offset    int
+	Limit     int
+}
+
+// ReadState tracks per-file read state for dedup within a session.
+// Keyed by absolute file path.
+type ReadState map[string]ReadFileEntry
+
 // ToolContext is passed to every tool handler.
 type ToolContext struct {
 	Ctx       context.Context
@@ -154,6 +172,7 @@ type ToolContext struct {
 	SessionID string
 	HistoryID string
 	Emit      func(OutboundEvent)
+	ReadState ReadState // per-session file read dedup (nil-safe: tools check before use)
 }
 
 // ToolHandler executes a tool.

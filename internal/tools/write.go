@@ -67,6 +67,11 @@ func writeHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult
 		}, nil
 	}
 
+	// Invalidate read dedup — next Read must return fresh content.
+	if ctx.ReadState != nil {
+		delete(ctx.ReadState, filePath)
+	}
+
 	return types.ToolResult{
 		Content: []types.ToolResultContent{{
 			Type: "text",
