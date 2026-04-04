@@ -86,6 +86,7 @@ func runCLI(args []string) int {
 	fs := flag.NewFlagSet("forge", flag.ExitOnError)
 	resume := fs.String("resume", "", "session ID to resume")
 	server := fs.String("server", "", "connect to remote forge server (e.g. http://localhost:3000)")
+	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
 	fs.Parse(args[1:])
 
 	cwd, err := os.Getwd()
@@ -123,7 +124,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
@@ -862,8 +863,8 @@ func isInWorktree(dir string) bool {
 
 // spawnLocalAgent starts a forge agent subprocess and returns (sessionID, serverURL, worktreePath, worktreeBranch, cleanup, error).
 // The agent runs on a random port and auto-terminates when cleanup is called.
-// If in a git repo (and not already in a worktree), creates a temporary worktree for the session.
-func spawnLocalAgent(cwd string) (string, string, string, string, func(), error) {
+// If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
+func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -889,9 +890,10 @@ func spawnLocalAgent(cwd string) (string, string, string, string, func(), error)
 	var repoRoot string
 
 	// Only create worktree if:
-	// 1. We're in a git repo
-	// 2. We're not already in a worktree
-	if !isInWorktree(cwd) {
+	// 1. skipWorktree is false
+	// 2. We're in a git repo
+	// 3. We're not already in a worktree
+	if !skipWorktree && !isInWorktree(cwd) {
 		// Try to find git repo root
 		cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 		cmd.Dir = cwd

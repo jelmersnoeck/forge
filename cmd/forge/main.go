@@ -32,6 +32,10 @@ func main() {
 		printHelp()
 		os.Exit(0)
 	default:
+		// If first arg starts with -, it's a flag for interactive mode
+		if len(cmd) > 0 && cmd[0] == '-' {
+			os.Exit(runCLI(os.Args))
+		}
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", cmd)
 		printHelp()
 		os.Exit(1)
@@ -48,8 +52,14 @@ Usage:
   forge stats        show cost analytics
   forge help         show this help
 
+Flags (interactive mode):
+  --server URL             connect to remote forge server
+  --resume SESSION_ID      resume a session
+  --skip-worktree          skip git worktree creation
+
 Examples:
   forge                              # start interactive session
+  forge --skip-worktree              # run in current directory (no worktree)
   forge --server http://localhost:3000  # connect to remote server
   forge stats --month 2026-04       # show costs for April 2026
   forge agent --port 8080           # run agent on port 8080
