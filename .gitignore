@@ -7,6 +7,5 @@ forge-agent
 /agent
 /dist/
 *.test
-docs/
 /forge
 worktrees/

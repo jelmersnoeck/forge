@@ -78,37 +78,8 @@ test-v:
 vet:
   go vet ./...
 
-# ── Docker ─────────────────────────────────────────────────
-
-# Build and start via docker compose (reads .env)
-up:
-  docker compose up --build -d
-
-# Stop compose services
-down:
-  docker compose down
-
-# Tail server logs
-logs:
-  docker compose logs -f server
-
-# ── MCP Server ──────────────────────────────────────────────
-
-# Build MCP server
-build-mcp:
-  cd mcp-server && npm install && npm run build
-
-# Run MCP server (STDIO)
-mcp: build-mcp
-  cd mcp-server && npm start
-
-# Run MCP server (HTTP)
-mcp-http: build-mcp
-  cd mcp-server && npm run start:http
-
 # ── Cleanup ──────────────────────────────────────────────────
 
 # Remove build artifacts
 clean:
   rm -f forge forge-server forge-cli forge-agent
-  rm -rf mcp-server/dist mcp-server/node_modules
