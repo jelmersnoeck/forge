@@ -348,7 +348,15 @@ func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.
 		CWD:        w.cwd,
 	}
 
-	orch.Run(ctx, req, emit)
+	results := orch.Run(ctx, req, emit)
+
+	// If actionable findings exist, send them to the main loop for remediation.
+	// The conversation loop will emit its own done event when it finishes.
+	if review.HasActionableFindings(results) {
+		fixMsg := review.FormatFindingsMessage(results)
+		w.hub.PushMessage(types.InboundMessage{Text: fixMsg})
+		return
+	}
 
 	emit(types.OutboundEvent{Type: "done"})
 }

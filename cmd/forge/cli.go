@@ -852,6 +852,13 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 	case "review_agent_done":
 		// Quiet — individual agent completions don't need display
 
+	case "review_provider_summary":
+		m.flushText()
+		m.output = append(m.output, "")
+		for _, line := range strings.Split(event.Content, "\n") {
+			m.output = append(m.output, "  "+dimStyle.Render(line))
+		}
+
 	case "review_summary":
 		m.flushText()
 		m.output = append(m.output, "")

@@ -620,4 +620,157 @@ func TestOrchestratorMultipleProviders(t *testing.T) {
 		strings.Contains(summaries[0].Content, "4 findings") ||
 			strings.Contains(summaries[0].Content, "findings"),
 	)
+
+	// Per-provider summaries should be emitted (one per provider).
+	provSummaries := ec.byType("review_provider_summary")
+	r.Len(provSummaries, 2, "should have one summary per provider")
+
+	// Each provider summary should mention both reviewers.
+	for _, ps := range provSummaries {
+		r.Contains(ps.Content, "security")
+		r.Contains(ps.Content, "code-quality")
+	}
+}
+
+func TestFormatProviderSummary(t *testing.T) {
+	tests := map[string]struct {
+		provider string
+		results  []ReviewResult
+		want     []string
+		wantNot  []string
+	}{
+		"mixed findings": {
+			provider: "anthropic",
+			results: []ReviewResult{
+				{
+					Reviewer: "security",
+					Provider: "anthropic",
+					Findings: []Finding{
+						{Severity: SeverityCritical, Description: "Dean Pelton's security policy violated"},
+						{Severity: SeverityWarning, Description: "Troy's auth token exposed"},
+					},
+				},
+				{
+					Reviewer: "code-quality",
+					Provider: "anthropic",
+					Findings: []Finding{
+						{Severity: SeveritySuggestion, Description: "Abed suggests extracting this"},
+					},
+				},
+			},
+			want: []string{"Provider: anthropic", "security: 1 critical, 1 warning", "code-quality: 1 suggestion"},
+		},
+		"with error": {
+			provider: "openai",
+			results: []ReviewResult{
+				{
+					Reviewer: "security",
+					Provider: "openai",
+					Error:    "Señor Chang broke the API",
+				},
+			},
+			want: []string{"Provider: openai", "error: Señor Chang broke the API"},
+		},
+		"no findings": {
+			provider: "anthropic",
+			results: []ReviewResult{
+				{Reviewer: "maintainability", Provider: "anthropic"},
+			},
+			want: []string{"Provider: anthropic", "maintainability: (clean)"},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := formatProviderSummary(tc.provider, tc.results)
+			for _, w := range tc.want {
+				r.Contains(got, w)
+			}
+			for _, w := range tc.wantNot {
+				r.NotContains(got, w)
+			}
+		})
+	}
+}
+
+func TestFormatFindingsMessage(t *testing.T) {
+	r := require.New(t)
+
+	results := []ReviewResult{
+		{
+			Reviewer: "security",
+			Provider: "anthropic",
+			Findings: []Finding{
+				{Severity: SeverityCritical, File: "study_room_f.go", StartLine: 1, Description: "Dean Pelton's security policy violated"},
+				{Severity: SeverityPraise, File: "paintball.go", StartLine: 100, Description: "Excellent use of Community references"},
+			},
+		},
+		{
+			Reviewer: "code-quality",
+			Provider: "openai",
+			Findings: []Finding{
+				{Severity: SeveritySuggestion, File: "chang.go", StartLine: 10, Description: "Extract helper function"},
+			},
+		},
+		{
+			Reviewer: "maintainability",
+			Provider: "anthropic",
+			Findings: []Finding{
+				{Severity: SeverityPraise, Description: "Clean code, streets ahead"},
+			},
+		},
+	}
+
+	msg := FormatFindingsMessage(results)
+
+	r.Contains(msg, "security (anthropic)")
+	r.Contains(msg, "[critical] study_room_f.go:1")
+	r.Contains(msg, "Dean Pelton")
+	r.NotContains(msg, "Excellent use of Community references", "praise should be excluded")
+	r.Contains(msg, "code-quality (openai)")
+	r.Contains(msg, "[suggestion] chang.go:10")
+	r.NotContains(msg, "maintainability", "reviewer with only praise should not appear")
+}
+
+func TestHasActionableFindings(t *testing.T) {
+	tests := map[string]struct {
+		results []ReviewResult
+		want    bool
+	}{
+		"has critical": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeverityCritical}}},
+			},
+			want: true,
+		},
+		"only praise": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeverityPraise}}},
+			},
+			want: false,
+		},
+		"no findings": {
+			results: []ReviewResult{
+				{Reviewer: "security"},
+			},
+			want: false,
+		},
+		"mixed with praise": {
+			results: []ReviewResult{
+				{Findings: []Finding{
+					{Severity: SeverityPraise},
+					{Severity: SeveritySuggestion},
+				}},
+			},
+			want: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, HasActionableFindings(tc.results))
+		})
+	}
 }

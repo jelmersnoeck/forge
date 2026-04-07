@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,22 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 	}
 
 	wg.Wait()
+
+	// Emit per-provider summaries before the aggregate.
+	for _, pName := range sortedProviderNames(results) {
+		var provResults []ReviewResult
+		for _, r := range results {
+			if r.Provider == pName {
+				provResults = append(provResults, r)
+			}
+		}
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			Type:      "review_provider_summary",
+			Content:   formatProviderSummary(pName, provResults),
+			Timestamp: time.Now().Unix(),
+		})
+	}
 
 	emit(types.OutboundEvent{
 		ID:        uuid.New().String(),
@@ -292,6 +309,109 @@ func emitError(emit func(types.OutboundEvent), msg string) {
 		Content:   msg,
 		Timestamp: time.Now().Unix(),
 	})
+}
+
+// sortedProviderNames returns unique provider names from results in sorted order.
+func sortedProviderNames(results []ReviewResult) []string {
+	seen := map[string]bool{}
+	for _, r := range results {
+		seen[r.Provider] = true
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// formatProviderSummary builds a per-reviewer breakdown for a single provider.
+//
+//	Provider: anthropic
+//	  security: 1 critical, 2 warnings
+//	  code-quality: 1 suggestion
+//	  maintainability: (clean)
+func formatProviderSummary(providerName string, results []ReviewResult) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Provider: %s", providerName)
+
+	for _, r := range results {
+		sb.WriteString("\n  ")
+		sb.WriteString(r.Reviewer)
+		sb.WriteString(": ")
+
+		switch {
+		case r.Error != "":
+			fmt.Fprintf(&sb, "error: %s", r.Error)
+		case len(r.Findings) == 0:
+			sb.WriteString("(clean)")
+		default:
+			counts := map[Severity]int{}
+			for _, f := range r.Findings {
+				counts[f.Severity]++
+			}
+			var parts []string
+			for _, sev := range []Severity{SeverityCritical, SeverityWarning, SeveritySuggestion, SeverityPraise} {
+				if c := counts[sev]; c > 0 {
+					parts = append(parts, fmt.Sprintf("%d %s", c, sev))
+				}
+			}
+			sb.WriteString(strings.Join(parts, ", "))
+		}
+	}
+	return sb.String()
+}
+
+// FormatFindingsMessage builds a human-readable message listing all actionable
+// findings (non-praise) grouped by reviewer+provider, suitable for sending to
+// the main agent loop for automatic remediation.
+func FormatFindingsMessage(results []ReviewResult) string {
+	var sb strings.Builder
+	sb.WriteString("The code review found the following issues. Please fix them:\n")
+
+	for _, r := range results {
+		var actionable []Finding
+		for _, f := range r.Findings {
+			switch f.Severity {
+			case SeverityPraise:
+				continue
+			default:
+				actionable = append(actionable, f)
+			}
+		}
+		if len(actionable) == 0 {
+			continue
+		}
+
+		fmt.Fprintf(&sb, "\n## %s (%s)\n", r.Reviewer, r.Provider)
+		for _, f := range actionable {
+			loc := ""
+			if f.File != "" {
+				loc = f.File
+				if f.StartLine > 0 {
+					loc += fmt.Sprintf(":%d", f.StartLine)
+				}
+				loc += " — "
+			}
+			fmt.Fprintf(&sb, "- [%s] %s%s\n", f.Severity, loc, f.Description)
+		}
+	}
+	return sb.String()
+}
+
+// HasActionableFindings returns true if any result contains non-praise findings.
+func HasActionableFindings(results []ReviewResult) bool {
+	for _, r := range results {
+		for _, f := range r.Findings {
+			switch f.Severity {
+			case SeverityPraise:
+				continue
+			default:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // formatSummary builds a human-readable summary of findings by severity.
