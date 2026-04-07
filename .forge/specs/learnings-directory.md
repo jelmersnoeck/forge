@@ -1,6 +1,6 @@
 ---
 id: learnings-directory
-status: active
+status: implemented
 ---
 # Automatic session reflection via .forge/learnings/
 
@@ -29,6 +29,8 @@ turn completes with meaningful work (i.e., at least one tool was used).
 - The `.forge/learnings/` directory is created on first write if missing.
 - On first write, ensure `.gitattributes` contains a line marking `.forge/learnings/**` as `linguist-generated=true`.
 - If `.gitattributes` already has the line, don't duplicate it.
+- **Auto-commit**: After writing a learning file, automatically `git add` + `git commit` the learning file and `.gitattributes`. Uses `--no-verify` to skip hooks. Best-effort: silently skips if not in a git repo or if the commit fails.
+- **Auto-push**: After committing, pushes to remote if the current branch has an upstream tracking branch. Uses `--no-verify`. Silently skips if no remote or push fails.
 - The context loader discovers all `.md` files in `.forge/learnings/` and loads them as learnings (level "project").
 - AGENTS.md files continue to be loaded as context (read-only) — they just aren't written to.
 - The base prompt's self-improvement line changes from "AGENTS.md" to ".forge/learnings/".
@@ -76,3 +78,7 @@ func SaveReflection(cwd, summary string) error
 - Loop exits with error → OnComplete still fires if tools were used (partial work is worth saving).
 - Context cancelled → OnComplete does NOT fire (session was killed).
 - OnComplete callback panics → recovered, logged, does not crash the agent.
+- Not a git repo → learning file written, commit silently skipped.
+- Git commit fails (e.g. locked index) → logged, does not fail the tool.
+- No remote / no upstream tracking branch → commit created locally, push silently skipped.
+- Push fails (e.g. network error, auth) → logged, does not fail the tool.

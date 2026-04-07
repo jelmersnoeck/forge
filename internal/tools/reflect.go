@@ -2,7 +2,9 @@ package tools
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -131,10 +133,62 @@ func writeReflection(cwd, summary string, mistakes, successes, suggestions []str
 		return "", fmt.Errorf("update .gitattributes: %v", err)
 	}
 
+	commitLearning(cwd, outPath)
+
 	return outPath, nil
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// commitLearning stages, commits, and pushes a learning file (and .gitattributes).
+// Best-effort: logs and returns silently on failure (non-git dirs, no remote, etc.).
+//
+//	git rev-parse --git-dir   (bail if not a repo)
+//	git add -- <file> .gitattributes
+//	git commit -m "..." --no-verify
+//	git push                  (only if a remote tracking branch exists)
+func commitLearning(cwd, learningPath string) {
+	// Quick check: is this a git repo?
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd.Dir = cwd
+	if err := cmd.Run(); err != nil {
+		return
+	}
+
+	// Stage the learning file and .gitattributes
+	rel, err := filepath.Rel(cwd, learningPath)
+	if err != nil {
+		rel = learningPath
+	}
+	filesToAdd := []string{rel, ".gitattributes"}
+	addArgs := append([]string{"add", "--"}, filesToAdd...)
+	add := exec.Command("git", addArgs...)
+	add.Dir = cwd
+	if err := add.Run(); err != nil {
+		log.Printf("[reflect] git add failed: %v", err)
+		return
+	}
+
+	commit := exec.Command("git", "commit", "-m", "forge: save session reflection", "--no-verify")
+	commit.Dir = cwd
+	if err := commit.Run(); err != nil {
+		log.Printf("[reflect] git commit failed: %v", err)
+		return
+	}
+
+	// Push if there's a remote tracking branch. No remote? No push. No drama.
+	track := exec.Command("git", "rev-parse", "--abbrev-ref", "@{upstream}")
+	track.Dir = cwd
+	if err := track.Run(); err != nil {
+		return
+	}
+
+	push := exec.Command("git", "push", "--no-verify")
+	push.Dir = cwd
+	if err := push.Run(); err != nil {
+		log.Printf("[reflect] git push failed: %v", err)
+	}
+}
 
 // slugify lowercases, replaces non-alphanum runs with hyphens, and truncates.
 func slugify(s string, maxLen int) string {
