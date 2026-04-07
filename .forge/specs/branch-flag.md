@@ -1,6 +1,6 @@
 ---
 id: branch-flag
-status: draft
+status: implemented
 ---
 # Add --branch flag to reuse or create worktrees by branch name
 
