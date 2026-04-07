@@ -1,6 +1,6 @@
 ---
 id: automated-review
-status: draft
+status: implemented
 ---
 # Automated multi-agent code review system
 
@@ -14,16 +14,20 @@ structured findings. Results are aggregated and streamed back to the user.
 ## Context
 Files and systems that change:
 
-- `internal/review/` — new package: reviewer registry, orchestrator, reviewer definitions
-- `internal/review/reviewer.go` — Reviewer interface and built-in reviewers
-- `internal/review/orchestrator.go` — runs reviewers in parallel across providers
-- `internal/review/diff.go` — git diff extraction
-- `internal/runtime/provider/openai.go` — new OpenAI LLMProvider implementation
+- `internal/review/review.go` — types: Finding, ReviewResult, Reviewer interface, Severity constants
+- `internal/review/reviewers.go` — 5 built-in reviewer implementations + DefaultReviewers/DefaultReviewersWithSpec
+- `internal/review/orchestrator.go` — Orchestrator, ReviewRequest, parallel execution, JSON parsing, summary formatting
+- `internal/review/diff.go` — GetDiff, truncation, git helpers
+- `internal/review/orchestrator_test.go` — orchestrator, parser, reviewer, summary, diff tests (49 test cases)
+- `internal/review/diff_test.go` — diff truncation and git repo tests
+- `internal/runtime/provider/openai.go` — OpenAI LLMProvider via raw HTTP streaming SSE
+- `internal/runtime/provider/openai_test.go` — OpenAI provider tests with httptest (13 test cases)
 - `internal/agent/server.go` — new `POST /review` endpoint
-- `internal/agent/worker.go` — review execution support
+- `internal/agent/hub.go` — review trigger channel + TriggerReview/ReviewChannel methods
+- `internal/agent/worker.go` — reviewListener goroutine, runReview orchestration, provider assembly
 - `internal/server/gateway/gateway.go` — new `POST /sessions/{id}/review` endpoint
-- `cmd/forge/cli.go` — `/review` command handling
-- `internal/types/types.go` — ReviewRequest, ReviewResult, ReviewFinding types
+- `cmd/forge/cli.go` — `/review` command parsing, sendReview, review event display, finding formatting
+- `cmd/forge/cli_test.go` — isReviewCommand and parseReviewBase tests
 
 ## Behavior
 - `/review` in TUI triggers a review of the current git diff (staged + unstaged vs base branch)
@@ -48,22 +52,22 @@ Files and systems that change:
 - Each finding includes: reviewer name, provider, severity, file path (if applicable), line range, description
 
 ## Constraints
-- Review agents must not have write access (no Bash, Write, Edit, PRCreate)
-- Review agents get fresh context — no shared conversation history
-- OpenAI provider must implement the same `LLMProvider` interface
-- Do not add external dependencies for the OpenAI SDK — use raw HTTP (like Anthropic SDK pattern, but we'll use stdlib since there's no official Go SDK we want)
-- Provider API keys come from environment: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
-- If a provider's API key is missing, skip that provider (don't fail the review)
-- Individual reviewer failures must not abort the entire review
-- Review must work without a spec (spec validation reviewer is skipped)
-- The review system must be testable without live API keys
+- Review agents must not have write access (no Bash, Write, Edit, PRCreate) — implemented: review agents have no tools at all, they only analyze text
+- Review agents get fresh context — no shared conversation history — implemented: each gets a fresh ChatRequest with diff only
+- OpenAI provider implements the same `LLMProvider` interface — implemented: `OpenAIProvider.Chat()` returns `<-chan ChatDelta`
+- OpenAI provider uses raw net/http (no SDK dependency) — implemented: pure stdlib + SSE parsing
+- Provider API keys come from environment: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — implemented
+- If a provider's API key is missing, skip that provider (don't fail the review) — implemented
+- Individual reviewer failures must not abort the entire review — implemented: errors captured per-result
+- Review must work without a spec (spec validation reviewer is skipped) — implemented
+- The review system must be testable without live API keys — implemented: mock providers in tests
+- Review types (Finding, ReviewResult) live in internal/review/ package, not in types/ — decision: keeps review self-contained
 
 ## Interfaces
 
 ```go
-// internal/review/reviewer.go
+// internal/review/review.go
 
-// Severity levels for review findings.
 type Severity string
 
 const (
@@ -73,7 +77,6 @@ const (
     SeverityPraise     Severity = "praise"
 )
 
-// Finding is a single review observation.
 type Finding struct {
     Reviewer    string   `json:"reviewer"`
     Provider    string   `json:"provider"`
@@ -84,7 +87,6 @@ type Finding struct {
     Description string   `json:"description"`
 }
 
-// ReviewResult holds the output of a single reviewer+provider run.
 type ReviewResult struct {
     Reviewer string    `json:"reviewer"`
     Provider string    `json:"provider"`
@@ -92,26 +94,24 @@ type ReviewResult struct {
     Error    string    `json:"error,omitempty"`
 }
 
-// Reviewer analyzes a diff and returns findings.
 type Reviewer interface {
     Name() string
     SystemPrompt() string
 }
 
-// ReviewRequest is the input to the review orchestrator.
 type ReviewRequest struct {
-    Diff     string
-    Specs    []types.SpecEntry
-    Context  types.ContextBundle
+    Diff       string
+    Specs      []types.SpecEntry
+    Context    types.ContextBundle
     BaseBranch string
-    CWD      string
+    CWD        string
 }
-
-// Orchestrator runs all reviewers across all providers.
-type Orchestrator struct { ... }
 
 func NewOrchestrator(providers map[string]types.LLMProvider, reviewers []Reviewer) *Orchestrator
 func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(types.OutboundEvent)) []ReviewResult
+func DefaultReviewers() []Reviewer          // 4 reviewers
+func DefaultReviewersWithSpec() []Reviewer   // 5 reviewers (includes spec validation)
+func GetDiff(cwd, baseBranch string) (string, error)
 ```
 
 ```go
@@ -121,6 +121,13 @@ type OpenAIProvider struct { ... }
 
 func NewOpenAI(apiKey string) *OpenAIProvider
 func (p *OpenAIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error)
+```
+
+```go
+// internal/agent/hub.go
+
+func (h *Hub) TriggerReview(baseBranch string)
+func (h *Hub) ReviewChannel() <-chan string
 ```
 
 ## Edge Cases
