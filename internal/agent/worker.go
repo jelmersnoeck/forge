@@ -83,6 +83,9 @@ func (w *Worker) Run(ctx context.Context) {
 	// Listen for review triggers in a separate goroutine.
 	go w.reviewListener(ctx, bundle)
 
+	// Monitor PR health (rebase, CI) in the background.
+	go w.prHealthMonitor(ctx)
+
 	var historyID string
 	for {
 		select {

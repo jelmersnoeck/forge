@@ -350,7 +350,7 @@ func TestPRCreateHandler_RebasesBeforeCreating(t *testing.T) {
 	r.Contains(result.Content[0].Text, "Failed to create PR")
 
 	// Verify the rebase happened — our branch should now have the other commit
-	log, _ := gitOutput(local, "log", "--oneline")
+	log, _ := GitOutput(local, "log", "--oneline")
 	r.Contains(log, "other work on main")
 	r.Contains(log, "add tournament scaffold")
 }
@@ -393,7 +393,7 @@ func TestPRCreateHandler_RebaseConflictAborts(t *testing.T) {
 	r.Contains(result.Content[0].Text, "Rebase onto origin/main failed")
 
 	// Verify rebase was aborted (not left in progress)
-	branch, _ := gitOutput(local, "rev-parse", "--abbrev-ref", "HEAD")
+	branch, _ := GitOutput(local, "rev-parse", "--abbrev-ref", "HEAD")
 	r.Equal("jelmer/edit-readme", branch)
 }
 
@@ -503,7 +503,7 @@ func TestDetectDefaultBranch(t *testing.T) {
 			tmpDir := t.TempDir()
 			initGitRepo(t, tmpDir, tc.defaultBranch)
 
-			branch := detectDefaultBranch(tmpDir)
+			branch := DetectDefaultBranch(tmpDir)
 			r.Equal(tc.defaultBranch, branch)
 		})
 	}
