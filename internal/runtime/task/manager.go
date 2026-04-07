@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -326,6 +327,8 @@ func (m *Manager) updateTaskStatus(taskID string, status types.TaskStatus) {
 	}
 }
 
+var idCounter atomic.Int64
+
 // generateTaskID creates a unique task ID with a type prefix.
 func generateTaskID(taskType string) string {
 	prefix := "x"
@@ -335,12 +338,12 @@ func generateTaskID(taskType string) string {
 	case "agent":
 		prefix = "a"
 	}
-	return fmt.Sprintf("%s%d", prefix, time.Now().UnixNano())
+	return fmt.Sprintf("%s%d", prefix, idCounter.Add(1))
 }
 
 // generateSessionID creates a unique session ID for sub-agents.
 func generateSessionID() string {
-	return fmt.Sprintf("subagent-%d", time.Now().UnixNano())
+	return fmt.Sprintf("subagent-%d", idCounter.Add(1))
 }
 
 // monitorTasks periodically checks for long-running tasks without timeouts.

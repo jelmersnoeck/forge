@@ -2,6 +2,7 @@ package tools
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -221,4 +222,105 @@ func TestSaveReflection(t *testing.T) {
 	ga, err := os.ReadFile(filepath.Join(tmpDir, ".gitattributes"))
 	r.NoError(err)
 	r.Contains(string(ga), ".forge/learnings/**")
+}
+
+// initGitRepo is defined in pr_create_test.go (same package).
+
+func TestReflectCommitsInGitRepo(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir, "main")
+
+	ctx := types.ToolContext{CWD: tmpDir}
+	tool := ReflectTool()
+	_, err := tool.Handler(map[string]any{
+		"summary": "Dean Pelton approved the Greendale mascot redesign",
+	}, ctx)
+	r.NoError(err)
+
+	// Verify the learning file is committed (not just staged)
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = tmpDir
+	out, err := cmd.Output()
+	r.NoError(err)
+	r.Empty(strings.TrimSpace(string(out)), "working tree should be clean after reflect commits")
+
+	// Verify the commit message
+	cmd = exec.Command("git", "log", "--oneline", "-1", "--format=%s")
+	cmd.Dir = tmpDir
+	out, err = cmd.Output()
+	r.NoError(err)
+	r.Equal("forge: save session reflection", strings.TrimSpace(string(out)))
+}
+
+func TestReflectNoCommitWithoutGitRepo(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	// No git init — should still write file, just not commit
+
+	ctx := types.ToolContext{CWD: tmpDir}
+	tool := ReflectTool()
+	result, err := tool.Handler(map[string]any{
+		"summary": "Senor Chang infiltrated the study group",
+	}, ctx)
+	r.NoError(err)
+	r.False(result.IsError)
+
+	// File should still exist
+	entries, err := os.ReadDir(filepath.Join(tmpDir, ".forge", "learnings"))
+	r.NoError(err)
+	r.Len(entries, 1)
+}
+
+func TestSaveReflectionCommitsInGitRepo(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir, "main")
+
+	err := SaveReflection(tmpDir, "The Human Being mascot was officially approved")
+	r.NoError(err)
+
+	// Working tree should be clean
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = tmpDir
+	out, err := cmd.Output()
+	r.NoError(err)
+	r.Empty(strings.TrimSpace(string(out)), "working tree should be clean after SaveReflection")
+}
+
+func TestReflectPushesWhenRemoteExists(t *testing.T) {
+	r := require.New(t)
+
+	remote, local := initGitRepoWithRemote(t, "main")
+
+	ctx := types.ToolContext{CWD: local}
+	tool := ReflectTool()
+	_, err := tool.Handler(map[string]any{
+		"summary": "Jeff Winger aced the bar exam on his second try",
+	}, ctx)
+	r.NoError(err)
+
+	// Local working tree should be clean
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = local
+	out, err := cmd.Output()
+	r.NoError(err)
+	r.Empty(strings.TrimSpace(string(out)), "working tree should be clean")
+
+	// Remote should have the commit (clone the bare repo and check)
+	verify := t.TempDir()
+	gitExec(t, verify, "clone", remote, ".")
+	cmd = exec.Command("git", "log", "--oneline", "-1", "--format=%s")
+	cmd.Dir = verify
+	out, err = cmd.Output()
+	r.NoError(err)
+	r.Equal("forge: save session reflection", strings.TrimSpace(string(out)))
+
+	// The learning file should exist in the cloned repo
+	entries, err := os.ReadDir(filepath.Join(verify, ".forge", "learnings"))
+	r.NoError(err)
+	r.Len(entries, 1)
 }
