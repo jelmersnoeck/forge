@@ -6,8 +6,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,9 +65,10 @@ func (b *TmuxBackend) ensureSession() error {
 		return nil
 	}
 
-	// Check if session already exists (e.g. from a previous server run).
+	// Check if session already exists (e.g. from a previous gateway run).
 	if err := exec.Command("tmux", "has-session", "-t", b.tmuxSessionName).Run(); err == nil {
 		b.sessionReady = true
+		b.propagateEnv()
 		return nil
 	}
 
@@ -76,7 +79,20 @@ func (b *TmuxBackend) ensureSession() error {
 
 	log.Printf("[tmux] created session %s", b.tmuxSessionName)
 	b.sessionReady = true
+	b.propagateEnv()
+
 	return nil
+}
+
+// propagateEnv copies the gateway's environment into the tmux session so agent
+// windows inherit it. tmux new-window spawns a fresh shell that gets the tmux
+// server's env (from whenever it was first started), not the gateway's.
+func (b *TmuxBackend) propagateEnv() {
+	for _, entry := range os.Environ() {
+		if key, val, ok := strings.Cut(entry, "="); ok {
+			_ = exec.Command("tmux", "set-environment", "-t", b.tmuxSessionName, key, val).Run()
+		}
+	}
 }
 
 // windowName returns a stable, short tmux window name for a session ID.
