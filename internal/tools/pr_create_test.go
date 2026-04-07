@@ -117,6 +117,63 @@ func TestValidatePRDescription(t *testing.T) {
 	}
 }
 
+func TestDetectCommitListDescription(t *testing.T) {
+	tests := map[string]struct {
+		description string
+		commitLog   string
+		wantErr     bool
+	}{
+		"empty commit log": {
+			description: "Some description that is long enough to pass validation.",
+			commitLog:   "",
+			wantErr:     false,
+		},
+		"single commit is always ok": {
+			description: "add tournament scaffold",
+			commitLog:   "abc1234 add tournament scaffold",
+			wantErr:     false,
+		},
+		"bullet list of commits": {
+			description: "- add tournament scaffold\n- add scoring\n- fix bracket seeding",
+			commitLog:   "abc1234 add tournament scaffold\ndef5678 add scoring\nghi9012 fix bracket seeding",
+			wantErr:     true,
+		},
+		"asterisk list of commits": {
+			description: "* add tournament scaffold\n* add scoring\n* fix bracket seeding",
+			commitLog:   "abc1234 add tournament scaffold\ndef5678 add scoring\nghi9012 fix bracket seeding",
+			wantErr:     true,
+		},
+		"plain list of commits": {
+			description: "add tournament scaffold\nadd scoring\nfix bracket seeding",
+			commitLog:   "abc1234 add tournament scaffold\ndef5678 add scoring\nghi9012 fix bracket seeding",
+			wantErr:     true,
+		},
+		"synthesized description with commit words": {
+			description: "This PR adds the paintball tournament system including bracket generation and a scoring module. The bracket seeding algorithm uses past performance data.",
+			commitLog:   "abc1234 add tournament scaffold\ndef5678 add scoring\nghi9012 fix bracket seeding",
+			wantErr:     false,
+		},
+		"partial overlap is fine": {
+			description: "## What changed\nAdded tournament scaffold and scoring system.\n\n## Why\nGreendale needs this for the annual paintball event.\n\n- add scoring",
+			commitLog:   "abc1234 add tournament scaffold\ndef5678 add scoring",
+			wantErr:     false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			err := detectCommitListDescription(tc.description, tc.commitLog)
+			if tc.wantErr {
+				r.Error(err)
+				r.Contains(err.Error(), "copy-paste")
+				return
+			}
+			r.NoError(err)
+		})
+	}
+}
+
 func TestPRCreateTool_Schema(t *testing.T) {
 	r := require.New(t)
 
@@ -230,15 +287,15 @@ func TestPRCreateHandler_InvalidDescription(t *testing.T) {
 func TestPRCreateHandler_NoChanges(t *testing.T) {
 	r := require.New(t)
 
-	tmpDir := t.TempDir()
-	initGitRepo(t, tmpDir, "main")
+	remote, local := initGitRepoWithRemote(t, "main")
+	_ = remote
 
 	// Create a branch with no changes
-	gitExec(t, tmpDir, "checkout", "-b", "jelmer/no-changes")
+	gitExec(t, local, "checkout", "-b", "jelmer/no-changes")
 
 	ctx := types.ToolContext{
 		Ctx: context.Background(),
-		CWD: tmpDir,
+		CWD: local,
 	}
 
 	input := map[string]any{
@@ -253,35 +310,156 @@ func TestPRCreateHandler_NoChanges(t *testing.T) {
 	r.Contains(result.Content[0].Text, "No changes detected")
 }
 
+func TestPRCreateHandler_RebasesBeforeCreating(t *testing.T) {
+	r := require.New(t)
+
+	remote, local := initGitRepoWithRemote(t, "main")
+
+	// Create feature branch with a change
+	gitExec(t, local, "checkout", "-b", "jelmer/add-paintball")
+	writeFile(t, local, "tournament.go", "package paintball\n\nfunc Bracket() {}\n")
+	gitExec(t, local, "add", ".")
+	gitExec(t, local, "commit", "-m", "add tournament scaffold")
+
+	// Simulate someone else pushing to main on the remote
+	otherClone := t.TempDir()
+	gitExec(t, otherClone, "clone", remote, ".")
+	writeFile(t, otherClone, "other.go", "package other\n")
+	gitExec(t, otherClone, "add", ".")
+	gitExec(t, otherClone, "commit", "-m", "other work on main")
+	gitExec(t, otherClone, "push", "origin", "main")
+
+	ctx := types.ToolContext{
+		Ctx: context.Background(),
+		CWD: local,
+	}
+
+	input := map[string]any{
+		"title":       "Implement paintball tournament bracket system for Greendale",
+		"description": "This PR adds the full paintball tournament bracket system for Greendale's annual event. Includes bracket generation that handles arbitrary team counts.",
+	}
+
+	tool := PRCreateTool()
+	result, err := tool.Handler(input, ctx)
+	r.NoError(err)
+
+	// Will fail at gh pr create (no GitHub remote), but should have rebased first
+	r.True(result.IsError)
+	r.Contains(result.Content[0].Text, "Failed to create PR")
+
+	// Verify the rebase happened — our branch should now have the other commit
+	log, _ := gitOutput(local, "log", "--oneline")
+	r.Contains(log, "other work on main")
+	r.Contains(log, "add tournament scaffold")
+}
+
+func TestPRCreateHandler_RebaseConflictAborts(t *testing.T) {
+	r := require.New(t)
+
+	remote, local := initGitRepoWithRemote(t, "main")
+
+	// Create feature branch that modifies README
+	gitExec(t, local, "checkout", "-b", "jelmer/edit-readme")
+	writeFile(t, local, "README.md", "# Greendale: City College Sucks\n")
+	gitExec(t, local, "add", ".")
+	gitExec(t, local, "commit", "-m", "update readme")
+
+	// Push a conflicting README change to main via another clone
+	otherClone := t.TempDir()
+	gitExec(t, otherClone, "clone", remote, ".")
+	writeFile(t, otherClone, "README.md", "# Greendale: Go Human Beings\n")
+	gitExec(t, otherClone, "add", ".")
+	gitExec(t, otherClone, "commit", "-m", "different readme edit")
+	gitExec(t, otherClone, "push", "origin", "main")
+
+	ctx := types.ToolContext{
+		Ctx: context.Background(),
+		CWD: local,
+	}
+
+	input := map[string]any{
+		"title":       "Update Greendale README with rivalry declaration",
+		"description": "This PR updates the Greendale README to include a bold statement about City College. Morale is important.",
+	}
+
+	tool := PRCreateTool()
+	result, err := tool.Handler(input, ctx)
+	r.NoError(err)
+	r.True(result.IsError)
+	r.Contains(result.Content[0].Text, "Rebase onto origin/main failed")
+
+	// Verify rebase was aborted (not left in progress)
+	branch, _ := gitOutput(local, "rev-parse", "--abbrev-ref", "HEAD")
+	r.Equal("jelmer/edit-readme", branch)
+}
+
+func TestPRCreateHandler_RejectsCommitListDescription(t *testing.T) {
+	r := require.New(t)
+
+	_, local := initGitRepoWithRemote(t, "main")
+
+	// Create a branch with multiple commits
+	gitExec(t, local, "checkout", "-b", "jelmer/multi-commit")
+
+	writeFile(t, local, "tournament.go", "package paintball\n\nfunc Bracket() {}\n")
+	gitExec(t, local, "add", ".")
+	gitExec(t, local, "commit", "-m", "add tournament scaffold")
+
+	writeFile(t, local, "scoring.go", "package paintball\n\nfunc Score() int { return 42 }\n")
+	gitExec(t, local, "add", ".")
+	gitExec(t, local, "commit", "-m", "add scoring")
+
+	writeFile(t, local, "teams.go", "package paintball\n\nfunc Teams() []string { return nil }\n")
+	gitExec(t, local, "add", ".")
+	gitExec(t, local, "commit", "-m", "add teams")
+
+	ctx := types.ToolContext{
+		Ctx: context.Background(),
+		CWD: local,
+	}
+
+	input := map[string]any{
+		"title": "Implement paintball tournament system for Greendale",
+		"description": `- add tournament scaffold
+- add scoring
+- add teams`,
+	}
+
+	tool := PRCreateTool()
+	result, err := tool.Handler(input, ctx)
+	r.NoError(err)
+	r.True(result.IsError)
+	r.Contains(result.Content[0].Text, "copy-paste")
+}
+
 func TestPRCreateHandler_WithChanges(t *testing.T) {
 	r := require.New(t)
 
 	// This test verifies the full flow up to the gh pr create call.
-	// Since we can't actually create a PR without a remote, we just verify
+	// Since we can't actually create a PR without a GitHub remote, we verify
 	// validation passes and the gh error is about missing remote (not our validation).
 
 	if _, err := exec.LookPath("gh"); err != nil {
 		t.Skip("gh CLI not available")
 	}
 
-	tmpDir := t.TempDir()
-	initGitRepo(t, tmpDir, "main")
+	_, local := initGitRepoWithRemote(t, "main")
 
 	// Create a branch with actual changes
-	gitExec(t, tmpDir, "checkout", "-b", "jelmer/add-paintball")
+	gitExec(t, local, "checkout", "-b", "jelmer/add-paintball")
 
 	// Add multiple commits to verify full-diff behavior
-	writeFile(t, tmpDir, "tournament.go", "package paintball\n\nfunc Bracket() {}\n")
-	gitExec(t, tmpDir, "add", ".")
-	gitExec(t, tmpDir, "commit", "-m", "add tournament scaffold")
+	writeFile(t, local, "tournament.go", "package paintball\n\nfunc Bracket() {}\n")
+	gitExec(t, local, "add", ".")
+	gitExec(t, local, "commit", "-m", "add tournament scaffold")
 
-	writeFile(t, tmpDir, "scoring.go", "package paintball\n\nfunc Score() int { return 42 }\n")
-	gitExec(t, tmpDir, "add", ".")
-	gitExec(t, tmpDir, "commit", "-m", "add scoring")
+	writeFile(t, local, "scoring.go", "package paintball\n\nfunc Score() int { return 42 }\n")
+	gitExec(t, local, "add", ".")
+	gitExec(t, local, "commit", "-m", "add scoring")
 
 	ctx := types.ToolContext{
 		Ctx: context.Background(),
-		CWD: tmpDir,
+		CWD: local,
 	}
 
 	input := map[string]any{
@@ -293,7 +471,7 @@ func TestPRCreateHandler_WithChanges(t *testing.T) {
 	result, err := tool.Handler(input, ctx)
 	r.NoError(err)
 
-	// Without a real remote, gh will fail — but it should fail at the gh step,
+	// Without a real GitHub remote, gh will fail — but it should fail at the gh step,
 	// not our validation. The error should be from gh, not from our tool.
 	r.True(result.IsError)
 	r.NotContains(result.Content[0].Text, "Invalid PR title")
@@ -336,6 +514,28 @@ func initGitRepo(t *testing.T, dir, branch string) {
 	writeFile(t, dir, "README.md", "# Greendale Community College\n")
 	gitExec(t, dir, "add", ".")
 	gitExec(t, dir, "commit", "-m", "initial commit")
+}
+
+// initGitRepoWithRemote creates a bare "remote" repo and a clone of it,
+// both with an initial commit on the given branch. Returns (remote, local) paths.
+func initGitRepoWithRemote(t *testing.T, branch string) (string, string) {
+	t.Helper()
+
+	// Create a temporary repo to build the initial commit
+	staging := t.TempDir()
+	initGitRepo(t, staging, branch)
+
+	// Create bare remote from it
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	gitExec(t, staging, "clone", "--bare", staging, remote)
+
+	// Clone it to get a proper local with origin
+	local := t.TempDir()
+	gitExec(t, local, "clone", remote, ".")
+	gitExec(t, local, "config", "user.email", "chang@greendale.edu")
+	gitExec(t, local, "config", "user.name", "Señor Chang")
+
+	return remote, local
 }
 
 func gitExec(t *testing.T, dir string, args ...string) {
