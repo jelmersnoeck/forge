@@ -152,3 +152,106 @@ func TestWrapText(t *testing.T) {
 		})
 	}
 }
+
+func TestSlashCommandNames(t *testing.T) {
+	r := require.New(t)
+
+	names := slashCommandNames()
+	r.Contains(names, "/review", "should include /review")
+
+	// All names start with /
+	for _, name := range names {
+		r.True(strings.HasPrefix(name, "/"), "command %q must start with /", name)
+	}
+}
+
+func TestSlashCommandNamesExcludesHidden(t *testing.T) {
+	r := require.New(t)
+
+	names := slashCommandNames()
+	for _, cmd := range slashCommands {
+		if cmd.Hidden {
+			r.NotContains(names, cmd.Name, "hidden command %q should not appear", cmd.Name)
+		}
+	}
+}
+
+func TestUpdateSlashSuggestions(t *testing.T) {
+	r := require.New(t)
+
+	tests := map[string]struct {
+		input string
+		want  bool
+	}{
+		"slash prefix enables suggestions": {
+			input: "/",
+			want:  true,
+		},
+		"slash with partial command": {
+			input: "/r",
+			want:  true,
+		},
+		"full command": {
+			input: "/review",
+			want:  true,
+		},
+		"empty input disables suggestions": {
+			input: "",
+			want:  false,
+		},
+		"normal message disables suggestions": {
+			input: "hello world",
+			want:  false,
+		},
+		"slash in middle is not a command": {
+			input: "foo/bar",
+			want:  false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := &model{}
+			m.textInput.SetValue(tc.input)
+			m.updateSlashSuggestions()
+			r.Equal(tc.want, m.textInput.ShowSuggestions)
+		})
+	}
+}
+
+func TestHasSuggestions(t *testing.T) {
+	r := require.New(t)
+
+	tests := map[string]struct {
+		input    string
+		showSugg bool
+		want     bool
+	}{
+		"active with matching prefix": {
+			input:    "/r",
+			showSugg: true,
+			want:     true,
+		},
+		"active but no matches": {
+			input:    "/xyz",
+			showSugg: true,
+			want:     false,
+		},
+		"not active": {
+			input:    "hello",
+			showSugg: false,
+			want:     false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := &model{}
+			m.textInput.ShowSuggestions = tc.showSugg
+			m.textInput.SetValue(tc.input)
+			// SetSuggestions triggers updateSuggestions which populates matches
+			m.textInput.SetSuggestions(slashCommandNames())
+			r.Equal(tc.want, m.hasSuggestions())
+		})
+	}
+}

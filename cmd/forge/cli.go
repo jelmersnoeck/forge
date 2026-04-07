@@ -193,12 +193,13 @@ func runCLI(args []string) int {
 		// Continue without cost tracking
 	}
 
-	// Initialize text input
+	// Initialize text input with slash-command autocomplete
 	ti := textinput.New()
 	ti.Placeholder = "Type your message..."
 	ti.Focus()
 	ti.CharLimit = 0 // no limit
 	ti.Width = 80    // will be updated on WindowSizeMsg
+	ti.SetSuggestions(slashCommandNames())
 
 	// Determine effective working directory
 	effectiveCWD := cwd
@@ -373,6 +374,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyUp:
+			// Cycle suggestions when autocomplete is active
+			if m.hasSuggestions() {
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(msg)
+				return m, cmd
+			}
 			// Scroll up one line
 			outputHeight := m.getOutputHeight()
 			maxOffset := len(m.output) - outputHeight
@@ -383,6 +390,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyDown:
+			// Cycle suggestions when autocomplete is active
+			if m.hasSuggestions() {
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(msg)
+				return m, cmd
+			}
 			// Scroll down one line
 			if m.scrollOffset > 0 {
 				m.scrollOffset--
@@ -397,8 +410,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			text := m.textInput.Value()
-			m.textInput.SetValue("") // Clear input immediately
-			m.exitAttempts = 0       // Reset exit attempts on new message
+			m.textInput.SetValue("")            // Clear input immediately
+			m.textInput.ShowSuggestions = false // Hide suggestions
+			m.exitAttempts = 0                  // Reset exit attempts on new message
 
 			// If nothing in queue and not working, send immediately without queuing
 			if len(m.queue) == 0 && !m.working {
@@ -443,6 +457,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.textInput, cmd = m.textInput.Update(msg)
 			m.exitAttempts = 0 // Reset on any input
+			m.updateSlashSuggestions()
 			return m, cmd
 		}
 
@@ -1252,6 +1267,18 @@ func findWorktreeForBranch(repoRoot, branch string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// updateSlashSuggestions enables or disables autocomplete based on whether the
+// input looks like a slash command prefix.
+func (m *model) updateSlashSuggestions() {
+	m.textInput.ShowSuggestions = strings.HasPrefix(m.textInput.Value(), "/")
+}
+
+// hasSuggestions reports whether the autocomplete dropdown is active and has
+// matches to cycle through.
+func (m *model) hasSuggestions() bool {
+	return m.textInput.ShowSuggestions && len(m.textInput.MatchedSuggestions()) > 0
 }
 
 // isReviewCommand checks if the input is a /review command.
