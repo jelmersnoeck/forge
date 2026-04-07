@@ -1,23 +1,27 @@
 ---
 id: learnings-directory
-status: implemented
+status: active
 ---
-# Move learnings from AGENTS.md to .forge/learnings/
+# Automatic session reflection via .forge/learnings/
 
 ## Description
-The Reflect tool currently appends learnings to `AGENTS.md` in the project root.
-This changes it to write individual learning files into `.forge/learnings/` and
-marks that directory as generated in `.gitattributes`. AGENTS.md remains loaded
-as context but is never written to by the agent.
+Learnings are written to `.forge/learnings/` as individual markdown files. The
+Reflect tool handles writing, and the context loader reads them back into the
+system prompt. Previously, reflection was purely opt-in (LLM had to call the
+Reflect tool). Now the loop automatically invokes reflection when a conversation
+turn completes with meaningful work (i.e., at least one tool was used).
 
 ## Context
-- `internal/tools/reflect.go` — Reflect tool handler (writes learnings)
+- `internal/tools/reflect.go` — Reflect tool handler + `SaveReflection` exported function
 - `internal/tools/reflect_test.go` — tests for reflect tool
+- `internal/runtime/loop/loop.go` — conversation loop, calls OnComplete callback
+- `internal/runtime/loop/loop_test.go` — loop tests including auto-reflect
 - `internal/runtime/context/loader.go` — loads AGENTS.md and learnings into ContextBundle
 - `internal/runtime/context/loader_agents_test.go` — loader tests
 - `internal/runtime/prompt/prompt.go` — assembles learnings into system prompt
 - `internal/runtime/prompt/prompt_test.go` — prompt tests
 - `internal/types/types.go` — ContextBundle, AgentsMDEntry types
+- `internal/agent/worker.go` — sets up OnComplete to auto-reflect
 
 ## Behavior
 - Reflect tool writes each reflection as an individual `.md` file in `<CWD>/.forge/learnings/`.
@@ -29,6 +33,13 @@ as context but is never written to by the agent.
 - AGENTS.md files continue to be loaded as context (read-only) — they just aren't written to.
 - The base prompt's self-improvement line changes from "AGENTS.md" to ".forge/learnings/".
 - The Reflect tool description updates to reference `.forge/learnings/` not `AGENTS.md`.
+- **Automatic reflection**: When the loop's `runLoop` completes and at least one tool was
+  executed during the session, the `OnComplete` callback fires. The worker sets this
+  callback to invoke `SaveReflection` with a summary built from conversation history
+  (user prompt + list of tools used).
+- Sub-agents do NOT auto-reflect (no OnComplete callback set).
+- Conversations with zero tool use (pure text Q&A) do NOT trigger auto-reflection.
+- The LLM can still call Reflect explicitly for richer, LLM-authored reflections.
 
 ## Constraints
 - Do NOT remove AGENTS.md reading from the context loader — it's still valid input.
@@ -36,13 +47,22 @@ as context but is never written to by the agent.
 - Do NOT break existing AGENTS.md loading (user, parent, project, local levels).
 - Individual learning files, not one big append file — keeps git diffs clean.
 - The `.gitattributes` update is idempotent.
+- Auto-reflection must not block on errors — log and continue.
+- Auto-reflection must not add an LLM call — it's a pure file-write operation.
 
 ## Interfaces
 ```go
+// Loop.Options gains an OnComplete callback:
+type Options struct {
+    // ... existing fields ...
+    OnComplete func(history []types.ChatMessage)
+}
+
+// Exported function for direct reflection (bypasses tool registry):
+func SaveReflection(cwd, summary string) error
+
 // File path for a learning: .forge/learnings/20260404-134500-implemented-feature-x.md
 // Slugification: lowercase, non-alphanum replaced with hyphens, trimmed, max ~50 chars
-
-// No new types needed — learning files loaded as AgentsMDEntry with Level "project"
 ```
 
 ## Edge Cases
@@ -53,3 +73,6 @@ as context but is never written to by the agent.
 - Summary contains special characters / is very long → slugified and truncated.
 - Multiple reflections in same second → filename collision resolved with suffix or uniqueness from summary.
 - Empty summary → rejected (existing behavior).
+- Loop exits with error → OnComplete still fires if tools were used (partial work is worth saving).
+- Context cancelled → OnComplete does NOT fire (session was killed).
+- OnComplete callback panics → recovered, logged, does not crash the agent.

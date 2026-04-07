@@ -34,6 +34,7 @@ type Loop struct {
 	audit        types.AuditLogger
 	budget       tokens.Budget
 	retryPolicy  retry.Policy
+	onComplete   func(history []types.ChatMessage)
 
 	// Cumulative token usage across all turns in this session.
 	totalUsage types.TokenUsage
@@ -44,6 +45,9 @@ type Loop struct {
 
 	// Per-session file read dedup state, shared across all tool calls.
 	readState types.ReadState
+
+	// toolsUsed tracks whether any tool was executed during the loop.
+	toolsUsed bool
 }
 
 // Options configures the conversation loop.
@@ -59,6 +63,12 @@ type Options struct {
 	AuditLogger  types.AuditLogger
 	Budget       *tokens.Budget
 	RetryPolicy  *retry.Policy
+
+	// OnComplete is called when a conversation turn finishes (after the LLM
+	// stops requesting tools). Receives the full message history so the
+	// caller can build a session summary. Only called when at least one
+	// tool was executed during the turn.
+	OnComplete func(history []types.ChatMessage)
 }
 
 // New creates a new conversation loop.
@@ -93,6 +103,7 @@ func New(opts Options) *Loop {
 		budget:       budget,
 		retryPolicy:  retryPolicy,
 		readState:    make(types.ReadState),
+		onComplete:   opts.OnComplete,
 	}
 }
 
@@ -172,6 +183,7 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		turnCount++
 
 		if l.maxTurns > 0 && turnCount > l.maxTurns {
+			l.fireOnComplete()
 			emit(types.OutboundEvent{
 				ID:        uuid.New().String(),
 				SessionID: l.sessionID,
@@ -329,6 +341,7 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		// Check for tool use.
 		toolUseBlocks := l.findToolUseBlocks(assistantMsg)
 		if len(toolUseBlocks) == 0 {
+			l.fireOnComplete()
 			emit(types.OutboundEvent{
 				ID:        uuid.New().String(),
 				SessionID: l.sessionID,
@@ -337,6 +350,8 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			})
 			return nil
 		}
+
+		l.toolsUsed = true
 
 		// ── ReadOnly-gated concurrent execution ────────────────
 		toolResults := l.executeToolsGated(ctx, toolUseBlocks, emit)
@@ -597,6 +612,21 @@ func toolUseSummary(name string, input map[string]any) string {
 type nopAuditLogger struct{}
 
 func (nopAuditLogger) LogToolCall(types.ToolCallEvent) {}
+
+// fireOnComplete invokes the OnComplete callback if tools were used.
+// Recovers from panics so a bad callback never crashes the agent.
+func (l *Loop) fireOnComplete() {
+	if l.onComplete == nil || !l.toolsUsed {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			// Don't let a callback panic kill the agent.
+			_ = r
+		}
+	}()
+	l.onComplete(l.history)
+}
 
 func (l *Loop) persistMessage(msgType string, msg types.ChatMessage) error {
 	sessionMsg := types.SessionMessage{

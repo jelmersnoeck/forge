@@ -200,3 +200,25 @@ func TestSlugify(t *testing.T) {
 		})
 	}
 }
+
+func TestSaveReflection(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	err := SaveReflection(tmpDir, "Troy Barnes joined the AC repair school")
+	r.NoError(err)
+
+	entries, err := os.ReadDir(filepath.Join(tmpDir, ".forge", "learnings"))
+	r.NoError(err)
+	r.Len(entries, 1)
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, ".forge", "learnings", entries[0].Name()))
+	r.NoError(err)
+	r.Contains(string(content), "Troy Barnes joined the AC repair school")
+	r.Contains(string(content), "Session Reflection")
+
+	// .gitattributes should exist
+	ga, err := os.ReadFile(filepath.Join(tmpDir, ".gitattributes"))
+	r.NoError(err)
+	r.Contains(string(ga), ".forge/learnings/**")
+}
