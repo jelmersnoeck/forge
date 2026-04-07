@@ -21,8 +21,8 @@ func setupGitRepo(t *testing.T) (string, string) {
 	remote := t.TempDir()
 	local := t.TempDir()
 
-	// Init bare remote.
-	run(t, remote, "git", "init", "--bare")
+	// Init bare remote with explicit default branch.
+	run(t, remote, "git", "init", "--bare", "--initial-branch=main")
 
 	// Clone it.
 	run(t, local, "git", "clone", remote, ".")
