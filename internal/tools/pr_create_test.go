@@ -324,6 +324,8 @@ func TestPRCreateHandler_RebasesBeforeCreating(t *testing.T) {
 	// Simulate someone else pushing to main on the remote
 	otherClone := t.TempDir()
 	gitExec(t, otherClone, "clone", remote, ".")
+	gitExec(t, otherClone, "config", "user.email", "winger@greendale.edu")
+	gitExec(t, otherClone, "config", "user.name", "Jeff Winger")
 	writeFile(t, otherClone, "other.go", "package other\n")
 	gitExec(t, otherClone, "add", ".")
 	gitExec(t, otherClone, "commit", "-m", "other work on main")
@@ -367,6 +369,8 @@ func TestPRCreateHandler_RebaseConflictAborts(t *testing.T) {
 	// Push a conflicting README change to main via another clone
 	otherClone := t.TempDir()
 	gitExec(t, otherClone, "clone", remote, ".")
+	gitExec(t, otherClone, "config", "user.email", "winger@greendale.edu")
+	gitExec(t, otherClone, "config", "user.name", "Jeff Winger")
 	writeFile(t, otherClone, "README.md", "# Greendale: Go Human Beings\n")
 	gitExec(t, otherClone, "add", ".")
 	gitExec(t, otherClone, "commit", "-m", "different readme edit")
