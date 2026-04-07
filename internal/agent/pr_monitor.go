@@ -54,32 +54,12 @@ func (w *Worker) prHealthMonitor(ctx context.Context) {
 		return
 	}
 
-	// Run an initial check shortly after startup so we don't wait a full
-	// interval to discover rebase needs or CI failures.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(10 * time.Second):
-	}
-
 	// Track whether we've seen the PR close/merge to avoid repeated logs.
 	var prTerminal bool
 
-	// Initial check — don't gate on IsIdle since the worker is likely
-	// waiting for its first message anyway.
-	needsFix, fixMsg, terminal := w.prHealthCheck(ctx)
-	if terminal {
-		prTerminal = true
-	}
-	if needsFix && fixMsg != "" {
-		w.hub.PushMessage(types.InboundMessage{
-			SessionID: w.sessionID,
-			Text:      fixMsg,
-			User:      "pr-monitor",
-			Source:    "pr_monitor",
-			Timestamp: time.Now().UnixMilli(),
-		})
-	}
+	// Run the first check immediately so rebase/CI issues surface at startup,
+	// not after a 5-minute wait.
+	prTerminal = w.runPRCheck(ctx)
 
 	ticker := time.NewTicker(prMonitorInterval)
 	defer ticker.Stop()
@@ -99,21 +79,27 @@ func (w *Worker) prHealthMonitor(ctx context.Context) {
 				continue
 			}
 
-			needsFix, fixMsg, terminal := w.prHealthCheck(ctx)
-			if terminal {
+			if w.runPRCheck(ctx) {
 				prTerminal = true
-			}
-			if needsFix && fixMsg != "" {
-				w.hub.PushMessage(types.InboundMessage{
-					SessionID: w.sessionID,
-					Text:      fixMsg,
-					User:      "pr-monitor",
-					Source:    "pr_monitor",
-					Timestamp: time.Now().UnixMilli(),
-				})
 			}
 		}
 	}
+}
+
+// runPRCheck runs a health check and injects a fix message if needed.
+// Returns true if the PR is in a terminal state (merged/closed).
+func (w *Worker) runPRCheck(ctx context.Context) bool {
+	needsFix, fixMsg, terminal := w.prHealthCheck(ctx)
+	if needsFix && fixMsg != "" {
+		w.hub.PushMessage(types.InboundMessage{
+			SessionID: w.sessionID,
+			Text:      fixMsg,
+			User:      "pr-monitor",
+			Source:    "pr_monitor",
+			Timestamp: time.Now().UnixMilli(),
+		})
+	}
+	return terminal
 }
 
 // prHealthCheck performs a single health check cycle.
