@@ -60,11 +60,13 @@ Flags (interactive mode):
   --server URL             connect to remote forge server
   --resume SESSION_ID      resume a session
   --skip-worktree          skip git worktree creation
+  --branch NAME            check out branch (reuses existing worktree if found)
   --spec PATH              implement a spec file directly
 
 Examples:
   forge                                        # start interactive session
   forge --skip-worktree                        # run in current directory
+  forge --branch jelmer/my-feature             # reuse or create worktree for branch
   forge --spec .forge/specs/my-feature.md      # implement a spec
   forge --server http://localhost:3000         # connect to remote server
   forge stats --month 2026-04                  # show costs for April 2026

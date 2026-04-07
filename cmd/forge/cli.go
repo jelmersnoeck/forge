@@ -91,7 +91,13 @@ func runCLI(args []string) int {
 	server := fs.String("server", "", "connect to remote forge server (e.g. http://localhost:3000)")
 	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
 	specPath := fs.String("spec", "", "path to a spec file to implement directly")
+	branch := fs.String("branch", "", "branch to check out (reuses existing worktree if found)")
 	_ = fs.Parse(args[1:])
+
+	if *branch != "" && *skipWorktree {
+		fmt.Fprintln(os.Stderr, errorStyle.Render("cannot use --branch with --skip-worktree"))
+		os.Exit(1)
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -128,7 +134,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
@@ -954,7 +960,8 @@ func isInWorktree(dir string) bool {
 // spawnLocalAgent starts a forge agent subprocess and returns (sessionID, serverURL, worktreePath, worktreeBranch, cleanup, error).
 // The agent runs on a random port and auto-terminates when cleanup is called.
 // If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
-func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, string, func(), error) {
+// If branchName is set, reuses an existing worktree for that branch or creates one.
+func spawnLocalAgent(cwd string, skipWorktree bool, branchName string) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -979,22 +986,60 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 	var shouldCleanupWorktree bool
 	var repoRoot string
 
-	// Only create worktree if:
-	// 1. skipWorktree is false
-	// 2. We're in a git repo
-	// 3. We're not already in a worktree
-	if !skipWorktree && !isInWorktree(cwd) {
-		// Try to find git repo root
-		cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-		cmd.Dir = cwd
-		if out, err := cmd.Output(); err == nil {
-			repoRoot = strings.TrimSpace(string(out))
+	if branchName != "" {
+		// --branch mode: find or create worktree for the named branch
+		repoRoot = findRepoRoot(cwd)
+		if repoRoot == "" {
+			return "", "", "", "", nil, fmt.Errorf("not in a git repo")
+		}
 
+		wtPath, err := findWorktreeForBranch(repoRoot, branchName)
+		if err != nil {
+			return "", "", "", "", nil, fmt.Errorf("listing worktrees: %w", err)
+		}
+
+		if wtPath != "" {
+			// Existing worktree found — reuse it
+			worktreePath = wtPath
+			worktreeBranch = branchName
+			cwd = worktreePath
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  🌳 Reusing worktree: "+worktreePath))
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  📦 Branch: "+branchName))
+		} else {
+			// No existing worktree — create one
+			worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
+			worktreePath = filepath.Join(worktreeBase, sessionID)
+			if err := os.MkdirAll(worktreeBase, 0o755); err != nil {
+				return "", "", "", "", nil, fmt.Errorf("create worktree dir: %w", err)
+			}
+
+			// Try checking out existing branch first; if that fails, create it
+			cmd := exec.Command("git", "worktree", "add", worktreePath, branchName)
+			cmd.Dir = repoRoot
+			if out, err := cmd.CombinedOutput(); err != nil {
+				// Branch doesn't exist — create it from HEAD
+				cmd = exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, "HEAD")
+				cmd.Dir = repoRoot
+				if out2, err2 := cmd.CombinedOutput(); err2 != nil {
+					return "", "", "", "", nil, fmt.Errorf("git worktree add: %s\n%s", err, string(append(out, out2...)))
+				}
+			}
+
+			worktreeBranch = branchName
+			cwd = worktreePath
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  🌳 Created worktree: "+worktreePath))
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  📦 Branch: "+branchName))
+			// NOT cleaned up on exit — user named this branch explicitly
+		}
+	} else if !skipWorktree && !isInWorktree(cwd) {
+		// Default mode: create ephemeral worktree from current branch
+		repoRoot = findRepoRoot(cwd)
+		if repoRoot != "" {
 			// Get current branch
-			cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 			cmd.Dir = repoRoot
 			if branchOut, err := cmd.Output(); err == nil {
-				branch := strings.TrimSpace(string(branchOut))
+				currentBranch := strings.TrimSpace(string(branchOut))
 
 				// Create worktree directory
 				worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
@@ -1004,7 +1049,7 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 				if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
 					// Create the worktree
 					newBranch := fmt.Sprintf("jelmer/%s", sessionID)
-					cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, branch)
+					cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
 					cmd.Dir = repoRoot
 					if err := cmd.Run(); err == nil {
 						// Successfully created worktree
@@ -1123,6 +1168,48 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 	}
 
 	return sessionID, serverURL, worktreePath, worktreeBranch, cleanup, nil
+}
+
+// findRepoRoot returns the git repository root for the given directory, or ""
+// if the directory is not inside a git repo.
+func findRepoRoot(dir string) string {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// findWorktreeForBranch parses `git worktree list --porcelain` and returns the
+// worktree path whose checked-out branch matches the given name, or "" if none.
+//
+//	worktree /tmp/forge/worktrees/cli-20260406-183659
+//	HEAD abc123
+//	branch refs/heads/jelmer/cli-20260406-183659
+//	<blank line>
+func findWorktreeForBranch(repoRoot, branch string) (string, error) {
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	target := "refs/heads/" + branch
+	var currentPath string
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			currentPath = strings.TrimPrefix(line, "worktree ")
+		case strings.TrimSpace(line) == "":
+			currentPath = ""
+		case line == "branch "+target:
+			return currentPath, nil
+		}
+	}
+	return "", nil
 }
 
 // isReviewCommand checks if the input is a /review command.
