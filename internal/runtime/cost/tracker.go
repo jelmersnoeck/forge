@@ -81,7 +81,7 @@ func (t *Tracker) Track(sessionID, model string, inputTokens, outputTokens, cach
 		(?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := t.db.Exec(query, time.Now(), sessionID, model, inputTokens, outputTokens, cacheCreation, cacheRead, cost)
+	_, err := t.db.Exec(query, time.Now().UTC(), sessionID, model, inputTokens, outputTokens, cacheCreation, cacheRead, cost)
 	if err != nil {
 		return fmt.Errorf("insert record: %w", err)
 	}
@@ -151,7 +151,7 @@ func (t *Tracker) MonthlyTotal(year int, month time.Month) (float64, error) {
 
 	var total float64
 	query := `SELECT COALESCE(SUM(cost), 0) FROM cost_records WHERE timestamp >= ? AND timestamp < ?`
-	if err := t.db.QueryRow(query, start, end).Scan(&total); err != nil {
+	if err := t.db.QueryRow(query, start.UTC(), end.UTC()).Scan(&total); err != nil {
 		return 0, fmt.Errorf("query monthly total: %w", err)
 	}
 
