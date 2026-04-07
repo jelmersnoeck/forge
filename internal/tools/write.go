@@ -34,11 +34,10 @@ func WriteTool() types.ToolDefinition {
 }
 
 func writeHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	filePath, ok := input["file_path"].(string)
-	if !ok {
-		return types.ToolResult{IsError: true}, fmt.Errorf("file_path is required")
+	filePath, err := requireString(input, "file_path")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
-
 	content, ok := input["content"].(string)
 	if !ok {
 		return types.ToolResult{IsError: true}, fmt.Errorf("content is required")
@@ -48,38 +47,18 @@ func writeHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult
 		return envFileError(filePath), nil
 	}
 
-	// Create parent directories
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("failed to create parent directories: %v", err),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("failed to create parent directories: %v", err)
 	}
 
-	// Write file
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("failed to write file: %v", err),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("failed to write file: %v", err)
 	}
 
-	// Invalidate read dedup — next Read must return fresh content.
 	if ctx.ReadState != nil {
 		delete(ctx.ReadState, filePath)
 	}
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{{
-			Type: "text",
-			Text: fmt.Sprintf("wrote %d bytes to %s", len(content), filePath),
-		}},
-	}, nil
+	return textResult(fmt.Sprintf("wrote %d bytes to %s", len(content), filePath)), nil
 }

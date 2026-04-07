@@ -46,51 +46,31 @@ func ReadTool() types.ToolDefinition {
 }
 
 func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	filePath, ok := input["file_path"].(string)
-	if !ok {
-		return types.ToolResult{IsError: true}, fmt.Errorf("file_path is required")
+	filePath, err := requireString(input, "file_path")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
 
-	offset := 1
-	if o, ok := input["offset"].(float64); ok {
-		offset = int(o)
-	}
+	offset := int(optionalFloat(input, "offset", 1))
 	if offset < 1 {
 		offset = 1
 	}
-
-	limit := 2000
-	if l, ok := input["limit"].(float64); ok {
-		limit = int(l)
-	}
+	limit := int(optionalFloat(input, "limit", 2000))
 
 	if isEnvFile(filePath) {
 		return envFileError(filePath), nil
 	}
 
-	// Check if file exists
 	info, err := os.Stat(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return types.ToolResult{
-				Content: []types.ToolResultContent{{
-					Type: "text",
-					Text: fmt.Sprintf("file not found: %s", filePath),
-				}},
-				IsError: true,
-			}, nil
+			return errResultf("file not found: %s", filePath)
 		}
 		return types.ToolResult{IsError: true}, err
 	}
 
 	if info.IsDir() {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("path is a directory: %s", filePath),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("path is a directory: %s", filePath)
 	}
 
 	// Check if it's an image (images are never deduped — they're binary blobs
@@ -183,10 +163,5 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		}
 	}
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{{
-			Type: "text",
-			Text: strings.Join(lines, "\n"),
-		}},
-	}, nil
+	return textResult(strings.Join(lines, "\n")), nil
 }

@@ -4,6 +4,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -159,16 +160,13 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 	streamRetries := 0
 	compactRetries := 0
 
-	// Emit model info at the start
-	if turnCount == 0 {
-		emit(types.OutboundEvent{
-			ID:        uuid.New().String(),
-			SessionID: l.sessionID,
-			Type:      "model",
-			Content:   l.model,
-			Timestamp: time.Now().Unix(),
-		})
-	}
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: l.sessionID,
+		Type:      "model",
+		Content:   l.model,
+		Timestamp: time.Now().Unix(),
+	})
 
 	for {
 		turnCount++
@@ -265,7 +263,7 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			// Errors from the delta channel carry HTTP status codes.
 			// Classify them to decide: compact, retry, or bail.
 			var se *streamError
-			if !isStreamError(err, &se) {
+			if !errors.As(err, &se) {
 				return fmt.Errorf("collect assistant message: %w", err)
 			}
 
@@ -364,15 +362,6 @@ type streamError struct {
 
 func (e *streamError) Error() string { return e.message }
 
-// isStreamError checks if err is a *streamError and assigns it to target.
-func isStreamError(err error, target **streamError) bool {
-	se, ok := err.(*streamError)
-	if ok {
-		*target = se
-	}
-	return ok
-}
-
 func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan types.ChatDelta, emit func(types.OutboundEvent)) (types.ChatMessage, error) {
 	var contentBlocks []types.ChatContentBlock
 	var currentTextBlock *types.ChatContentBlock
@@ -456,20 +445,11 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 				}
 
 			case "usage":
-				// Track token usage from the provider.
 				if delta.Usage != nil {
-					if delta.Usage.InputTokens > 0 {
-						l.totalUsage.InputTokens += delta.Usage.InputTokens
-					}
-					if delta.Usage.OutputTokens > 0 {
-						l.totalUsage.OutputTokens += delta.Usage.OutputTokens
-					}
-					if delta.Usage.CacheCreationTokens > 0 {
-						l.totalUsage.CacheCreationTokens += delta.Usage.CacheCreationTokens
-					}
-					if delta.Usage.CacheReadTokens > 0 {
-						l.totalUsage.CacheReadTokens += delta.Usage.CacheReadTokens
-					}
+					l.totalUsage.InputTokens += delta.Usage.InputTokens
+					l.totalUsage.OutputTokens += delta.Usage.OutputTokens
+					l.totalUsage.CacheCreationTokens += delta.Usage.CacheCreationTokens
+					l.totalUsage.CacheReadTokens += delta.Usage.CacheReadTokens
 
 					// Check for cache breaks (simple detection)
 					l.checkCacheHealth(delta.Usage, emit)
@@ -597,33 +577,20 @@ func (l *Loop) executeSingleTool(ctx context.Context, block types.ChatContentBlo
 	}
 }
 
+// toolSummaryKeys maps tool names to the input key that best summarizes the call.
+var toolSummaryKeys = map[string]string{
+	"Bash": "command", "Read": "file_path", "Write": "file_path",
+	"Edit": "file_path", "Glob": "pattern", "Grep": "pattern",
+}
+
 // toolUseSummary returns a short description of what a tool call is doing.
 func toolUseSummary(name string, input map[string]any) string {
-	str := func(key string) string {
-		if v, ok := input[key]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
-		}
+	key, ok := toolSummaryKeys[name]
+	if !ok {
 		return ""
 	}
-
-	switch name {
-	case "Bash":
-		return str("command")
-	case "Read":
-		return str("file_path")
-	case "Write":
-		return str("file_path")
-	case "Edit":
-		return str("file_path")
-	case "Glob":
-		return str("pattern")
-	case "Grep":
-		return str("pattern")
-	default:
-		return ""
-	}
+	s, _ := input[key].(string)
+	return s
 }
 
 // nopAuditLogger discards all events.

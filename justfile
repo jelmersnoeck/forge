@@ -13,20 +13,8 @@ default:
 build:
   go build -o forge ./cmd/forge
 
-# Build server binary (legacy)
-build-server:
-  go build -o forge-server ./cmd/server
-
-# Build CLI binary (legacy)
-build-cli:
-  go build -o forge-cli ./cmd/cli
-
-# Build agent binary (legacy - deprecated, use 'forge agent' instead)
-build-agent:
-  go build -o forge-agent ./cmd/agent
-
-# Build everything (new + legacy)
-build-all: build build-agent build-server build-cli
+# Build everything
+build-all: build
 
 # Install unified forge binary to GOBIN (defaults to ~/go/bin)
 install:
@@ -82,4 +70,4 @@ vet:
 
 # Remove build artifacts
 clean:
-  rm -f forge forge-server forge-cli forge-agent
+  rm -f forge

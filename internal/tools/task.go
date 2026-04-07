@@ -53,41 +53,26 @@ func TaskCreateTool() types.ToolDefinition {
 }
 
 func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	description, ok := input["description"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "description must be a string"}},
-			IsError: true,
-		}, nil
+	description, err := requireString(input, "description")
+	if err != nil {
+		return errResult("description must be a string")
+	}
+	command, err := requireString(input, "command")
+	if err != nil {
+		return errResult("command must be a string")
 	}
 
-	command, ok := input["command"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "command must be a string"}},
-			IsError: true,
-		}, nil
-	}
-
-	// Check for .env file access
 	if target := commandAccessesEnvFile(command); target != "" {
 		return envFileError(target), nil
 	}
 
-	timeout := 0
-	if t, ok := input["timeout"].(float64); ok {
-		timeout = int(t)
-	}
+	timeout := int(optionalFloat(input, "timeout", 0))
 
 	task, err := taskMgr.CreateBashTask(ctx.SessionID, description, command, ctx.CWD, timeout)
 	if err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to create task: %v", err)}},
-			IsError: true,
-		}, nil
+		return errResultf("failed to create task: %v", err)
 	}
 
-	// Emit task created event
 	ctx.Emit(types.OutboundEvent{
 		Type:      "task_created",
 		SessionID: ctx.SessionID,
@@ -103,26 +88,17 @@ func handleTaskCreate(input map[string]any, ctx types.ToolContext) (types.ToolRe
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 
-	// Build response message
 	var responseText strings.Builder
 	fmt.Fprintf(&responseText, "Task created successfully:\n%s\n\n", resultJSON)
 
-	// Warn if no timeout is set for potentially long-running commands
 	if timeout == 0 {
-		responseText.WriteString("⚠️  WARNING: This task has no timeout and may run indefinitely if stuck.\n")
+		responseText.WriteString("WARNING: This task has no timeout and may run indefinitely if stuck.\n")
 		responseText.WriteString("   Consider setting a timeout (e.g., timeout: 300 for 5 minutes) or use TaskStop() if needed.\n\n")
 	}
 
 	fmt.Fprintf(&responseText, "Use TaskGet(\"%s\") to check status or TaskOutput(\"%s\") to retrieve output when complete.", task.ID, task.ID)
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: responseText.String(),
-			},
-		},
-	}, nil
+	return textResult(responseText.String()), nil
 }
 
 // TaskGetTool retrieves task status.
@@ -146,20 +122,14 @@ func TaskGetTool() types.ToolDefinition {
 }
 
 func handleTaskGet(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	taskID, ok := input["task_id"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "task_id must be a string"}},
-			IsError: true,
-		}, nil
+	taskID, err := requireString(input, "task_id")
+	if err != nil {
+		return errResult("task_id must be a string")
 	}
 
 	task, found := taskMgr.GetTask(taskID)
 	if !found {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("task not found: %s", taskID)}},
-			IsError: true,
-		}, nil
+		return errResultf("task not found: %s", taskID)
 	}
 
 	result := map[string]any{
@@ -174,25 +144,15 @@ func handleTaskGet(input map[string]any, ctx types.ToolContext) (types.ToolResul
 		result["endTime"] = task.EndTime.Format("2006-01-02 15:04:05")
 		result["duration"] = task.EndTime.Sub(task.StartTime).String()
 	}
-
 	if task.ExitCode != nil {
 		result["exitCode"] = *task.ExitCode
 	}
-
 	if task.Error != "" {
 		result["error"] = task.Error
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
-
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: string(resultJSON),
-			},
-		},
-	}, nil
+	return textResult(string(resultJSON)), nil
 }
 
 // TaskListTool lists all tasks for the current session.
@@ -213,14 +173,7 @@ func handleTaskList(input map[string]any, ctx types.ToolContext) (types.ToolResu
 	tasks := taskMgr.ListTasks(ctx.SessionID)
 
 	if len(tasks) == 0 {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{
-				{
-					Type: "text",
-					Text: "No background tasks found for this session.",
-				},
-			},
-		}, nil
+		return textResult("No background tasks found for this session."), nil
 	}
 
 	result := make([]map[string]any, len(tasks))
@@ -238,15 +191,7 @@ func handleTaskList(input map[string]any, ctx types.ToolContext) (types.ToolResu
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
-
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: string(resultJSON),
-			},
-		},
-	}, nil
+	return textResult(string(resultJSON)), nil
 }
 
 // TaskStopTool stops a running task.
@@ -270,19 +215,13 @@ func TaskStopTool() types.ToolDefinition {
 }
 
 func handleTaskStop(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	taskID, ok := input["task_id"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "task_id must be a string"}},
-			IsError: true,
-		}, nil
+	taskID, err := requireString(input, "task_id")
+	if err != nil {
+		return errResult("task_id must be a string")
 	}
 
 	if err := taskMgr.StopTask(taskID); err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to stop task: %v", err)}},
-			IsError: true,
-		}, nil
+		return errResultf("failed to stop task: %v", err)
 	}
 
 	ctx.Emit(types.OutboundEvent{
@@ -291,14 +230,7 @@ func handleTaskStop(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		Content:   fmt.Sprintf("Task stopped: %s", taskID),
 	})
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: fmt.Sprintf("Task %s stopped successfully.", taskID),
-			},
-		},
-	}, nil
+	return textResult(fmt.Sprintf("Task %s stopped successfully.", taskID)), nil
 }
 
 // TaskOutputTool retrieves task output.
@@ -322,31 +254,18 @@ func TaskOutputTool() types.ToolDefinition {
 }
 
 func handleTaskOutput(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	taskID, ok := input["task_id"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "task_id must be a string"}},
-			IsError: true,
-		}, nil
+	taskID, err := requireString(input, "task_id")
+	if err != nil {
+		return errResult("task_id must be a string")
 	}
 
 	task, found := taskMgr.GetTask(taskID)
 	if !found {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("task not found: %s", taskID)}},
-			IsError: true,
-		}, nil
+		return errResultf("task not found: %s", taskID)
 	}
 
 	if !task.Status.IsTerminal() {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{
-				{
-					Type: "text",
-					Text: fmt.Sprintf("Task is still %s. Wait for completion before retrieving output.", task.Status),
-				},
-			},
-		}, nil
+		return textResult(fmt.Sprintf("Task is still %s. Wait for completion before retrieving output.", task.Status)), nil
 	}
 
 	output := task.Output
@@ -363,12 +282,5 @@ func handleTaskOutput(input map[string]any, ctx types.ToolContext) (types.ToolRe
 	}
 	result += fmt.Sprintf("\nOutput:\n%s", output)
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: result,
-			},
-		},
-	}, nil
+	return textResult(result), nil
 }

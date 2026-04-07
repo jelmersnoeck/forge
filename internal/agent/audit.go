@@ -23,33 +23,17 @@ func (l *StdAuditLogger) LogToolCall(e types.ToolCallEvent) {
 
 // toolCallSummary returns a short human-readable description of the tool input.
 func toolCallSummary(name string, input map[string]any) string {
-	str := func(key string) string {
-		if v, ok := input[key]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
-		}
+	keys := map[string]string{
+		"Bash": "command", "Read": "file_path", "Write": "file_path",
+		"Edit": "file_path", "Glob": "pattern", "Grep": "pattern",
+	}
+	key, ok := keys[name]
+	if !ok {
 		return ""
 	}
-
-	switch name {
-	case "Bash":
-		cmd := str("command")
-		if len(cmd) > 120 {
-			return cmd[:120] + "..."
-		}
-		return cmd
-	case "Read":
-		return str("file_path")
-	case "Write":
-		return str("file_path")
-	case "Edit":
-		return str("file_path")
-	case "Glob":
-		return str("pattern")
-	case "Grep":
-		return str("pattern")
-	default:
-		return ""
+	s, _ := input[key].(string)
+	if name == "Bash" && len(s) > 120 {
+		return s[:120] + "..."
 	}
+	return s
 }

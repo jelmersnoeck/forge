@@ -75,31 +75,20 @@ func BashTool() types.ToolDefinition {
 }
 
 func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	command, ok := input["command"].(string)
-	if !ok {
-		return types.ToolResult{IsError: true}, fmt.Errorf("command is required")
+	command, err := requireString(input, "command")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
 
-	// Check for .env file access
 	if target := commandAccessesEnvFile(command); target != "" {
 		return envFileError(target), nil
 	}
 
-	// Check for interactive commands
 	if warning := checkInteractiveCommand(command); warning != "" {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("⚠️  Interactive command detected:\n%s", warning),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("Interactive command detected:\n%s", warning)
 	}
 
-	timeoutMs := 120000
-	if t, ok := input["timeout"].(float64); ok {
-		timeoutMs = int(t)
-	}
+	timeoutMs := int(optionalFloat(input, "timeout", 120000))
 	if timeoutMs > 600000 {
 		timeoutMs = 600000
 	}
@@ -126,7 +115,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	// Combine stdout and stderr
 	output := stdout.String()

@@ -59,34 +59,22 @@ func AgentTool() types.ToolDefinition {
 }
 
 func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	agentType, ok := input["type"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "type must be a string"}},
-			IsError: true,
-		}, nil
+	agentType, err := requireString(input, "type")
+	if err != nil {
+		return errResult("type must be a string")
+	}
+	description, err := requireString(input, "description")
+	if err != nil {
+		return errResult("description must be a string")
+	}
+	prompt, err := requireString(input, "prompt")
+	if err != nil {
+		return errResult("prompt must be a string")
 	}
 
-	description, ok := input["description"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "description must be a string"}},
-			IsError: true,
-		}, nil
-	}
-
-	prompt, ok := input["prompt"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "prompt must be a string"}},
-			IsError: true,
-		}, nil
-	}
-
-	// Optional fields
 	var tools, disallowedTools []string
-	model := ""
-	maxTurns := -1 // sentinel: not set by caller
+	model := optionalString(input, "model", "")
+	maxTurns := int(optionalFloat(input, "max_turns", -1))
 
 	if t, ok := input["tools"].([]interface{}); ok {
 		tools = make([]string, len(t))
@@ -96,7 +84,6 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 			}
 		}
 	}
-
 	if t, ok := input["disallowed_tools"].([]interface{}); ok {
 		disallowedTools = make([]string, len(t))
 		for i, v := range t {
@@ -106,35 +93,19 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		}
 	}
 
-	if m, ok := input["model"].(string); ok {
-		model = m
-	}
-
-	if m, ok := input["max_turns"].(float64); ok {
-		maxTurns = int(m)
-	}
-
 	agent, err := taskMgr.CreateAgent(ctx.SessionID, agentType, description, prompt, model, tools, disallowedTools, maxTurns)
 	if err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to create agent: %v", err)}},
-			IsError: true,
-		}, nil
+		return errResultf("failed to create agent: %v", err)
 	}
 
-	// Emit agent created event
 	ctx.Emit(types.OutboundEvent{
 		Type:      "agent_created",
 		SessionID: ctx.SessionID,
 		Content:   fmt.Sprintf("Sub-agent created: %s (ID: %s, Session: %s)", description, agent.ID, agent.SessionID),
 	})
 
-	// Start the agent's conversation loop in the background
 	if err := taskMgr.RunAgent(agent.ID); err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("agent created but failed to start: %v", err)}},
-			IsError: true,
-		}, nil
+		return errResultf("agent created but failed to start: %v", err)
 	}
 
 	result := map[string]any{
@@ -145,7 +116,6 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		"maxTurns":  agent.MaxTurns,
 		"turnCount": agent.TurnCount,
 	}
-
 	if len(agent.Tools) > 0 {
 		result["allowedTools"] = agent.Tools
 	}
@@ -154,15 +124,7 @@ func handleAgent(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
-
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: fmt.Sprintf("Sub-agent created and running:\n%s\n\nUse AgentGet(\"%s\") to check status or AgentStop(\"%s\") to stop.", resultJSON, agent.ID, agent.ID),
-			},
-		},
-	}, nil
+	return textResult(fmt.Sprintf("Sub-agent created and running:\n%s\n\nUse AgentGet(\"%s\") to check status or AgentStop(\"%s\") to stop.", resultJSON, agent.ID, agent.ID)), nil
 }
 
 // AgentGetTool retrieves sub-agent status.
@@ -186,20 +148,14 @@ func AgentGetTool() types.ToolDefinition {
 }
 
 func handleAgentGet(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	agentID, ok := input["agent_id"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "agent_id must be a string"}},
-			IsError: true,
-		}, nil
+	agentID, err := requireString(input, "agent_id")
+	if err != nil {
+		return errResult("agent_id must be a string")
 	}
 
 	agent, found := taskMgr.GetAgent(agentID)
 	if !found {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("agent not found: %s", agentID)}},
-			IsError: true,
-		}, nil
+		return errResultf("agent not found: %s", agentID)
 	}
 
 	result := map[string]any{
@@ -212,30 +168,19 @@ func handleAgentGet(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		"maxTurns":    agent.MaxTurns,
 		"startTime":   agent.StartTime.Format("2006-01-02 15:04:05"),
 	}
-
 	if agent.EndTime != nil {
 		result["endTime"] = agent.EndTime.Format("2006-01-02 15:04:05")
 		result["duration"] = agent.EndTime.Sub(agent.StartTime).String()
 	}
-
 	if agent.Error != "" {
 		result["error"] = agent.Error
 	}
-
 	if agent.Output != "" {
 		result["output"] = agent.Output
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
-
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: string(resultJSON),
-			},
-		},
-	}, nil
+	return textResult(string(resultJSON)), nil
 }
 
 // AgentListTool lists all sub-agents for the current session.
@@ -256,14 +201,7 @@ func handleAgentList(input map[string]any, ctx types.ToolContext) (types.ToolRes
 	agents := taskMgr.ListAgents(ctx.SessionID)
 
 	if len(agents) == 0 {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{
-				{
-					Type: "text",
-					Text: "No sub-agents found for this session.",
-				},
-			},
-		}, nil
+		return textResult("No sub-agents found for this session."), nil
 	}
 
 	result := make([]map[string]any, len(agents))
@@ -284,15 +222,7 @@ func handleAgentList(input map[string]any, ctx types.ToolContext) (types.ToolRes
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
-
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: string(resultJSON),
-			},
-		},
-	}, nil
+	return textResult(string(resultJSON)), nil
 }
 
 // AgentStopTool stops a running sub-agent.
@@ -316,19 +246,13 @@ func AgentStopTool() types.ToolDefinition {
 }
 
 func handleAgentStop(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	agentID, ok := input["agent_id"].(string)
-	if !ok {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: "agent_id must be a string"}},
-			IsError: true,
-		}, nil
+	agentID, err := requireString(input, "agent_id")
+	if err != nil {
+		return errResult("agent_id must be a string")
 	}
 
 	if err := taskMgr.StopAgent(agentID); err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf("failed to stop agent: %v", err)}},
-			IsError: true,
-		}, nil
+		return errResultf("failed to stop agent: %v", err)
 	}
 
 	ctx.Emit(types.OutboundEvent{
@@ -337,12 +261,5 @@ func handleAgentStop(input map[string]any, ctx types.ToolContext) (types.ToolRes
 		Content:   fmt.Sprintf("Agent stopped: %s", agentID),
 	})
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{
-				Type: "text",
-				Text: fmt.Sprintf("Agent %s stopped successfully.", agentID),
-			},
-		},
-	}, nil
+	return textResult(fmt.Sprintf("Agent %s stopped successfully.", agentID)), nil
 }

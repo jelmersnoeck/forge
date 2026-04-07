@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -35,36 +34,21 @@ func GlobTool() types.ToolDefinition {
 }
 
 func globHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	pattern, ok := input["pattern"].(string)
-	if !ok {
-		return types.ToolResult{IsError: true}, fmt.Errorf("pattern is required")
+	pattern, err := requireString(input, "pattern")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
 
-	basePath := ctx.CWD
-	if p, ok := input["path"].(string); ok && p != "" {
-		basePath = p
-	}
+	basePath := optionalString(input, "path", ctx.CWD)
 
-	// Use doublestar to glob from the base path
 	fsys := os.DirFS(basePath)
 	matches, err := doublestar.Glob(fsys, pattern)
 	if err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("glob error: %v", err),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("glob error: %v", err)
 	}
 
 	if len(matches) == 0 {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: "(no matches)",
-			}},
-		}, nil
+		return textResult("(no matches)"), nil
 	}
 
 	// Get modification times and sort by newest first
@@ -113,10 +97,5 @@ func globHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		paths[i] = f.path
 	}
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{{
-			Type: "text",
-			Text: strings.Join(paths, "\n"),
-		}},
-	}, nil
+	return textResult(strings.Join(paths, "\n")), nil
 }
