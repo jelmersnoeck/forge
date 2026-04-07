@@ -12,6 +12,8 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
+var idCounter atomic.Int64
+
 // AgentRunner executes a sub-agent's conversation loop.
 // It receives the sub-agent metadata and should block until the agent finishes.
 // The runner must update agent.Output and agent.Error before returning.
@@ -326,8 +328,6 @@ func (m *Manager) updateTaskStatus(taskID string, status types.TaskStatus) {
 		}
 	}
 }
-
-var idCounter atomic.Int64
 
 // generateTaskID creates a unique task ID with a type prefix.
 func generateTaskID(taskType string) string {
