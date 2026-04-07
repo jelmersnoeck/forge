@@ -54,11 +54,35 @@ func (w *Worker) prHealthMonitor(ctx context.Context) {
 		return
 	}
 
-	ticker := time.NewTicker(prMonitorInterval)
-	defer ticker.Stop()
+	// Run an initial check shortly after startup so we don't wait a full
+	// interval to discover rebase needs or CI failures.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(10 * time.Second):
+	}
 
 	// Track whether we've seen the PR close/merge to avoid repeated logs.
 	var prTerminal bool
+
+	// Initial check — don't gate on IsIdle since the worker is likely
+	// waiting for its first message anyway.
+	needsFix, fixMsg, terminal := w.prHealthCheck(ctx)
+	if terminal {
+		prTerminal = true
+	}
+	if needsFix && fixMsg != "" {
+		w.hub.PushMessage(types.InboundMessage{
+			SessionID: w.sessionID,
+			Text:      fixMsg,
+			User:      "pr-monitor",
+			Source:    "pr_monitor",
+			Timestamp: time.Now().UnixMilli(),
+		})
+	}
+
+	ticker := time.NewTicker(prMonitorInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
