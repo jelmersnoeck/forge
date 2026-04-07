@@ -87,12 +87,12 @@ func prCreateHandler(input map[string]any, ctx types.ToolContext) (types.ToolRes
 	}
 
 	// Verify we're in a git repo
-	if err := runGitCmd(ctx.CWD, "rev-parse", "--git-dir"); err != nil {
+	if err := RunGitCmd(ctx.CWD, "rev-parse", "--git-dir"); err != nil {
 		return toolError("Not inside a git repository."), nil
 	}
 
 	// Get current branch
-	currentBranch, err := gitOutput(ctx.CWD, "rev-parse", "--abbrev-ref", "HEAD")
+	currentBranch, err := GitOutput(ctx.CWD, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return toolError("Failed to get current branch: %s", err), nil
 	}
@@ -104,35 +104,35 @@ func prCreateHandler(input map[string]any, ctx types.ToolContext) (types.ToolRes
 	// Determine base branch
 	base := baseBranch
 	if base == "" {
-		base = detectDefaultBranch(ctx.CWD)
+		base = DetectDefaultBranch(ctx.CWD)
 	}
 
 	// Fetch latest base branch from origin
-	if _, stderr, err := gitOutputFull(ctx.CWD, "fetch", "origin", base); err != nil {
+	if _, stderr, err := GitOutputFull(ctx.CWD, "fetch", "origin", base); err != nil {
 		return toolError("Failed to fetch origin/%s: %s", base, stderr), nil
 	}
 
 	// Rebase onto latest base branch
-	if _, stderr, err := gitOutputFull(ctx.CWD, "rebase", "origin/"+base); err != nil {
+	if _, stderr, err := GitOutputFull(ctx.CWD, "rebase", "origin/"+base); err != nil {
 		// Abort the failed rebase so we don't leave the repo in a broken state
-		_ = runGitCmd(ctx.CWD, "rebase", "--abort")
+		_ = RunGitCmd(ctx.CWD, "rebase", "--abort")
 		return toolError("Rebase onto origin/%s failed (conflicts?). Resolve manually.\n%s", base, stderr), nil
 	}
 
 	// Verify there are changes
-	diffStat, _ := gitOutput(ctx.CWD, "diff", "--stat", "origin/"+base+"...HEAD")
+	diffStat, _ := GitOutput(ctx.CWD, "diff", "--stat", "origin/"+base+"...HEAD")
 	if diffStat == "" {
 		return toolError("No changes detected between 'origin/%s' and current branch '%s'. Nothing to create a PR for.", base, currentBranch), nil
 	}
 
 	// Detect lazy commit-list descriptions
-	commitLog, _ := gitOutput(ctx.CWD, "log", "origin/"+base+"..HEAD", "--oneline")
+	commitLog, _ := GitOutput(ctx.CWD, "log", "origin/"+base+"..HEAD", "--oneline")
 	if err := detectCommitListDescription(description, commitLog); err != nil {
 		return toolError("Invalid PR description: %s", err), nil
 	}
 
 	// Push the branch
-	if _, stderr, err := gitOutputFull(ctx.CWD, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
+	if _, stderr, err := GitOutputFull(ctx.CWD, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
 		return toolError("Failed to push branch: %s", stderr), nil
 	}
 
@@ -256,16 +256,16 @@ func detectCommitListDescription(description, commitLog string) error {
 	return nil
 }
 
-// detectDefaultBranch figures out the repo's default branch.
-func detectDefaultBranch(cwd string) string {
+// DetectDefaultBranch figures out the repo's default branch.
+func DetectDefaultBranch(cwd string) string {
 	// Try gh first — it knows the remote default
-	if branch, err := ghOutput(cwd, "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"); err == nil && branch != "" {
+	if branch, err := GHOutput(cwd, "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"); err == nil && branch != "" {
 		return branch
 	}
 
 	// Fallback: check common names
 	for _, candidate := range []string{"main", "master"} {
-		if runGitCmd(cwd, "rev-parse", "--verify", candidate) == nil {
+		if RunGitCmd(cwd, "rev-parse", "--verify", candidate) == nil {
 			return candidate
 		}
 	}
@@ -273,15 +273,15 @@ func detectDefaultBranch(cwd string) string {
 	return "main"
 }
 
-// runGitCmd runs a git command and returns an error if it fails.
-func runGitCmd(cwd string, args ...string) error {
+// RunGitCmd runs a git command and returns an error if it fails.
+func RunGitCmd(cwd string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = cwd
 	return cmd.Run()
 }
 
-// gitOutput runs a git command and returns trimmed stdout.
-func gitOutput(cwd string, args ...string) (string, error) {
+// GitOutput runs a git command and returns trimmed stdout.
+func GitOutput(cwd string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = cwd
 	var stdout bytes.Buffer
@@ -292,8 +292,8 @@ func gitOutput(cwd string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// gitOutputFull runs a git command and returns stdout, stderr, and error.
-func gitOutputFull(cwd string, args ...string) (string, string, error) {
+// GitOutputFull runs a git command and returns stdout, stderr, and error.
+func GitOutputFull(cwd string, args ...string) (string, string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = cwd
 	var stdout, stderr bytes.Buffer
@@ -303,8 +303,8 @@ func gitOutputFull(cwd string, args ...string) (string, string, error) {
 	return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 }
 
-// ghOutput runs a gh command and returns trimmed stdout.
-func ghOutput(cwd string, args ...string) (string, error) {
+// GHOutput runs a gh command and returns trimmed stdout.
+func GHOutput(cwd string, args ...string) (string, error) {
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = cwd
 	var stdout bytes.Buffer

@@ -181,3 +181,12 @@ func (h *Hub) TriggerReview(baseBranch string) {
 func (h *Hub) ReviewChannel() <-chan string {
 	return h.reviewCh
 }
+
+// IsIdle reports whether the worker is waiting for a message (i.e., no active
+// conversation turn is in progress). The monitor uses this to avoid touching
+// the git repo while the agent is working.
+func (h *Hub) IsIdle() bool {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	return len(h.waiters) > 0
+}
