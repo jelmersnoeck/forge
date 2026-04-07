@@ -171,6 +171,11 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 	for {
 		turnCount++
 
+		// Bail early if context is cancelled (e.g., user interrupted).
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		if l.maxTurns > 0 && turnCount > l.maxTurns {
 			emit(types.OutboundEvent{
 				ID:        uuid.New().String(),
@@ -198,6 +203,10 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		// Assemble system prompt and tool schemas (stable across turns).
 		systemBlocks := prompt.Assemble(l.context, l.cwd)
 		toolSchemas := l.tools.Schemas()
+
+		// Sanitize history before sending — drops orphaned tool_results
+		// and trailing tool_use without results (e.g., from interrupted turns).
+		l.history = tokens.SanitizeHistory(l.history)
 
 		// Add cache control to the last message (critical for caching efficiency)
 		// Max 4 cache_control blocks: system(2) + tools(1) + messages(1) = 4

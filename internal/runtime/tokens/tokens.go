@@ -131,6 +131,16 @@ func (b Budget) ShouldCompact(systemTokens, historyTokens, toolTokens int) bool 
 //
 // The compacted history includes a boundary marker so the LLM knows context
 // was dropped.
+//
+// IMPORTANT: never splits tool_use/tool_result pairs. The Anthropic API
+// requires every tool_result in a user message to have a matching tool_use
+// in the immediately preceding assistant message. So we treat
+// (assistant-with-tool_use + user-with-tool_result) as an atomic unit:
+//
+//	history[i]   = assistant  {tool_use: "Read", id: "toolu_1"}
+//	history[i+1] = user       {tool_result: "toolu_1", ...}
+//	                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//	                These two are inseparable.
 func Compact(history []types.ChatMessage, budget Budget, systemTokens, toolTokens int) ([]types.ChatMessage, int) {
 	if len(history) <= 2 {
 		return history, 0
@@ -156,6 +166,19 @@ func Compact(history []types.ChatMessage, budget Budget, systemTokens, toolToken
 		return history, 0
 	}
 
+	// Adjust keepFromIdx so we don't split a tool_use/tool_result pair.
+	// If history[keepFromIdx] is a user message with tool_result blocks,
+	// its matching assistant (with tool_use) is at keepFromIdx-1.
+	// Pull keepFromIdx back one to include the assistant message.
+	if keepFromIdx > 1 && hasToolResults(history[keepFromIdx]) {
+		keepFromIdx--
+	}
+
+	// If adjustment collapsed everything, bail.
+	if keepFromIdx <= 1 {
+		return history, 0
+	}
+
 	removed := keepFromIdx - 1 // messages between first and keepFromIdx
 	boundary := types.ChatMessage{
 		Role: "user",
@@ -171,4 +194,104 @@ func Compact(history []types.ChatMessage, budget Budget, systemTokens, toolToken
 	compacted = append(compacted, history[keepFromIdx:]...)
 
 	return compacted, removed
+}
+
+// hasToolResults reports whether msg contains any tool_result content blocks.
+func hasToolResults(msg types.ChatMessage) bool {
+	for _, block := range msg.Content {
+		if block.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasToolUse reports whether msg contains any tool_use content blocks.
+func hasToolUse(msg types.ChatMessage) bool {
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
+}
+
+// SanitizeHistory validates tool_use/tool_result pairing in the message
+// history and returns a clean copy safe to send to the Anthropic API.
+//
+// Rules enforced:
+//  1. A user message with tool_result blocks must be preceded by an
+//     assistant message whose tool_use IDs are a superset of the
+//     tool_result's tool_use_ids. Orphaned tool_result blocks are dropped.
+//  2. A trailing assistant message with tool_use but no following
+//     tool_result (e.g., interrupted mid-turn) is dropped.
+func SanitizeHistory(history []types.ChatMessage) []types.ChatMessage {
+	if len(history) == 0 {
+		return history
+	}
+
+	result := make([]types.ChatMessage, 0, len(history))
+
+	for i, msg := range history {
+		switch {
+		case msg.Role == "user" && hasToolResults(msg):
+			// Need a preceding assistant message with matching tool_use IDs.
+			if len(result) == 0 || result[len(result)-1].Role != "assistant" {
+				// No preceding assistant — drop the tool_results, keep any text.
+				cleaned := dropToolResults(msg)
+				if len(cleaned.Content) > 0 {
+					result = append(result, cleaned)
+				}
+				continue
+			}
+
+			prevAssistant := result[len(result)-1]
+			toolUseIDs := make(map[string]bool)
+			for _, block := range prevAssistant.Content {
+				if block.Type == "tool_use" {
+					toolUseIDs[block.ID] = true
+				}
+			}
+
+			// Keep only tool_results whose IDs match a tool_use.
+			var kept []types.ChatContentBlock
+			for _, block := range msg.Content {
+				switch block.Type {
+				case "tool_result":
+					if toolUseIDs[block.ToolUseID] {
+						kept = append(kept, block)
+					}
+				default:
+					kept = append(kept, block)
+				}
+			}
+
+			if len(kept) > 0 {
+				result = append(result, types.ChatMessage{Role: msg.Role, Content: kept})
+			}
+
+		default:
+			result = append(result, msg)
+		}
+
+		// Check if we just appended the last message and it's an assistant
+		// with tool_use — it needs a following tool_result.
+		if i == len(history)-1 && msg.Role == "assistant" && hasToolUse(msg) {
+			// Trailing tool_use with no tool_result. Drop it.
+			result = result[:len(result)-1]
+		}
+	}
+
+	return result
+}
+
+// dropToolResults returns a copy of msg with tool_result blocks removed.
+func dropToolResults(msg types.ChatMessage) types.ChatMessage {
+	var kept []types.ChatContentBlock
+	for _, block := range msg.Content {
+		if block.Type != "tool_result" {
+			kept = append(kept, block)
+		}
+	}
+	return types.ChatMessage{Role: msg.Role, Content: kept}
 }
