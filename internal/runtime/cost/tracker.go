@@ -105,7 +105,7 @@ type DailySummary struct {
 func (t *Tracker) GetDailySummaries(start, end time.Time) ([]DailySummary, error) {
 	query := `
 	SELECT 
-		DATE(timestamp) as date,
+		DATE(timestamp, 'localtime') as date,
 		SUM(cost) as total_cost,
 		COUNT(DISTINCT session_id) as session_count,
 		COUNT(*) as call_count,
@@ -115,7 +115,7 @@ func (t *Tracker) GetDailySummaries(start, end time.Time) ([]DailySummary, error
 		SUM(cache_read_tokens) as cache_read_tokens
 	FROM cost_records
 	WHERE timestamp >= ? AND timestamp < ?
-	GROUP BY DATE(timestamp)
+	GROUP BY DATE(timestamp, 'localtime')
 	ORDER BY date DESC
 	`
 
@@ -146,7 +146,7 @@ func (t *Tracker) GetDailySummaries(start, end time.Time) ([]DailySummary, error
 
 // MonthlyTotal returns the total cost for a given month.
 func (t *Tracker) MonthlyTotal(year int, month time.Month) (float64, error) {
-	start := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
+	start := time.Date(year, month, 1, 0, 0, 0, 0, time.Local)
 	end := start.AddDate(0, 1, 0)
 
 	var total float64
