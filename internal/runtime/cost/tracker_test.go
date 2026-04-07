@@ -66,9 +66,9 @@ func TestDailySummaries(t *testing.T) {
 	r.NoError(err)
 	r.NotEmpty(summaries)
 
-	// Should have today's data (Track stores time.Now() which SQLite DATE() reads as UTC)
+	// Should have today's data
 	todaySummary := summaries[0] // Most recent first
-	r.Equal(now.UTC().Format("2006-01-02"), todaySummary.Date.Format("2006-01-02"))
+	r.Equal(now.Format("2006-01-02"), todaySummary.Date.Format("2006-01-02"))
 	r.Equal(1, todaySummary.SessionCount)
 	r.Equal(1, todaySummary.CallCount)
 	r.Equal(1000, todaySummary.InputTokens)
