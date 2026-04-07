@@ -811,3 +811,76 @@ func TestLoop_StreamError_MaxCompact(t *testing.T) {
 	r.Error(err)
 	r.Contains(err.Error(), "prompt too long after 3 compaction attempts")
 }
+
+func TestLoop_OnComplete_CalledAfterToolUse(t *testing.T) {
+	r := require.New(t)
+
+	var callbackHistory []types.ChatMessage
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "Cool cool cool"}},
+			}, nil
+		},
+	})
+
+	l := makeLoop(t, &MockToolProvider{}, registry, func(o *Options) {
+		o.OnComplete = func(history []types.ChatMessage) {
+			callbackHistory = make([]types.ChatMessage, len(history))
+			copy(callbackHistory, history)
+		}
+	})
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "Read something for Abed", emit)
+	r.NoError(err)
+
+	r.NotEmpty(callbackHistory, "OnComplete should have been called")
+	r.Equal("user", callbackHistory[0].Role)
+}
+
+func TestLoop_OnComplete_NotCalledWithoutToolUse(t *testing.T) {
+	r := require.New(t)
+
+	called := false
+	l := makeLoop(t, &MockTextProvider{}, tools.NewRegistry(), func(o *Options) {
+		o.OnComplete = func(history []types.ChatMessage) {
+			called = true
+		}
+	})
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "Just a chat, no tools", emit)
+	r.NoError(err)
+
+	r.False(called, "OnComplete should NOT fire when no tools were used")
+}
+
+func TestLoop_OnComplete_PanicRecovery(t *testing.T) {
+	r := require.New(t)
+
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "data"}},
+			}, nil
+		},
+	})
+
+	l := makeLoop(t, &MockToolProvider{}, registry, func(o *Options) {
+		o.OnComplete = func(history []types.ChatMessage) {
+			panic("Senor Chang lost it again")
+		}
+	})
+
+	emit := func(e types.OutboundEvent) {}
+	// Should not panic — fireOnComplete recovers.
+	err := l.Send(context.Background(), "Trigger a tool call", emit)
+	r.NoError(err)
+}

@@ -67,9 +67,25 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 	successes := extractStringArray(input, "successes")
 	suggestions := extractStringArray(input, "suggestions")
 
+	outPath, err := writeReflection(ctx.CWD, summary, mistakes, successes, suggestions)
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
+	}
+
+	return textResult(fmt.Sprintf("Reflection saved to %s", outPath)), nil
+}
+
+// SaveReflection writes a reflection file directly (no tool registry needed).
+// Used by the loop's auto-reflection on session completion.
+func SaveReflection(cwd, summary string) error {
+	_, err := writeReflection(cwd, summary, nil, nil, nil)
+	return err
+}
+
+// writeReflection formats and persists a reflection file, returning its path.
+func writeReflection(cwd, summary string, mistakes, successes, suggestions []string) (string, error) {
 	now := time.Now()
 
-	// Format the reflection as a standalone markdown file.
 	var entry strings.Builder
 	fmt.Fprintf(&entry, "# Session Reflection - %s\n\n", now.Format("2006-01-02 15:04"))
 	fmt.Fprintf(&entry, "**Summary:** %s\n\n", summary)
@@ -98,27 +114,24 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		entry.WriteString("\n")
 	}
 
-	// Ensure .forge/learnings/ exists.
-	dir := filepath.Join(ctx.CWD, learningsDir)
+	dir := filepath.Join(cwd, learningsDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return types.ToolResult{IsError: true}, fmt.Errorf("create %s: %v", learningsDir, err)
+		return "", fmt.Errorf("create %s: %v", learningsDir, err)
 	}
 
-	// Write learning file: <timestamp>-<slug>.md
 	slug := slugify(summary, 50)
 	filename := fmt.Sprintf("%s-%s.md", now.Format("20060102-150405"), slug)
 	outPath := filepath.Join(dir, filename)
 
 	if err := os.WriteFile(outPath, []byte(entry.String()), 0644); err != nil {
-		return types.ToolResult{IsError: true}, fmt.Errorf("write learning: %v", err)
+		return "", fmt.Errorf("write learning: %v", err)
 	}
 
-	// Ensure .gitattributes marks learnings as generated.
-	if err := ensureGitattributes(ctx.CWD); err != nil {
-		return types.ToolResult{IsError: true}, fmt.Errorf("update .gitattributes: %v", err)
+	if err := ensureGitattributes(cwd); err != nil {
+		return "", fmt.Errorf("update .gitattributes: %v", err)
 	}
 
-	return textResult(fmt.Sprintf("Reflection saved to %s", outPath)), nil
+	return outPath, nil
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
