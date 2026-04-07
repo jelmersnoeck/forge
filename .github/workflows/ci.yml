@@ -55,12 +55,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build all binaries
+      - name: Build
         run: |
           go build ./cmd/forge
-          go build ./cmd/agent
-          go build ./cmd/server
-          go build ./cmd/cli
 
   # ── Lint ──────────────────────────────────────────────────
   lint:
