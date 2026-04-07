@@ -210,3 +210,138 @@ func TestCompact(t *testing.T) {
 		})
 	}
 }
+
+func TestCompactPreservesToolPairs(t *testing.T) {
+	r := require.New(t)
+
+	// Build a history where compaction boundary would naturally fall between
+	// an assistant (tool_use) and user (tool_result).
+	//
+	// Layout: [user, assistant+tool_use, user+tool_result, ..., assistant, user]
+	// The pair at indices 1-2 must stay together or be removed together.
+	tinyBudget := Budget{ContextWindow: 10000, OutputReserve: 1000, Buffer: 500}
+
+	bigText := strings.Repeat("Pop pop — Magnitude at Greendale ", 300)
+
+	history := []types.ChatMessage{
+		// 0: initial user message
+		{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Help me with the Dreamatorium"}}},
+		// 1: assistant with tool_use
+		{Role: "assistant", Content: []types.ChatContentBlock{
+			{Type: "text", Text: bigText},
+			{Type: "tool_use", ID: "toolu_chang", Name: "Read", Input: map[string]any{"file_path": "/senor/chang.txt"}},
+		}},
+		// 2: user with tool_result
+		{Role: "user", Content: []types.ChatContentBlock{
+			{Type: "tool_result", ToolUseID: "toolu_chang", Content: []types.ToolResultContent{{Type: "text", Text: bigText}}},
+		}},
+		// 3-8: more conversation (forces compaction to remove middle)
+		{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: bigText}}},
+		{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: bigText}}},
+		{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: bigText}}},
+		{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: bigText}}},
+		{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: bigText}}},
+		{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "What does Dean Pelton want?"}}},
+	}
+
+	compacted, removed := Compact(history, tinyBudget, 500, 500)
+	r.Greater(removed, 0, "should have compacted something")
+
+	// Verify no tool_result message appears without a preceding tool_use message.
+	for i, msg := range compacted {
+		if !hasToolResults(msg) {
+			continue
+		}
+
+		r.Greater(i, 0, "tool_result should not be the first message")
+		prev := compacted[i-1]
+		r.Equal("assistant", prev.Role, "tool_result must follow an assistant message")
+		r.True(hasToolUse(prev), "preceding assistant must have tool_use blocks")
+	}
+}
+
+func TestSanitizeHistory(t *testing.T) {
+	tests := map[string]struct {
+		history []types.ChatMessage
+		want    int // expected message count after sanitization
+		check   func(*testing.T, []types.ChatMessage)
+	}{
+		"empty history": {
+			history: nil,
+			want:    0,
+		},
+		"clean history unchanged": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Cool cool cool"}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: "Indeed"}}},
+			},
+			want: 2,
+		},
+		"orphaned tool_result at start": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{
+					{Type: "tool_result", ToolUseID: "toolu_ghost", Content: []types.ToolResultContent{{Type: "text", Text: "no match"}}},
+				}},
+				{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: "ok"}}},
+			},
+			want: 1, // tool_result dropped, empty user message dropped, assistant kept
+			check: func(t *testing.T, result []types.ChatMessage) {
+				r := require.New(t)
+				r.Equal("assistant", result[0].Role)
+			},
+		},
+		"tool_result with mismatched IDs": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Hello"}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{
+					{Type: "tool_use", ID: "toolu_abed", Name: "Read"},
+				}},
+				{Role: "user", Content: []types.ChatContentBlock{
+					{Type: "tool_result", ToolUseID: "toolu_abed", Content: []types.ToolResultContent{{Type: "text", Text: "match"}}},
+					{Type: "tool_result", ToolUseID: "toolu_troy", Content: []types.ToolResultContent{{Type: "text", Text: "orphan"}}},
+				}},
+			},
+			want: 3,
+			check: func(t *testing.T, result []types.ChatMessage) {
+				r := require.New(t)
+				// Only one tool_result should survive
+				r.Len(result[2].Content, 1)
+				r.Equal("toolu_abed", result[2].Content[0].ToolUseID)
+			},
+		},
+		"trailing assistant with tool_use dropped": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Hello"}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{
+					{Type: "text", Text: "Let me check"},
+					{Type: "tool_use", ID: "toolu_britta", Name: "Bash"},
+				}},
+			},
+			want: 1,
+			check: func(t *testing.T, result []types.ChatMessage) {
+				r := require.New(t)
+				r.Equal("user", result[0].Role)
+			},
+		},
+		"trailing assistant without tool_use kept": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Hello"}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{
+					{Type: "text", Text: "Streets ahead, Pierce"},
+				}},
+			},
+			want: 2,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			result := SanitizeHistory(tc.history)
+			r.Len(result, tc.want)
+			if tc.check != nil {
+				tc.check(t, result)
+			}
+		})
+	}
+}

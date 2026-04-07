@@ -138,16 +138,38 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		var runErr error
+		// Create a cancellable context for this turn so interrupts
+		// can abort the loop without killing the entire worker.
+		turnCtx, turnCancel := context.WithCancel(ctx)
+		go func() {
+			select {
+			case <-w.hub.InterruptChannel():
+				turnCancel()
+			case <-turnCtx.Done():
+			}
+		}()
+
 		switch {
 		case historyID != "":
-			runErr = l.Resume(ctx, historyID, msg.Text, emit)
+			runErr = l.Resume(turnCtx, historyID, msg.Text, emit)
 		default:
-			runErr = l.Send(ctx, msg.Text, emit)
+			runErr = l.Send(turnCtx, msg.Text, emit)
 		}
+		turnCancel() // clean up goroutine
 
 		if runErr != nil {
 			log.Printf("[agent:%s] error: %v", w.sessionID, runErr)
-			emit(types.OutboundEvent{Type: "error", Content: runErr.Error()})
+
+			// Distinguish interrupts from real errors.
+			switch turnCtx.Err() {
+			case context.Canceled:
+				emit(types.OutboundEvent{Type: "error", Content: "Interrupted by user"})
+			default:
+				emit(types.OutboundEvent{Type: "error", Content: runErr.Error()})
+			}
+
+			// Always emit done so the CLI returns to the prompt.
+			emit(types.OutboundEvent{Type: "done"})
 		}
 
 		historyID = l.HistoryID()
