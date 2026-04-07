@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -38,6 +39,7 @@ func Start(cfg Config) error {
 	mux.HandleFunc("POST /sessions", handleCreateSession)
 	mux.HandleFunc("GET /sessions/{sessionId}", handleGetSession)
 	mux.HandleFunc("POST /sessions/{sessionId}/messages", handleSendMessage(cfg))
+	mux.HandleFunc("POST /sessions/{sessionId}/review", handleReview(cfg))
 	mux.HandleFunc("POST /sessions/{sessionId}/interrupt", handleInterrupt(cfg))
 	mux.HandleFunc("GET /sessions/{sessionId}/events", handleEvents)
 
@@ -229,6 +231,55 @@ func handleSendMessage(cfg Config) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(agentResp)
+	}
+}
+
+func handleReview(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("sessionId")
+
+		// Ensure agent is running.
+		cwd := cfg.WorkspaceDir
+		if meta := bus.GetSession(sessionID); meta != nil && meta.CWD != "" {
+			cwd = meta.CWD
+		}
+
+		agentAddr, err := cfg.Backend.EnsureAgent(r.Context(), sessionID, backend.AgentOptions{
+			CWD:         cwd,
+			SessionsDir: cfg.SessionsDir,
+		})
+		if err != nil {
+			log.Printf("[gateway] backend.EnsureAgent error: %v", err)
+			http.Error(w, fmt.Sprintf(`{"error":"failed to start agent: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		// Start SSE relay from agent -> bus (idempotent).
+		startRelay(sessionID, agentAddr)
+
+		// Forward review request to agent.
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+		}
+		if len(body) == 0 {
+			body = []byte("{}")
+		}
+
+		agentURL := fmt.Sprintf("http://%s/review", agentAddr)
+		resp, err := http.Post(agentURL, "application/json", bytes.NewReader(body))
+		if err != nil {
+			log.Printf("[gateway] forward review to agent error: %v", err)
+			http.Error(w, `{"error":"failed to forward review to agent"}`, http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		log.Printf("[gateway] review started id=%s", sessionID)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "review_started"})
 	}
 }
 

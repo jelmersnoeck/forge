@@ -27,12 +27,17 @@ type Hub struct {
 	// Interrupt management
 	interruptCh chan struct{}
 	interruptMu sync.Mutex
+
+	// Review trigger
+	reviewCh chan string // base branch name (empty = auto-detect)
+	reviewMu sync.Mutex
 }
 
 // NewHub creates a new Hub.
 func NewHub() *Hub {
 	return &Hub{
 		interruptCh: make(chan struct{}, 1),
+		reviewCh:    make(chan string, 1),
 	}
 }
 
@@ -158,4 +163,21 @@ func (h *Hub) TriggerInterrupt() {
 // InterruptChannel returns a channel that receives interrupt signals.
 func (h *Hub) InterruptChannel() <-chan struct{} {
 	return h.interruptCh
+}
+
+// TriggerReview signals the worker to start a code review.
+// baseBranch is the branch to diff against (empty = auto-detect).
+func (h *Hub) TriggerReview(baseBranch string) {
+	h.reviewMu.Lock()
+	defer h.reviewMu.Unlock()
+	select {
+	case h.reviewCh <- baseBranch:
+	default:
+		// Already pending, skip
+	}
+}
+
+// ReviewChannel returns a channel that receives review requests (base branch name).
+func (h *Hub) ReviewChannel() <-chan string {
+	return h.reviewCh
 }
