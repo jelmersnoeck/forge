@@ -179,3 +179,42 @@ func TestFindWorktreeForBranch(t *testing.T) {
 		})
 	}
 }
+
+func TestIsDefaultBranch(t *testing.T) {
+	tests := map[string]struct {
+		branch string
+		want   bool
+	}{
+		"main": {
+			branch: "main",
+			want:   true,
+		},
+		"master": {
+			branch: "master",
+			want:   true,
+		},
+		"detached HEAD": {
+			branch: "HEAD",
+			want:   true,
+		},
+		"feature branch": {
+			branch: "jelmer/paintball-episode",
+			want:   false,
+		},
+		"develop": {
+			branch: "develop",
+			want:   false,
+		},
+		"release branch": {
+			branch: "release/v2.0",
+			want:   false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, isDefaultBranch(tc.branch))
+		})
+	}
+}

@@ -1032,6 +1032,16 @@ func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool
 	}
 }
 
+// isDefaultBranch returns true for branches that should trigger ephemeral
+// worktree mode rather than branch-reuse mode (main, master, HEAD/detached).
+func isDefaultBranch(branch string) bool {
+	switch branch {
+	case "main", "master", "HEAD":
+		return true
+	}
+	return false
+}
+
 // isInWorktree checks if the current directory is inside a git worktree.
 // Returns false if not in a git repo or if in the main repo.
 func isInWorktree(dir string) bool {
@@ -1077,6 +1087,24 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	var worktreeBranch string
 	var shouldCleanupWorktree bool
 	var repoRoot string
+
+	// Auto-detect branch: if no --branch flag, not skipping worktrees, and not
+	// already in a worktree, check the current branch. If it's a feature branch
+	// (not main/master/HEAD), treat it as if --branch was passed so forge works
+	// on that branch instead of creating an ephemeral one.
+	if branchName == "" && !skipWorktree && !isInWorktree(cwd) {
+		if root := findRepoRoot(cwd); root != "" {
+			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+			cmd.Dir = root
+			if out, err := cmd.Output(); err == nil {
+				detected := strings.TrimSpace(string(out))
+				if !isDefaultBranch(detected) {
+					branchName = detected
+					fmt.Fprintln(os.Stderr, dimStyle.Render("  detected branch: "+branchName))
+				}
+			}
+		}
+	}
 
 	if branchName != "" {
 		// --branch mode: find or create worktree for the named branch
