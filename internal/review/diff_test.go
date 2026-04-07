@@ -225,7 +225,7 @@ func TestGetDiff(t *testing.T) {
 				r.Contains(diff, "package greendale")
 			},
 		},
-		"uncommitted changes on fresh branch from main": {
+		"uncommitted changes ignored": {
 			setup: func(t *testing.T) (string, string) {
 				dir := t.TempDir()
 				initGitRepo(t, dir)
@@ -246,11 +246,10 @@ func TestGetDiff(t *testing.T) {
 			},
 			check: func(t *testing.T, diff string) {
 				r := require.New(t)
-				r.Contains(diff, "chang.go", "uncommitted files should appear in review diff")
-				r.Contains(diff, "ElTigre")
+				r.Empty(strings.TrimSpace(diff), "uncommitted files should NOT appear in review diff")
 			},
 		},
-		"committed and uncommitted changes combined": {
+		"only committed changes appear": {
 			setup: func(t *testing.T) (string, string) {
 				dir := t.TempDir()
 				initGitRepo(t, dir)
@@ -286,8 +285,7 @@ func TestGetDiff(t *testing.T) {
 			check: func(t *testing.T, diff string) {
 				r := require.New(t)
 				r.Contains(diff, "fort.go", "committed changes should be in diff")
-				r.Contains(diff, "pillow.go", "uncommitted changes should also be in diff")
-				r.Contains(diff, "PillowFight")
+				r.NotContains(diff, "pillow.go", "uncommitted changes should NOT be in diff")
 			},
 		},
 	}
