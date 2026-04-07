@@ -77,6 +77,10 @@ type model struct {
 	worktreeBranch string // branch name if worktree created
 	cwd            string // working directory (worktree or original)
 
+	// Session title (human-readable, may differ from sessionID)
+	sessionTitle   string
+	titleGenerated bool // whether we've already tried generating a title
+
 	// Spec mode
 	initialPrompt string // auto-sent on startup (e.g. from --spec)
 }
@@ -84,6 +88,7 @@ type model struct {
 type serverEvent types.OutboundEvent
 type errMsg error
 type tickMsg time.Time
+type sessionTitleMsg string // async session title from Haiku
 
 func runCLI(args []string) int {
 	fs := flag.NewFlagSet("forge", flag.ExitOnError)
@@ -112,6 +117,25 @@ func runCLI(args []string) int {
 	var worktreePath string
 	var worktreeBranch string
 
+	// Handle --spec: read spec file and prepare initial prompt.
+	// Done early so the prompt is available for session naming.
+	var initialPrompt string
+	if *specPath != "" {
+		specContent, err := os.ReadFile(*specPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, errorStyle.Render("could not read spec file: "+err.Error()))
+			os.Exit(1)
+		}
+		initialPrompt = fmt.Sprintf(
+			"Implement the following spec. The spec is the source of truth "+
+				"— follow its Behavior, Constraints, and Interfaces sections precisely.\n\n"+
+				"Spec file: %s\n\n%s\n\n"+
+				"When done, reconcile this spec file with any corrections or "+
+				"discoveries made during implementation.",
+			*specPath, string(specContent),
+		)
+	}
+
 	if *server != "" {
 		// Remote server mode
 		serverURL = *server
@@ -134,7 +158,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
@@ -154,24 +178,6 @@ func runCLI(args []string) int {
 			agentCleanup()
 			os.Exit(0)
 		}()
-	}
-
-	// Handle --spec: read spec file and prepare initial prompt
-	var initialPrompt string
-	if *specPath != "" {
-		specContent, err := os.ReadFile(*specPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, errorStyle.Render("could not read spec file: "+err.Error()))
-			os.Exit(1)
-		}
-		initialPrompt = fmt.Sprintf(
-			"Implement the following spec. The spec is the source of truth "+
-				"— follow its Behavior, Constraints, and Interfaces sections precisely.\n\n"+
-				"Spec file: %s\n\n%s\n\n"+
-				"When done, reconcile this spec file with any corrections or "+
-				"discoveries made during implementation.",
-			*specPath, string(specContent),
-		)
 	}
 
 	// Renderer will be initialized with proper width after first WindowSizeMsg
@@ -214,6 +220,8 @@ func runCLI(args []string) int {
 		worktreeBranch:  worktreeBranch,
 		cwd:             effectiveCWD,
 		initialPrompt:   initialPrompt,
+		sessionTitle:    sessionID,
+		titleGenerated:  initialPrompt != "", // already named via Haiku if we had a prompt
 	}
 
 	// Add welcome message
@@ -227,7 +235,7 @@ func runCLI(args []string) int {
 	}
 
 	m.output = append(m.output,
-		headerStyle.Render("forge cli")+" "+dimStyle.Render("— "+modeDesc+" — session "+sessionID),
+		headerStyle.Render("forge cli")+" "+dimStyle.Render("— "+modeDesc+" — "+m.sessionTitle),
 		dimStyle.Render("server: "+serverURL),
 	)
 
@@ -285,6 +293,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinnerFrame++
 		}
 		return m, tick()
+
+	case sessionTitleMsg:
+		if title := string(msg); title != "" {
+			m.sessionTitle = title
+			// Update the header line (first line of output)
+			if len(m.output) > 0 {
+				modeDesc := "interactive"
+				if !m.interactiveMode {
+					modeDesc = "remote"
+				}
+				m.output[0] = headerStyle.Render("forge cli") + " " + dimStyle.Render("— "+modeDesc+" — "+m.sessionTitle)
+			}
+		}
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -403,7 +425,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.output = append(m.output, "     "+line)
 					}
 				}
-				return m, m.sendMessage(text)
+				cmds := []tea.Cmd{m.sendMessage(text)}
+				// Generate session title from first user message
+				if !m.titleGenerated {
+					m.titleGenerated = true
+					cmds = append(cmds, m.generateTitle(text))
+				}
+				return m, tea.Batch(cmds...)
 			}
 
 			// Otherwise, add to queue (will be sent when current work completes)
@@ -867,6 +895,16 @@ func (m model) sendMessage(text string) tea.Cmd {
 	}
 }
 
+// generateTitle fires an async Haiku call to produce a session title from the
+// user's first message. The result updates the CLI header display only — the
+// branch and worktree names are not changed after creation.
+func (m model) generateTitle(prompt string) tea.Cmd {
+	return func() tea.Msg {
+		title := generateSessionName(prompt)
+		return sessionTitleMsg(title)
+	}
+}
+
 func (m model) sendInterrupt() tea.Cmd {
 	return func() tea.Msg {
 		body, _ := json.Marshal(map[string]string{"interrupt": "true"})
@@ -961,7 +999,8 @@ func isInWorktree(dir string) bool {
 // The agent runs on a random port and auto-terminates when cleanup is called.
 // If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
 // If branchName is set, reuses an existing worktree for that branch or creates one.
-func spawnLocalAgent(cwd string, skipWorktree bool, branchName string) (string, string, string, string, func(), error) {
+// initialPrompt, when non-empty, is used to generate a human-readable session name via Haiku.
+func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -977,8 +1016,11 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string) (string, 
 		}
 	}
 
-	// Generate session ID
-	sessionID := "cli-" + time.Now().Format("20060102-150405")
+	// Generate session ID with a readable name.
+	// If we have a prompt, ask Haiku for a slug (up to 3s).
+	// Otherwise, pick a random adjective-noun pair.
+	slug := generateSessionName(initialPrompt)
+	sessionID := time.Now().Format("20060102") + "-" + slug
 
 	// Check if we're in a git repo and should create a worktree
 	var worktreePath string
