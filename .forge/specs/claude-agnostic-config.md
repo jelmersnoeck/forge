@@ -19,11 +19,10 @@ implementation stays unchanged — this is config/context only.
 - `internal/runtime/prompt/prompt_test.go` — tests updated for AgentsMD-only world
 - `CLAUDE.md` → deleted, content merged into `AGENTS.md`
 - `AGENTS.md` — now contains project docs + learnings (single file)
-- `mcp-server/src/server.ts` — resource URI forge://claude → forge://agents
-- `mcp-server/README.md` — updated resource docs
-- `README.md`, `CACHE_STRATEGY.md`, `CACHE_IMPROVEMENTS.md`, `IMPLEMENTATION-COMPLETE.md` — refs updated
+- `mcp-server/` — removed in subsequent cleanup (no longer in repo)
+- `README.md`, `CACHE_STRATEGY.md`, `CACHE_IMPROVEMENTS.md`, `IMPLEMENTATION-COMPLETE.md` — refs updated (non-README files later removed in cleanup)
 - `.forge/specs/forge-architecture.md` — updated context loader description
-- `docs/` — multiple doc files updated
+- `docs/` — removed in subsequent cleanup (no longer in repo)
 
 ## Behavior
 - `CLAUDE.md` at any level (user/project/parent/local) is still loaded into `AgentsMD`
