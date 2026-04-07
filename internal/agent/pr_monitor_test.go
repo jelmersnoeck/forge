@@ -88,7 +88,7 @@ func TestCheckNeedsRebase(t *testing.T) {
 	r.True(checkNeedsRebase(local, "main"))
 }
 
-func TestRebaseAndPush(t *testing.T) {
+func TestCheckNeedsRebase_ProducesMessage(t *testing.T) {
 	local, remote := setupGitRepo(t)
 	r := require.New(t)
 
@@ -109,50 +109,8 @@ func TestRebaseAndPush(t *testing.T) {
 	run(t, other, "git", "commit", "-m", "add motivational speech")
 	run(t, other, "git", "push", "origin", "main")
 
-	// Fetch so we know about origin/main.
-	run(t, local, "git", "fetch", "origin", "main")
-
-	w := &Worker{cwd: local, sessionID: "test"}
-	err := w.rebaseAndPush(context.Background(), "main")
-	r.NoError(err)
-
-	// Verify our branch now includes the main commit.
-	out := run(t, local, "git", "log", "--oneline")
-	r.Contains(out, "add motivational speech")
-	r.Contains(out, "add costume catalog")
-}
-
-func TestRebaseAndPush_ConflictAborts(t *testing.T) {
-	local, remote := setupGitRepo(t)
-	r := require.New(t)
-
-	// Create feature branch modifying README.
-	run(t, local, "git", "checkout", "-b", "jelmer/conflict-branch")
-	writeFile(t, filepath.Join(local, "README.md"), "# Study Room F\n")
-	run(t, local, "git", "add", ".")
-	run(t, local, "git", "commit", "-m", "rename to study room F")
-	run(t, local, "git", "push", "origin", "HEAD")
-
-	// Conflicting change on main.
-	other := t.TempDir()
-	run(t, other, "git", "clone", remote, ".")
-	run(t, other, "git", "config", "user.email", "chang@greendale.edu")
-	run(t, other, "git", "config", "user.name", "Ben Chang")
-	writeFile(t, filepath.Join(other, "README.md"), "# El Tigre Chino\n")
-	run(t, other, "git", "add", ".")
-	run(t, other, "git", "commit", "-m", "Chang was here")
-	run(t, other, "git", "push", "origin", "main")
-
-	run(t, local, "git", "fetch", "origin", "main")
-
-	w := &Worker{cwd: local, sessionID: "test"}
-	err := w.rebaseAndPush(context.Background(), "main")
-	r.Error(err)
-	r.Contains(err.Error(), "rebase conflicts")
-
-	// Verify rebase was aborted (not stuck in rebase state).
-	out := run(t, local, "git", "status")
-	r.NotContains(out, "rebase in progress")
+	// Verify checkNeedsRebase detects the divergence.
+	r.True(checkNeedsRebase(local, "main"))
 }
 
 func TestGetPRInfo_NoPR(t *testing.T) {

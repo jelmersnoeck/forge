@@ -153,21 +153,20 @@ func (w *Worker) prHealthCheck(ctx context.Context) (needsFix bool, fixMsg strin
 	if info.NeedsRebase {
 		emit(types.OutboundEvent{
 			Type:    "pr_monitor",
-			Content: fmt.Sprintf("PR #%d: base branch %s has advanced, rebasing...", info.Number, info.Base),
+			Content: fmt.Sprintf("PR #%d: base branch %s has advanced, needs rebase.", info.Number, info.Base),
 		})
 
-		if err := w.rebaseAndPush(ctx, info.Base); err != nil {
-			emit(types.OutboundEvent{
-				Type:    "pr_monitor",
-				Content: fmt.Sprintf("PR #%d: rebase failed — %v. Manual intervention needed.", info.Number, err),
-			})
-			return false, "", false
-		}
-
-		emit(types.OutboundEvent{
-			Type:    "pr_monitor",
-			Content: fmt.Sprintf("PR #%d: rebased onto %s and pushed.", info.Number, info.Base),
-		})
+		msg := fmt.Sprintf(
+			"[PR Health Monitor] PR #%d needs to be rebased onto %s. "+
+				"The base branch has new commits that aren't in our branch.\n\n"+
+				"Please run the rebase:\n"+
+				"1. Run `git fetch origin %s && git rebase origin/%s`\n"+
+				"2. If there are conflicts, resolve them (examine the conflict markers, fix each file, `git add` the resolved files, then `git rebase --continue`)\n"+
+				"3. Once the rebase is complete, force-push with `git push --force-with-lease origin HEAD`\n"+
+				"4. Run the tests to make sure nothing broke",
+			info.Number, info.Base, info.Base, info.Base,
+		)
+		return true, msg, false
 	}
 
 	// Check CI status.
@@ -267,18 +266,4 @@ func checkNeedsRebase(cwd, base string) bool {
 		return false
 	}
 	return count != "0"
-}
-
-// rebaseAndPush rebases the current branch onto origin/<base> and force-pushes.
-func (w *Worker) rebaseAndPush(ctx context.Context, base string) error {
-	if _, stderr, err := tools.GitOutputFull(w.cwd, "rebase", "origin/"+base); err != nil {
-		_ = tools.RunGitCmd(w.cwd, "rebase", "--abort")
-		return fmt.Errorf("rebase conflicts: %s", stderr)
-	}
-
-	if _, stderr, err := tools.GitOutputFull(w.cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
-		return fmt.Errorf("push failed: %s", stderr)
-	}
-
-	return nil
 }
