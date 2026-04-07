@@ -93,7 +93,7 @@ All forge configuration lives under `.forge/`:
 - `.forge/skills/` — skill definitions (`SKILL.md` with frontmatter)
 - `.forge/agents/` — agent definitions (`.md` with frontmatter)
 - `.forge/specs/` — feature specifications
-- `.forge/learnings/` — auto-generated session reflections
+- `.forge/learnings/` — actionable gotchas and discoveries from agent sessions
 - `.forge/config.json` — forge-level config (specsDir, etc.)
 
 For backward compatibility, `.claude/` is also checked as a fallback if `.forge/` doesn't exist.
@@ -233,35 +233,29 @@ forge stats --sessions         # per-session breakdown
 
 ## Self-Improvement Loop
 
-Forge includes a built-in self-improvement mechanism:
+Forge includes a built-in learning mechanism for capturing actionable gotchas:
 
 1. **AGENTS.md Support**: The agent loads `AGENTS.md` files from:
-   - `~/AGENTS.md` (user-level instructions/learnings)
+   - `~/AGENTS.md` (user-level instructions)
    - `$PROJECT/AGENTS.md` or `$PROJECT/.forge/AGENTS.md` (project-level)
    - Parent directories (inheritable)
    - `$PROJECT/AGENTS.local.md` (session-specific)
 
-2. **Reflect Tool**: Agents can use the `Reflect` tool to capture session learnings:
+2. **Reflect Tool**: Agents use the `Reflect` tool to save non-obvious discoveries:
    ```json
    {
-     "summary": "What was accomplished",
-     "mistakes": ["Things that went wrong"],
-     "successes": ["Patterns that worked well"],
-     "suggestions": ["Ideas for future improvement"]
+     "summary": "Short filename label",
+     "learnings": [
+       "DuckDuckGo API returns HTTP 202 for bot-detected requests — use server-side search instead",
+       "git rebase in worktrees requires --onto with explicit SHAs; interactive mode hangs"
+     ]
    }
    ```
+   Only call Reflect when the session uncovered something genuinely useful for
+   future sessions. Routine work with no surprises needs no reflection.
 
-3. **Automatic Loading**: Learnings from `.forge/learnings/` and project instructions from `AGENTS.md` are injected into the system prompt with cache control.
-
-4. **Continuous Learning**: Each reflection writes to `.forge/learnings/`, creating a growing knowledge base that improves agent behavior over time.
-
-Example workflow:
-- Agent completes a task
-- Agent calls `Reflect` tool with session summary
-- Learnings are saved to `.forge/learnings/`
-- Next session loads learnings and applies them
-
-The system prompt encourages agents to reflect at the end of sessions.
+3. **Automatic Loading**: Learnings from `.forge/learnings/` are injected into
+   the system prompt so future sessions benefit from past discoveries.
 
 ## API endpoints
 
@@ -335,80 +329,14 @@ Community College, etc.).
 
 # Agent Learnings
 
-This file contains self-improvement learnings from agent sessions. The agent automatically reflects on each session and appends insights here.
+Actionable gotchas discovered during development sessions.
 
-## Session Reflection - 2024-04-01 14:30
-
-**Summary:** Implemented AGENTS.md support and Reflect tool for self-improvement loop
-
-**Successful Patterns:**
-- Function-based tool definitions match codebase conventions
-- Table-driven tests provide good coverage
-- Added AgentsMDEntry type to ContextBundle cleanly
-
-**Future Suggestions:**
-- Consider rate limiting Reflect tool to avoid spam
-- Could add metadata like session duration, token usage
-- Might want to aggregate/summarize AGENTS.md periodically to avoid bloat
-- Consider exposing reflection trigger as a user command
-
-## Session Reflection - 2026-04-03 18:45
-
-**Summary:** Implemented MCP client support for Forge: pure-Go JSON-RPC over Streamable HTTP transport, OAuth 2.1 with DCR/PKCE, token persistence, config loading, and tool bridge into Forge's registry. 11 new files, 24 tests passing.
-
-**Mistakes & Improvements:**
-- Initial oauth_test.go had a self-referential closure bug (mcpServer.URL used inside its own handler before assignment) - caught by compiler but wasted a round
-
-**Successful Patterns:**
-- Kept it pure standard library Go - no external MCP SDK needed
-- Clean separation into config/token_store/oauth/client/bridge layers
-- All tests use httptest.NewServer for real HTTP testing, no mocks
-- Non-fatal MCP integration - agent works fine without MCP config
-- Tool namespacing (mcp__server__tool) prevents collisions with built-in tools
-- Community references throughout test data as specified
-
-**Future Suggestions:**
-- Consider adding MCP resources/prompts support later
-- Device code flow would be needed for headless OAuth environments
-- tools/list change notifications (listChanged) could be valuable for long-running sessions
-- Could add an `mcp status` subcommand to list connected servers and their tools
-
-
-## Session Reflection - 2026-04-04 12:55
-
-**Summary:** Implemented sub-agent execution for Forge. The Agent tool previously only created metadata without running any conversation loop. Added AgentRunner type, RunAgent method, Registry.Filtered, and injectable task manager. Sub-agents now spawn real loop.Loop instances in background goroutines with filtered tool registries, model configuration, output capture, and cancellation support.
-
-**Mistakes & Improvements:**
-- Almost missed the race condition where StopAgent sets status to 'killed' but the goroutine's completion handler overwrites it to 'failed' - caught by test
-
-**Successful Patterns:**
-- Followed existing patterns (SetMCPStore) for dependency injection
-- ASCII art diagram in makeAgentRunner godoc helped clarify the call chain
-- Community references in test data as specified
-- Table-driven tests with map[string]struct for Filtered tests
-- Race-free cancellation: check IsTerminal before overwriting status in goroutine
-
-**Future Suggestions:**
-- Sub-agents currently share the parent's ContextBundle unchanged - might want sub-agent-specific system prompts later
-- Sub-agents share the parent's LLM provider (API key) - consider per-agent rate limiting
-- The task manager is still set via package-level function (SetTaskManager) - could be cleaner with ToolContext injection but that would be a larger refactor
-- Sub-agent output only captures 'text' events - might want tool_use/error events too for debugging
-
-## Session Reflection - 2026-04-04 13:14
-
-**Summary:** Diagnosed and fixed broken WebSearch tool. Root cause: DuckDuckGo Instant Answer API is not a search engine (knowledge graph only) and now returns 202 for bot detection. Replaced with Anthropic server-side web_search via sub-call pattern (matching Claude Code's approach).
-
-**Mistakes & Improvements:**
-- Initially tried to inject web_search as a server-side tool directly into the main conversation loop, which would have required changes to types, provider, and loop. Pivoted to Claude Code's cleaner pattern after reading their source.
-- Wrote dead helper code (tryParseSearchResults) that wasn't needed — caught it during cleanup but should have thought more before writing.
-
-**Successful Patterns:**
-- Checked Claude Code's source to understand the established pattern before committing to an implementation
-- Properly tested the DDG API empirically to confirm the root cause (HTTP 202, empty results for real queries)
-- Clean revert of the over-engineered approach using git checkout before re-implementing the simpler pattern
-- ASCII art diagram in the code comment for the sub-call flow
-
-**Future Suggestions:**
-- When implementing features that interact with external APIs (like search), check how Claude Code handles it first — the codebase is at ~/Projects/claude-code/
-- The Anthropic SDK at v1.27.1 supports web_search_20250305 and web_search_20260209 server tools. Use the 20260209 variant.
-- For server-side tools, prefer the sub-call pattern (client tool wrapping a server tool) over injecting server tools into the main loop — keeps history clean and allows using cheaper models.
+- When referencing `httptest.Server.URL` inside its own handler closure, the variable isn't assigned yet — assign the handler after creating the server, or use a pointer indirection
+- Race condition pattern: when a Stop function sets status to 'killed' but a goroutine's deferred completion handler overwrites it to 'failed', check `IsTerminal` before overwriting
+- DuckDuckGo Instant Answer API is a knowledge graph, not a search engine — returns HTTP 202 for bot-detected requests and empty results for real queries
+- The Anthropic SDK (v1.27.1+) supports `web_search_20250305` and `web_search_20260209` server tools — use the `20260209` variant
+- For server-side tools, prefer the sub-call pattern (client tool wrapping a server tool) over injecting server tools into the main conversation loop — keeps history clean, allows cheaper models
+- Check Claude Code's source at `~/Projects/claude-code/` when implementing features that interact with external APIs — they likely solved it already
+- MCP tool namespacing as `mcp__server__tool` prevents collisions with built-in tools
+- Sub-agents share the parent's ContextBundle and LLM provider unchanged — keep this in mind for isolation and rate-limiting concerns
+- The task manager uses package-level `SetTaskManager` — not ideal, but changing to ToolContext injection is a larger refactor
