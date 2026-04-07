@@ -35,6 +35,7 @@ func Start(cfg Config) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth(cfg.SessionID))
 	mux.HandleFunc("POST /messages", handleMessages(hub, cfg.SessionID))
+	mux.HandleFunc("POST /review", handleReview(hub, cfg.SessionID))
 	mux.HandleFunc("POST /interrupt", handleInterrupt(hub))
 	mux.HandleFunc("GET /events", handleSSE(hub))
 
@@ -105,6 +106,22 @@ func handleMessages(hub *Hub, sessionID string) http.HandlerFunc {
 			status = "processing"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+	}
+}
+
+func handleReview(hub *Hub, sessionID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Base string `json:"base"`
+		}
+		// Body is optional — base defaults to empty (auto-detect)
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		hub.TriggerReview(body.Base)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "review_started"})
 	}
 }
 

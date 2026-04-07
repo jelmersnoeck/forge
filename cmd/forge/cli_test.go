@@ -7,6 +7,80 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestIsReviewCommand(t *testing.T) {
+	r := require.New(t)
+
+	tests := map[string]struct {
+		input string
+		want  bool
+	}{
+		"exact match": {
+			input: "/review",
+			want:  true,
+		},
+		"with base flag": {
+			input: "/review --base main",
+			want:  true,
+		},
+		"with whitespace": {
+			input: "  /review  ",
+			want:  true,
+		},
+		"not a review command": {
+			input: "review this code",
+			want:  false,
+		},
+		"empty string": {
+			input: "",
+			want:  false,
+		},
+		"similar but not review": {
+			input: "/reviews",
+			want:  false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := isReviewCommand(tc.input)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestParseReviewBase(t *testing.T) {
+	r := require.New(t)
+
+	tests := map[string]struct {
+		input string
+		want  string
+	}{
+		"no base flag": {
+			input: "/review",
+			want:  "",
+		},
+		"with base main": {
+			input: "/review --base main",
+			want:  "main",
+		},
+		"with base develop": {
+			input: "/review --base develop",
+			want:  "develop",
+		},
+		"base flag at end without value": {
+			input: "/review --base",
+			want:  "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := parseReviewBase(tc.input)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
 func TestWrapText(t *testing.T) {
 	r := require.New(t)
 

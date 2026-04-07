@@ -374,6 +374,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// If nothing in queue and not working, send immediately without queuing
 			if len(m.queue) == 0 && !m.working {
+				// Check for /review command
+				if isReviewCommand(text) {
+					baseBranch := parseReviewBase(text)
+					m.output = append(m.output, "")
+					m.output = append(m.output, headerStyle.Render("Starting code review...")+" "+dimStyle.Render("("+reviewProviderSummary()+")"))
+					m.working = true
+					return m, m.sendReview(baseBranch)
+				}
+
 				// Display the user's message in the output with wrapping
 				m.output = append(m.output, "")
 				maxWidth := m.width - 7 // account for "You: "
@@ -411,7 +420,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch event.Type {
 		case "thinking":
 			m.thinking = true
-		case "text", "tool_use":
+		case "text", "tool_use", "review_start", "review_finding":
 			m.thinking = false
 			m.working = true
 			m.exitAttempts = 0 // reset exit attempts when work starts
@@ -782,6 +791,30 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 	case "done":
 		m.flushText()
 		m.output = append(m.output, "")
+
+	case "review_start":
+		m.flushText()
+		m.output = append(m.output, headerStyle.Render("  [review] ")+event.Content)
+
+	case "review_finding":
+		m.flushText()
+		m.output = append(m.output, formatReviewFinding(event.Content, m.width))
+
+	case "review_agent_done":
+		// Quiet — individual agent completions don't need display
+
+	case "review_summary":
+		m.flushText()
+		m.output = append(m.output, "")
+		m.output = append(m.output, headerStyle.Render("  Review Summary"))
+		for _, line := range strings.Split(event.Content, "\n") {
+			m.output = append(m.output, "  "+line)
+		}
+		m.output = append(m.output, "")
+
+	case "review_error":
+		m.flushText()
+		m.output = append(m.output, errorStyle.Render("  [review error] ")+event.Content)
 	}
 }
 
@@ -1090,4 +1123,125 @@ func spawnLocalAgent(cwd string, skipWorktree bool) (string, string, string, str
 	}
 
 	return sessionID, serverURL, worktreePath, worktreeBranch, cleanup, nil
+}
+
+// isReviewCommand checks if the input is a /review command.
+func isReviewCommand(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return trimmed == "/review" || strings.HasPrefix(trimmed, "/review ")
+}
+
+// parseReviewBase extracts the --base flag from a /review command.
+// "/review --base main" → "main", "/review" → ""
+func parseReviewBase(text string) string {
+	parts := strings.Fields(text)
+	for i, part := range parts {
+		if part == "--base" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// reviewProviderSummary returns a human-readable summary of available review providers.
+func reviewProviderSummary() string {
+	var providers []string
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		providers = append(providers, "Anthropic")
+	}
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		providers = append(providers, "OpenAI")
+	}
+	if len(providers) == 0 {
+		return "no providers configured"
+	}
+	return strings.Join(providers, " + ")
+}
+
+// sendReview sends a review request to the agent/gateway.
+func (m model) sendReview(baseBranch string) tea.Cmd {
+	return func() tea.Msg {
+		body, _ := json.Marshal(map[string]string{"base": baseBranch})
+
+		var url string
+		switch m.interactiveMode {
+		case true:
+			url = fmt.Sprintf("%s/review", m.server)
+		default:
+			url = fmt.Sprintf("%s/sessions/%s/review", m.server, m.sessionID)
+		}
+
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return errMsg(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusAccepted {
+			b, _ := io.ReadAll(resp.Body)
+			return errMsg(fmt.Errorf("review request failed: %d %s", resp.StatusCode, b))
+		}
+		return nil
+	}
+}
+
+// formatReviewFinding formats a review finding for display.
+func formatReviewFinding(content string, width int) string {
+	// Content is JSON of review.Finding — parse it for nice display.
+	var finding struct {
+		Reviewer    string `json:"reviewer"`
+		Provider    string `json:"provider"`
+		Severity    string `json:"severity"`
+		File        string `json:"file"`
+		StartLine   int    `json:"startLine"`
+		EndLine     int    `json:"endLine"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(content), &finding); err != nil {
+		return dimStyle.Render("  [finding] ") + content
+	}
+
+	severityStyle := dimStyle
+	severityIcon := " "
+	switch finding.Severity {
+	case "critical":
+		severityStyle = errorStyle
+		severityIcon = "!!"
+	case "warning":
+		severityStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+		severityIcon = " !"
+	case "suggestion":
+		severityStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+		severityIcon = " ~"
+	case "praise":
+		severityStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+		severityIcon = " +"
+	}
+
+	header := severityStyle.Render(severityIcon+" ["+finding.Severity+"]") + " " +
+		dimStyle.Render(finding.Reviewer+" ("+finding.Provider+")")
+
+	location := ""
+	if finding.File != "" {
+		location = dimStyle.Render(" " + finding.File)
+		if finding.StartLine > 0 {
+			location += dimStyle.Render(fmt.Sprintf(":%d", finding.StartLine))
+			if finding.EndLine > 0 && finding.EndLine != finding.StartLine {
+				location += dimStyle.Render(fmt.Sprintf("-%d", finding.EndLine))
+			}
+		}
+	}
+
+	maxDescWidth := width - 6
+	if maxDescWidth < 40 {
+		maxDescWidth = 40
+	}
+	descLines := wrapText(finding.Description, maxDescWidth)
+
+	var result string
+	result = header + location
+	for _, line := range descLines {
+		result += "\n    " + line
+	}
+	return result
 }

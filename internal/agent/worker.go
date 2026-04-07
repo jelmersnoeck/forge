@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jelmersnoeck/forge/internal/mcp"
+	"github.com/jelmersnoeck/forge/internal/review"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
 	"github.com/jelmersnoeck/forge/internal/runtime/loop"
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
@@ -79,6 +80,9 @@ func (w *Worker) Run(ctx context.Context) {
 	if m := bundle.Settings.Model; m != "" && strings.HasPrefix(m, "claude-") {
 		model = m
 	}
+
+	// Listen for review triggers in a separate goroutine.
+	go w.reviewListener(ctx, bundle)
 
 	var historyID string
 	for {
@@ -235,6 +239,118 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 			ToolName: "Bash",
 		})
 	}
+}
+
+// reviewListener drains the hub's review channel and runs reviews.
+// Each review runs in the background so it doesn't block the main message loop.
+func (w *Worker) reviewListener(ctx context.Context, bundle types.ContextBundle) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case baseBranch := <-w.hub.ReviewChannel():
+			w.runReview(ctx, baseBranch, bundle)
+		}
+	}
+}
+
+// runReview executes the multi-agent code review.
+//
+//	               ┌─────────────┐
+//	               │   Worker    │
+//	               └──────┬──────┘
+//	                      │ runReview()
+//	               ┌──────▼──────┐
+//	               │ Orchestrator│
+//	               └──────┬──────┘
+//	       ┌──────────────┼──────────────┐
+//	       │              │              │
+//	┌──────▼──────┐┌─────▼──────┐┌──────▼──────┐
+//	│  Security   ││ CodeQuality││ Maintain... │  × N providers
+//	│  (Anthropic)││  (OpenAI)  ││  (both)     │
+//	└─────────────┘└────────────┘└─────────────┘
+func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.ContextBundle) {
+	emit := func(event types.OutboundEvent) {
+		if event.ID == "" {
+			event.ID = uuid.New().String()
+		}
+		if event.SessionID == "" {
+			event.SessionID = w.sessionID
+		}
+		if event.Timestamp == 0 {
+			event.Timestamp = time.Now().UnixMilli()
+		}
+		w.hub.PublishEvent(event)
+	}
+
+	// Collect available providers.
+	providers := make(map[string]types.LLMProvider)
+
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		providers["anthropic"] = provider.NewAnthropic(key)
+	}
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		providers["openai"] = provider.NewOpenAI(key)
+	}
+
+	if len(providers) == 0 {
+		emit(types.OutboundEvent{
+			Type:    "review_error",
+			Content: "No providers available for review. Set ANTHROPIC_API_KEY and/or OPENAI_API_KEY.",
+		})
+		emit(types.OutboundEvent{Type: "done"})
+		return
+	}
+
+	// Get git diff.
+	diff, err := review.GetDiff(w.cwd, baseBranch)
+	if err != nil {
+		emit(types.OutboundEvent{
+			Type:    "review_error",
+			Content: fmt.Sprintf("Failed to get diff: %v", err),
+		})
+		emit(types.OutboundEvent{Type: "done"})
+		return
+	}
+
+	if diff == "" {
+		emit(types.OutboundEvent{
+			Type:    "review_error",
+			Content: "No changes to review.",
+		})
+		emit(types.OutboundEvent{Type: "done"})
+		return
+	}
+
+	// Pick reviewers — include spec validation if there are active specs.
+	var reviewers []review.Reviewer
+	hasActiveSpecs := false
+	for _, spec := range bundle.Specs {
+		if spec.Status == "active" || spec.Status == "draft" {
+			hasActiveSpecs = true
+			break
+		}
+	}
+
+	switch hasActiveSpecs {
+	case true:
+		reviewers = review.DefaultReviewersWithSpec()
+	default:
+		reviewers = review.DefaultReviewers()
+	}
+
+	orch := review.NewOrchestrator(providers, reviewers)
+	req := review.ReviewRequest{
+		Diff:       diff,
+		Specs:      bundle.Specs,
+		Context:    bundle,
+		BaseBranch: baseBranch,
+		CWD:        w.cwd,
+	}
+
+	orch.Run(ctx, req, emit)
+
+	emit(types.OutboundEvent{Type: "done"})
 }
 
 // makeAgentRunner returns an AgentRunner that spawns a conversation loop for sub-agents.
