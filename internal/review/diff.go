@@ -10,32 +10,56 @@ const maxDiffBytes = 100 * 1024 // 100KB
 
 // GetDiff extracts the git diff for review.
 //
+// Combines two diffs:
+//  1. committed changes: base...HEAD (what's been committed on the branch)
+//  2. uncommitted changes: working tree vs HEAD (staged + unstaged + untracked)
+//
 // Resolution order for baseBranch:
 //   - explicit value if non-empty
 //   - "main" (if it exists)
 //   - "master" (if it exists)
-//   - falls back to "git diff HEAD"
+//   - falls back to HEAD only (uncommitted changes)
 func GetDiff(cwd, baseBranch string) (string, error) {
 	if !isGitRepo(cwd) {
 		return "", fmt.Errorf("not a git repository: %s", cwd)
 	}
 
-	var diff string
+	var committedDiff string
 	var err error
 
 	switch {
 	case baseBranch != "":
-		diff, err = gitDiff(cwd, baseBranch+"...HEAD")
+		committedDiff, err = gitDiff(cwd, baseBranch+"...HEAD")
 	case branchExists(cwd, "main"):
-		diff, err = gitDiff(cwd, "main...HEAD")
+		committedDiff, err = gitDiff(cwd, "main...HEAD")
 	case branchExists(cwd, "master"):
-		diff, err = gitDiff(cwd, "master...HEAD")
-	default:
-		diff, err = gitDiff(cwd, "HEAD")
+		committedDiff, err = gitDiff(cwd, "master...HEAD")
 	}
-
 	if err != nil {
 		return "", err
+	}
+
+	// Also grab uncommitted changes (staged + unstaged on tracked files).
+	uncommittedDiff, err := gitDiff(cwd, "HEAD")
+	if err != nil {
+		return "", err
+	}
+
+	// Grab untracked files and generate diffs for them too.
+	untrackedDiff, err := untrackedFilesDiff(cwd)
+	if err != nil {
+		return "", err
+	}
+
+	diff := committedDiff
+	for _, extra := range []string{uncommittedDiff, untrackedDiff} {
+		if extra == "" {
+			continue
+		}
+		if diff != "" {
+			diff += "\n"
+		}
+		diff += extra
 	}
 
 	return truncateDiff(diff), nil
@@ -64,6 +88,39 @@ func gitDiff(cwd, diffSpec string) (string, error) {
 		return "", fmt.Errorf("git diff %s: %w", diffSpec, err)
 	}
 	return string(out), nil
+}
+
+// untrackedFilesDiff generates a unified diff for all untracked files
+// (excluding gitignored ones) so they appear in review output.
+func untrackedFilesDiff(cwd string) (string, error) {
+	cmd := exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git ls-files: %w", err)
+	}
+
+	files := strings.TrimSpace(string(out))
+	if files == "" {
+		return "", nil
+	}
+
+	// Use git diff --no-index to generate proper unified diffs for each file.
+	var sb strings.Builder
+	for _, f := range strings.Split(files, "\n") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		diffCmd := exec.Command("git", "diff", "--no-color", "--no-index", "--", "/dev/null", f)
+		diffCmd.Dir = cwd
+		// git diff --no-index exits 1 when files differ, which is always the case here.
+		diffOut, _ := diffCmd.Output()
+		if len(diffOut) > 0 {
+			sb.Write(diffOut)
+		}
+	}
+	return sb.String(), nil
 }
 
 // truncateDiff keeps head and tail of a diff if it exceeds maxDiffBytes.

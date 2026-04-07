@@ -225,6 +225,71 @@ func TestGetDiff(t *testing.T) {
 				r.Contains(diff, "package greendale")
 			},
 		},
+		"uncommitted changes on fresh branch from main": {
+			setup: func(t *testing.T) (string, string) {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+
+				defBranch := currentBranchName(t, dir)
+
+				// Create a feature branch (HEAD == main, no commits ahead).
+				cmd := exec.Command("git", "checkout", "-b", "jelmer/senor-chang")
+				cmd.Dir = dir
+				out, err := cmd.CombinedOutput()
+				require.NoError(t, err, "git checkout: %s", string(out))
+
+				// Write a file but do NOT commit — just leave it unstaged.
+				err = os.WriteFile(filepath.Join(dir, "chang.go"), []byte("package greendale\n\nfunc ElTigre() {}\n"), 0o644)
+				require.NoError(t, err)
+
+				return dir, defBranch
+			},
+			check: func(t *testing.T, diff string) {
+				r := require.New(t)
+				r.Contains(diff, "chang.go", "uncommitted files should appear in review diff")
+				r.Contains(diff, "ElTigre")
+			},
+		},
+		"committed and uncommitted changes combined": {
+			setup: func(t *testing.T) (string, string) {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+
+				defBranch := currentBranchName(t, dir)
+
+				cmd := exec.Command("git", "checkout", "-b", "jelmer/paintball")
+				cmd.Dir = dir
+				out, err := cmd.CombinedOutput()
+				require.NoError(t, err, "git checkout: %s", string(out))
+
+				// Committed change.
+				err = os.WriteFile(filepath.Join(dir, "fort.go"), []byte("package greendale\n"), 0o644)
+				require.NoError(t, err)
+
+				for _, args := range [][]string{
+					{"git", "add", "fort.go"},
+					{"git", "commit", "-m", "Build the blanket fort"},
+				} {
+					cmd := exec.Command(args[0], args[1:]...)
+					cmd.Dir = dir
+					cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE=2024-01-02T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-02T00:00:00Z")
+					out, err := cmd.CombinedOutput()
+					require.NoError(t, err, "cmd %v: %s", args, string(out))
+				}
+
+				// Uncommitted change (different file).
+				err = os.WriteFile(filepath.Join(dir, "pillow.go"), []byte("package greendale\n\nfunc PillowFight() {}\n"), 0o644)
+				require.NoError(t, err)
+
+				return dir, defBranch
+			},
+			check: func(t *testing.T, diff string) {
+				r := require.New(t)
+				r.Contains(diff, "fort.go", "committed changes should be in diff")
+				r.Contains(diff, "pillow.go", "uncommitted changes should also be in diff")
+				r.Contains(diff, "PillowFight")
+			},
+		},
 	}
 
 	for name, tc := range tests {

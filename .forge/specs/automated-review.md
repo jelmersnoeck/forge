@@ -1,6 +1,6 @@
 ---
 id: automated-review
-status: implemented
+status: active
 ---
 # Automated multi-agent code review system
 
@@ -10,6 +10,10 @@ multiple LLM providers (Anthropic, OpenAI) to reduce bias. Triggered via
 `/review` in the TUI or `POST /review` on the agent/gateway HTTP API. Each
 review agent gets fresh context (git diff, spec, project rules) and returns
 structured findings. Results are aggregated and streamed back to the user.
+
+The TUI supports slash-command autocomplete: typing `/` activates a suggestion
+dropdown above the input showing all available commands with descriptions.
+Commands filter as the user types (e.g. `/r` narrows to `/review`).
 
 ## Context
 Files and systems that change:
@@ -26,8 +30,9 @@ Files and systems that change:
 - `internal/agent/hub.go` — review trigger channel + TriggerReview/ReviewChannel methods
 - `internal/agent/worker.go` — reviewListener goroutine, runReview orchestration, provider assembly
 - `internal/server/gateway/gateway.go` — new `POST /sessions/{id}/review` endpoint
-- `cmd/forge/cli.go` — `/review` command parsing, sendReview, review event display, finding formatting
-- `cmd/forge/cli_test.go` — isReviewCommand and parseReviewBase tests
+- `cmd/forge/cli.go` — `/review` command parsing, sendReview, review event display, finding formatting, slash-command autocomplete with dropdown, command registry
+- `cmd/forge/commands.go` — slash command definitions (name, description, hidden flag)
+- `cmd/forge/cli_test.go` — isReviewCommand, parseReviewBase, and slash command autocomplete tests
 
 ## Behavior
 - `/review` in TUI triggers a review of the current git diff (staged + unstaged vs base branch)
@@ -51,6 +56,24 @@ Files and systems that change:
 - TUI shows findings grouped by reviewer, with severity indicators
 - Each finding includes: reviewer name, provider, severity, file path (if applicable), line range, description
 
+### Slash-command autocomplete
+- Typing `/` activates slash-command mode in the input
+- A dropdown/dialog appears above the input showing matching commands
+- Each entry shows the command name and a short description, e.g.:
+  ```
+  /review    Run multi-agent code review on current diff
+  ```
+- As the user types more characters (e.g. `/r`), the list filters to matching commands
+- The currently selected suggestion is highlighted (distinct style from unselected)
+- `Tab` accepts the currently selected suggestion (fills the input)
+- `Up`/`Down` (or `Ctrl+P`/`Ctrl+N`) cycles through matched suggestions
+- When input does not start with `/`, no autocomplete dropdown is shown
+- The dropdown disappears once the user accepts a suggestion or clears the `/` prefix
+- Commands are registered in a central command registry (`cmd/forge/commands.go`) with:
+  - Name (e.g. `/review`)
+  - Description (e.g. "Run multi-agent code review")
+- Ghost text (inline completion) is shown via the built-in bubbles textinput suggestion rendering
+
 ## Constraints
 - Review agents must not have write access (no Bash, Write, Edit, PRCreate) — implemented: review agents have no tools at all, they only analyze text
 - Review agents get fresh context — no shared conversation history — implemented: each gets a fresh ChatRequest with diff only
@@ -62,8 +85,30 @@ Files and systems that change:
 - Review must work without a spec (spec validation reviewer is skipped) — implemented
 - The review system must be testable without live API keys — implemented: mock providers in tests
 - Review types (Finding, ReviewResult) live in internal/review/ package, not in types/ — decision: keeps review self-contained
+- Slash-command autocomplete must use bubbles textinput's built-in `SetSuggestions`/`ShowSuggestions` — no custom suggestion engine
+- Suggestions only activate when input starts with `/` — normal messages must not trigger autocomplete
+- The dropdown must render above the input (between output area and input box), not obscure content
+- Command registry must be easy to extend — adding a new command = one struct literal in the slice
+- Dropdown must show the command description alongside the name so users know what each command does
 
 ## Interfaces
+
+```go
+// cmd/forge/commands.go
+
+type slashCommand struct {
+    Name        string // e.g. "/review"
+    Description string // e.g. "Run multi-agent code review"
+}
+
+// slashCommands is the registry of all available slash commands.
+var slashCommands = []slashCommand{
+    {Name: "/review", Description: "Run multi-agent code review on current diff"},
+}
+
+// slashCommandNames returns just the command names for textinput.SetSuggestions.
+func slashCommandNames() []string
+```
 
 ```go
 // internal/review/review.go
@@ -140,3 +185,9 @@ func (h *Hub) ReviewChannel() <-chan string
 - No active spec → skip spec validation reviewer, run remaining 4
 - Review triggered while agent is busy → queue it (same as messages)
 - Network errors mid-review → individual failures reported, others continue
+- Typing `/` with no further characters → show all commands in dropdown
+- Typing `/xyz` where no command matches → dropdown disappears (no matches)
+- Typing a normal message (no `/` prefix) → no dropdown, no suggestions
+- Deleting back to empty after typing `/review` → suggestions cleared, dropdown hidden
+- Accepting a suggestion then continuing to type (e.g. `/review --base`) → dropdown hidden after accept since input no longer matches a pure command prefix
+- Up/Down arrow while dropdown is visible → cycles suggestions (does not scroll output)
