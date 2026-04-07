@@ -33,25 +33,25 @@ just build
 
 The CLI automatically spawns a background agent process and connects directly to it. Sessions are ephemeral (no persistence between runs).
 
-### Server Mode (Multi-Session)
+### Gateway Mode (Multi-Session)
 
 For persistent sessions and multi-user deployments:
 
 ```bash
-# Terminal 1: Start the server
-just dev-server
+# Terminal 1: Start the gateway
+just dev-gateway
 
-# Terminal 2: Connect CLI to server
-./forge --server http://localhost:3000
+# Terminal 2: Connect CLI to gateway
+./forge --gateway http://localhost:3000
 
 # Resume a session later
-./forge --server http://localhost:3000 --resume <session-id>
+./forge --gateway http://localhost:3000 --resume <session-id>
 ```
 
-Server mode gives you:
+Gateway mode gives you:
 - Session persistence (resume anytime)
 - Multiple concurrent sessions
-- Remote server support
+- Remote gateway support
 
 ### Cost Analytics
 
@@ -91,22 +91,22 @@ Forge supports two deployment modes:
 
 CLI spawns agent as background process, connects directly via HTTP. Ephemeral sessions.
 
-### Server Mode (Gateway)
+### Gateway Mode
 ```
 ┌──────────┐         ┌──────────┐         ┌──────────┐
-│   CLI    │ ──HTTP─→│  Server  │ ──HTTP─→│  Agent   │
-│  (TUI)   │ ←─SSE──┤ (Gateway)│ ←─SSE──┤  (tmux)  │
+│   CLI    │ ──HTTP─→│ Gateway  │ ──HTTP─→│  Agent   │
+│  (TUI)   │ ←─SSE──┤          │ ←─SSE──┤  (tmux)  │
 └──────────┘         └──────────┘         └──────────┘
 ```
 
-Server manages multiple sessions, spawns agents in tmux, persists history.
+Gateway manages multiple sessions, spawns agents in tmux, persists history.
 
 ## Project Structure
 
 ```
 cmd/
-  forge/           Unified binary (cli + server + agent + stats)
-  server/          Legacy server (use 'forge server')
+  forge/           Unified binary (cli + gateway + agent + stats)
+  server/          Legacy server (use 'forge gateway')
   agent/           Agent binary (still used by server backend)
   cli/             Legacy CLI (use 'forge')
 internal/
@@ -148,7 +148,7 @@ Built-in tools available to the agent:
 
 ## API Endpoints
 
-### Server (Gateway)
+### Gateway
 ```
 POST   /sessions                      Create session
 GET    /sessions/{sessionId}          Get session info
@@ -170,9 +170,9 @@ POST   /interrupt                     Interrupt current work
 # Required (for agent)
 ANTHROPIC_API_KEY=sk-...    # Anthropic API key
 
-# Server Mode Only
-GATEWAY_PORT=3000           # Server listen port
-GATEWAY_HOST=0.0.0.0        # Server listen host
+# Gateway Mode Only
+GATEWAY_PORT=3000           # Gateway listen port
+GATEWAY_HOST=0.0.0.0        # Gateway listen host
 WORKSPACE_DIR=/tmp/forge/workspace  # Working directory
 SESSIONS_DIR=/tmp/forge/sessions    # Session storage
 FORGE_BIN=forge             # Forge binary path
@@ -189,8 +189,8 @@ just build-all
 
 # Run in development mode
 just dev               # Interactive CLI
-just dev-server        # Server mode
-just dev-server-daemon # Server daemon mode
+just dev-gateway       # Gateway mode
+just dev-gateway-daemon # Gateway daemon mode
 
 # Tests
 just test              # Run all tests
@@ -205,7 +205,7 @@ cp .env.example .env
 # Edit .env with your ANTHROPIC_API_KEY
 ```
 
-The server loads `.env` from the project root at startup.
+The gateway loads `.env` from the project root at startup.
 
 ### AGENTS.md Files
 
@@ -228,6 +228,6 @@ Test data uses Community TV show references (Troy Barnes, Greendale, etc.).
 ## Requirements
 
 - Go 1.26.1+
-- tmux (for server backend)
+- tmux (for gateway backend)
 - ripgrep (for Grep tool)
 - Terminal with ANSI color support (for CLI)

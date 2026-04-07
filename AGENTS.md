@@ -9,7 +9,7 @@ Forge uses a unified binary architecture with subcommands:
 - **Unified Binary** (`cmd/forge/`) — single entry point with subcommands:
   - **`forge` (default)** — interactive REPL (spawns agent subprocess)
   - **`forge agent`** — run agent server (spawned by interactive mode or server mode)
-  - **`forge server`** — session management gateway (spawns agents via `forge agent`)
+  - **`forge gateway`** — session management gateway (spawns agents via `forge agent`)
   - **`forge stats`** — cost analytics (daily/monthly/session breakdowns)
 
 ## Cost Tracking
@@ -104,7 +104,7 @@ User-level config: `~/.forge/` (settings, rules, skills).
 
 ```
 cmd/
-  forge/           unified binary (cli + server + agent + stats)
+  forge/           unified binary (cli + gateway + agent + stats)
 internal/
   mcp/             MCP client (Go) — connects to remote MCP servers
     client.go      JSON-RPC over Streamable HTTP transport
@@ -140,10 +140,10 @@ Go module: `github.com/jelmersnoeck/forge`
 just build              # build unified forge binary
 just build-all          # build all binaries
 just dev                # build + run interactive CLI
-just dev-server         # build + run server (foreground)
-just dev-server-daemon  # build + run server daemon
-just stop-server        # stop daemon server
-just tail-server        # tail daemon server logs
+just dev-gateway         # build + run gateway (foreground)
+just dev-gateway-daemon  # build + run gateway daemon
+just stop-gateway        # stop daemon gateway
+just tail-gateway        # tail daemon gateway logs
 just test               # go test ./...
 just vet                # go vet ./...
 just clean              # remove binaries
@@ -168,19 +168,19 @@ This ensures each Forge session has its own isolated workspace, preventing confl
 
 Use `--skip-worktree` to disable this behavior and run directly in your current directory.
 
-### Server mode (persistent sessions)
+### Gateway mode (persistent sessions)
 ```bash
 cp .env.example .env        # set ANTHROPIC_API_KEY
-just dev-server             # local dev foreground (reads .env, builds agent first)
-just dev-server-daemon      # local dev daemon mode
+just dev-gateway             # local dev foreground (reads .env, builds agent first)
+just dev-gateway-daemon      # local dev daemon mode
 
 # In another terminal
-forge --server http://localhost:3000
-forge --server http://localhost:3000 --resume <session-id>
+forge --gateway http://localhost:3000
+forge --gateway http://localhost:3000 --resume <session-id>
 
 # Manual daemon control:
-forge server -daemon                           # default: /tmp/forge/sessions/forge.{pid,log}
-forge server -daemon -pid-file /path/to/file   # custom paths
+forge gateway -daemon                           # default: /tmp/forge/sessions/forge.{pid,log}
+forge gateway -daemon -pid-file /path/to/file   # custom paths
 kill $(cat /tmp/forge/sessions/forge.pid)      # stop
 ```
 
@@ -203,12 +203,12 @@ forge stats --sessions         # per-session breakdown
 6. Agent runs ConversationLoop, executes tools, talks to Anthropic
 7. On CLI exit, agent subprocess is terminated (ephemeral session)
 
-### Server Mode (persistent)
-1. CLI sends HTTP requests to the gateway server (`--server` flag)
-2. Server creates sessions and manages metadata via an in-memory bus
-3. On first message, server spawns agent in tmux: `forge agent --port X`
-4. Server forwards messages to the agent's HTTP API
-5. Server relays agent SSE events back to CLI subscribers via the bus
+### Gateway Mode (persistent)
+1. CLI sends HTTP requests to the gateway (`--gateway` flag)
+2. Gateway creates sessions and manages metadata via an in-memory bus
+3. On first message, gateway spawns agent in tmux: `forge agent --port X`
+4. Gateway forwards messages to the agent's HTTP API
+5. Gateway relays agent SSE events back to CLI subscribers via the bus
 6. Agent runs ConversationLoop, executes tools, talks to Anthropic
 7. Sessions persist as JSONL for resume
 
@@ -259,7 +259,7 @@ Forge includes a built-in learning mechanism for capturing actionable gotchas:
 
 ## API endpoints
 
-### Server (gateway) — server mode only
+### Gateway — gateway mode only
 
 ```
 POST   /sessions                      create session (accepts metadata)
@@ -272,7 +272,7 @@ GET    /sessions/{sessionId}/events   SSE stream of OutboundEvents (relayed from
 
 ```
 GET    /health                        health check
-POST   /messages                      receive message (from CLI or server)
+POST   /messages                      receive message (from CLI or gateway)
 GET    /events                        SSE stream of OutboundEvents
 POST   /interrupt                     interrupt current work
 ```
@@ -288,8 +288,8 @@ POST   /interrupt                     interrupt current work
 ## Environment variables
 
 - `ANTHROPIC_API_KEY` — required by the agent (not the server)
-- `GATEWAY_PORT` — server listen port (default: 3000)
-- `GATEWAY_HOST` — server listen host (default: 0.0.0.0)
+- `GATEWAY_PORT` — gateway listen port (default: 3000)
+- `GATEWAY_HOST` — gateway listen host (default: 0.0.0.0)
 - `WORKSPACE_DIR` — default working directory (default: /tmp/forge/workspace)
 - `SESSIONS_DIR` — JSONL session storage (default: /tmp/forge/sessions)
 - `FORGE_BIN` — path to forge binary (default: forge)
@@ -299,12 +299,12 @@ POST   /interrupt                     interrupt current work
 - `~/.forge/settings.json` may contain model aliases like `opus[1m]` that the
   Anthropic API doesn't understand. Agent filters these — only values
   starting with `claude-` are passed through.
-- Server loads `.env` from project root at startup (custom loader in
-  `cmd/forge/server.go`). Explicit env vars take precedence.
+- Gateway loads `.env` from project root at startup (custom loader in
+  `cmd/forge/gateway.go`). Explicit env vars take precedence.
 - Anthropic API requires `tool_result` blocks immediately after `tool_use` in
   the message history. The ConversationLoop persists these to session JSONL so
   resume reconstructs valid history.
-- The server spawns agents using the unified `forge agent` subcommand. The
+- The gateway spawns agents using the unified `forge agent` subcommand. The
   binary path can be customized via `FORGE_BIN` env var.
 
 ## Test data
@@ -324,7 +324,7 @@ Community College, etc.).
 - Go, standard library where possible
 - `internal/` for all packages (no public API yet)
 - Platform-agnostic API: `source` is a free-form string, `metadata` is opaque
-- Adapters are external HTTP clients — the server has no platform-specific code
+- Adapters are external HTTP clients — the gateway has no platform-specific code
 - Configuration in `.forge/` directory (fallback: `.claude/` for backward compat)
 
 # Agent Learnings

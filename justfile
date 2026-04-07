@@ -26,24 +26,24 @@ install:
 dev: build
   ./forge
 
-# Build and run server (unified binary)
-dev-server: build
-  ./forge server
+# Build and run gateway (unified binary)
+dev-gateway: build
+  ./forge gateway
 
-# Build and run server in daemon mode (unified binary)
-dev-server-daemon: build
-  ./forge server -daemon
+# Build and run gateway in daemon mode (unified binary)
+dev-gateway-daemon: build
+  ./forge gateway -daemon
 
-# Stop daemon server
-stop-server:
+# Stop daemon gateway
+stop-gateway:
   @if [ -f /tmp/forge/sessions/forge.pid ]; then \
-    kill $(cat /tmp/forge/sessions/forge.pid) && echo "Server stopped"; \
+    kill $(cat /tmp/forge/sessions/forge.pid) && echo "Gateway stopped"; \
   else \
     echo "No PID file found at /tmp/forge/sessions/forge.pid"; \
   fi
 
-# Tail server logs (daemon mode)
-tail-server:
+# Tail gateway logs (daemon mode)
+tail-gateway:
   tail -f /tmp/forge/sessions/forge.log
 
 # Build and run CLI

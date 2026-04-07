@@ -60,7 +60,7 @@ type taskTracker struct {
 }
 
 type model struct {
-	server          string
+	gateway         string
 	sessionID       string
 	interactiveMode bool // true if talking directly to agent, false if via gateway
 	textArea        textarea.Model
@@ -118,7 +118,8 @@ type sessionTitleMsg string // async session title from Haiku
 func runCLI(args []string) int {
 	fs := flag.NewFlagSet("forge", flag.ExitOnError)
 	resume := fs.String("resume", "", "session ID to resume")
-	server := fs.String("server", "", "connect to remote forge server (e.g. http://localhost:3000)")
+	gatewayFlag := fs.String("gateway", "", "connect to remote forge gateway (e.g. http://localhost:3000)")
+	serverFlag := fs.String("server", "", "deprecated: use --gateway instead")
 	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
 	specPath := fs.String("spec", "", "path to a spec file to implement directly")
 	branch := fs.String("branch", "", "branch to check out (reuses existing worktree if found)")
@@ -155,15 +156,23 @@ func runCLI(args []string) int {
 		effectiveMode = "swe"
 	}
 
+	// Handle deprecated --server flag
+	if *serverFlag != "" {
+		fmt.Fprintln(os.Stderr, "note: --server is deprecated, use --gateway")
+		if *gatewayFlag == "" {
+			*gatewayFlag = *serverFlag
+		}
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, errorStyle.Render("could not determine working directory: "+err.Error()))
 		os.Exit(1)
 	}
 
-	// Determine mode: interactive (default) or remote server
+	// Determine mode: interactive (default) or remote gateway
 	var sessionID string
-	var serverURL string
+	var gatewayURL string
 	var agentCleanup func()
 	var worktreePath string
 	var worktreeBranch string
@@ -187,16 +196,16 @@ func runCLI(args []string) int {
 		)
 	}
 
-	if *server != "" {
-		// Remote server mode
-		serverURL = *server
+	if *gatewayFlag != "" {
+		// Remote gateway mode
+		gatewayURL = *gatewayFlag
 		if *resume != "" {
 			sessionID = *resume
 		} else {
-			sid, err := createSession(serverURL, cwd)
+			sid, err := createSession(gatewayURL, cwd)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, errorStyle.Render("could not connect to forge server at "+serverURL))
-				fmt.Fprintf(os.Stderr, "  %v\n\nhint: start the server with `just dev-server`\n", err)
+				fmt.Fprintln(os.Stderr, errorStyle.Render("could not connect to forge gateway at "+gatewayURL))
+				fmt.Fprintf(os.Stderr, "  %v\n\nhint: start the gateway with `just dev-gateway`\n", err)
 				os.Exit(1)
 			}
 			sessionID = sid
@@ -205,7 +214,7 @@ func runCLI(args []string) int {
 		// Interactive mode (default) - spawn local agent
 		if *resume != "" {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("cannot resume in interactive mode"))
-			fmt.Fprintln(os.Stderr, "  hint: use --server to connect to a persistent server")
+			fmt.Fprintln(os.Stderr, "  hint: use --gateway to connect to a persistent gateway")
 			os.Exit(1)
 		}
 
@@ -215,7 +224,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 		sessionID = sid
-		serverURL = url
+		gatewayURL = url
 		worktreePath = wtPath
 		worktreeBranch = wtBranch
 		agentCleanup = cleanup
@@ -281,9 +290,9 @@ func runCLI(args []string) int {
 	prURL := detectCurrentPR(effectiveCWD)
 
 	m := model{
-		server:          serverURL,
+		gateway:         gatewayURL,
 		sessionID:       sessionID,
-		interactiveMode: (*server == ""),
+		interactiveMode: (*gatewayFlag == ""),
 		textArea:        ta,
 		output:          []string{},
 		queue:           []string{},
@@ -304,9 +313,9 @@ func runCLI(args []string) int {
 	// Add welcome message
 	modeDesc := "interactive"
 	resumeHint := ""
-	if *server != "" {
+	if *gatewayFlag != "" {
 		modeDesc = "remote"
-		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge-cli --server " + *server + " --resume " + sessionID)
+		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge --gateway " + *gatewayFlag + " --resume " + sessionID)
 	} else {
 		if worktreeBranch != "" {
 			resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge --branch " + worktreeBranch)
@@ -317,7 +326,7 @@ func runCLI(args []string) int {
 
 	m.output = append(m.output,
 		headerStyle.Render("forge cli")+" "+dimStyle.Render("— "+modeDesc+" — "+m.sessionTitle),
-		dimStyle.Render("server: "+serverURL),
+		dimStyle.Render("gateway: "+gatewayURL),
 	)
 
 	// Add worktree info if present
@@ -348,7 +357,7 @@ func runCLI(args []string) int {
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Start SSE listener in background
-	go listenEvents(p, serverURL, sessionID, m.interactiveMode)
+	go listenEvents(p, gatewayURL, sessionID, m.interactiveMode)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1211,9 +1220,9 @@ func (m model) sendMessage(text string) tea.Cmd {
 
 		var url string
 		if m.interactiveMode {
-			url = fmt.Sprintf("%s/messages", m.server)
+			url = fmt.Sprintf("%s/messages", m.gateway)
 		} else {
-			url = fmt.Sprintf("%s/sessions/%s/messages", m.server, m.sessionID)
+			url = fmt.Sprintf("%s/sessions/%s/messages", m.gateway, m.sessionID)
 		}
 
 		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
@@ -1246,9 +1255,9 @@ func (m model) sendInterrupt() tea.Cmd {
 
 		var url string
 		if m.interactiveMode {
-			url = fmt.Sprintf("%s/interrupt", m.server)
+			url = fmt.Sprintf("%s/interrupt", m.gateway)
 		} else {
-			url = fmt.Sprintf("%s/sessions/%s/interrupt", m.server, m.sessionID)
+			url = fmt.Sprintf("%s/sessions/%s/interrupt", m.gateway, m.sessionID)
 		}
 
 		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
@@ -1265,9 +1274,9 @@ func (m model) sendInterrupt() tea.Cmd {
 	}
 }
 
-func createSession(server, cwd string) (string, error) {
+func createSession(gatewayURL, cwd string) (string, error) {
 	body, _ := json.Marshal(map[string]string{"cwd": cwd})
-	resp, err := http.Post(server+"/sessions", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(gatewayURL+"/sessions", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -1282,12 +1291,12 @@ func createSession(server, cwd string) (string, error) {
 	return result.SessionID, nil
 }
 
-func listenEvents(p *tea.Program, server, sessionID string, interactiveMode bool) {
+func listenEvents(p *tea.Program, gatewayURL, sessionID string, interactiveMode bool) {
 	var url string
 	if interactiveMode {
-		url = fmt.Sprintf("%s/events", server)
+		url = fmt.Sprintf("%s/events", gatewayURL)
 	} else {
-		url = fmt.Sprintf("%s/sessions/%s/events", server, sessionID)
+		url = fmt.Sprintf("%s/sessions/%s/events", gatewayURL, sessionID)
 	}
 
 	resp, err := http.Get(url)
@@ -1713,9 +1722,9 @@ func (m model) sendReview(baseBranch string) tea.Cmd {
 		var url string
 		switch m.interactiveMode {
 		case true:
-			url = fmt.Sprintf("%s/review", m.server)
+			url = fmt.Sprintf("%s/review", m.gateway)
 		default:
-			url = fmt.Sprintf("%s/sessions/%s/review", m.server, m.sessionID)
+			url = fmt.Sprintf("%s/sessions/%s/review", m.gateway, m.sessionID)
 		}
 
 		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
