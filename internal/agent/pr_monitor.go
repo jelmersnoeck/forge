@@ -20,6 +20,7 @@ const prMonitorInterval = 5 * time.Minute
 // PRInfo holds the current state of a PR for the working branch.
 type PRInfo struct {
 	Number       int
+	URL          string
 	Branch       string
 	Base         string
 	State        string // "OPEN", "CLOSED", "MERGED"
@@ -130,6 +131,14 @@ func (w *Worker) prHealthCheck(ctx context.Context) (needsFix bool, fixMsg strin
 		return false, "", true
 	}
 
+	// Notify the CLI about the PR URL so it can display it in the status bar.
+	if info.URL != "" {
+		emit(types.OutboundEvent{
+			Type:    "pr_url",
+			Content: info.URL,
+		})
+	}
+
 	// Check if rebase is needed.
 	if info.NeedsRebase {
 		emit(types.OutboundEvent{
@@ -184,13 +193,14 @@ func getPRInfo(cwd string) (*PRInfo, error) {
 
 	// Query PR for this branch via gh.
 	out, err := tools.GHOutput(cwd, "pr", "view", "--json",
-		"number,headRefName,baseRefName,state,statusCheckRollup")
+		"number,url,headRefName,baseRefName,state,statusCheckRollup")
 	if err != nil {
 		return nil, fmt.Errorf("no PR found for branch %s", branch)
 	}
 
 	var pr struct {
 		Number      int    `json:"number"`
+		URL         string `json:"url"`
 		HeadRefName string `json:"headRefName"`
 		BaseRefName string `json:"baseRefName"`
 		State       string `json:"state"`
@@ -206,6 +216,7 @@ func getPRInfo(cwd string) (*PRInfo, error) {
 
 	info := &PRInfo{
 		Number:   pr.Number,
+		URL:      pr.URL,
 		Branch:   pr.HeadRefName,
 		Base:     pr.BaseRefName,
 		State:    pr.State,

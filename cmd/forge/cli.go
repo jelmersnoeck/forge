@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -83,6 +84,9 @@ type model struct {
 
 	// Spec mode
 	initialPrompt string // auto-sent on startup (e.g. from --spec)
+
+	// PR tracking
+	prURL string // PR URL from pr_monitor or PRCreate
 }
 
 type serverEvent types.OutboundEvent
@@ -597,9 +601,12 @@ func (m model) View() string {
 		promptStyle.Render("> ") + m.textInput.View(),
 	)
 
-	// Build status line below input: cwd (left) | cost (right)
+	// Build status line below input: cwd (left) | PR (center) | cost (right)
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("8")).
+		Faint(true)
+	prStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("4")).
 		Faint(true)
 
 	cwdDisplay := m.cwd
@@ -616,8 +623,13 @@ func (m model) View() string {
 		costPart = fmt.Sprintf("%s | %s", tokens, costStr)
 	}
 
-	// Layout: "  cwd" on left, cost on right, padded to terminal width
-	left := statusStyle.Render("  " + cwdDisplay)
+	// Build left side: cwd + optional PR link
+	leftParts := []string{"  " + cwdDisplay}
+	if m.prURL != "" {
+		leftParts = append(leftParts, prStyle.Render(m.prURL))
+	}
+	left := statusStyle.Render(strings.Join(leftParts, "  "))
+
 	var statusLine string
 	switch {
 	case costPart != "":
@@ -871,6 +883,13 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 	case "review_error":
 		m.flushText()
 		m.output = append(m.output, errorStyle.Render("  [review error] ")+event.Content)
+
+	case "pr_url":
+		m.prURL = event.Content
+
+	case "pr_monitor":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [pr] ")+event.Content)
 	}
 }
 
@@ -879,6 +898,11 @@ func (m *model) flushText() {
 	m.textBuf = ""
 	if text == "" {
 		return
+	}
+
+	// Sniff for GitHub PR URLs if we don't already have one.
+	if m.prURL == "" {
+		m.prURL = extractPRURL(text)
 	}
 
 	rendered, err := m.renderer.Render(text)
@@ -1286,6 +1310,14 @@ func (m *model) updateSlashSuggestions() {
 // matches to cycle through.
 func (m *model) hasSuggestions() bool {
 	return m.textInput.ShowSuggestions && len(m.textInput.MatchedSuggestions()) > 0
+}
+
+// prURLRe matches GitHub pull request URLs in text.
+var prURLRe = regexp.MustCompile(`https://github\.com/[^\s/]+/[^\s/]+/pull/\d+`)
+
+// extractPRURL finds the first GitHub PR URL in text, or returns "".
+func extractPRURL(text string) string {
+	return prURLRe.FindString(text)
 }
 
 // isReviewCommand checks if the input is a /review command.

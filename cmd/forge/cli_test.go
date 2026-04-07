@@ -255,3 +255,40 @@ func TestHasSuggestions(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractPRURL(t *testing.T) {
+	r := require.New(t)
+
+	tests := map[string]struct {
+		text string
+		want string
+	}{
+		"PR URL in text": {
+			text: "Draft PR created: https://github.com/jelmersnoeck/forge/pull/134\n\nBranch: jelmer/foo -> main",
+			want: "https://github.com/jelmersnoeck/forge/pull/134",
+		},
+		"PR URL inline": {
+			text: "Check out https://github.com/abed/dreamatorium/pull/7 for the timeline fix",
+			want: "https://github.com/abed/dreamatorium/pull/7",
+		},
+		"no PR URL": {
+			text: "Troy and Abed in the morning!",
+			want: "",
+		},
+		"github URL but not a PR": {
+			text: "See https://github.com/greendale/repo/issues/42",
+			want: "",
+		},
+		"empty string": {
+			text: "",
+			want: "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := extractPRURL(tc.text)
+			r.Equal(tc.want, got)
+		})
+	}
+}
