@@ -21,39 +21,35 @@ const (
 // ReflectTool returns the tool definition for session reflection.
 func ReflectTool() types.ToolDefinition {
 	return types.ToolDefinition{
-		Name:        "Reflect",
-		Description: "Reflect on the current session, capturing learnings, mistakes, and successful patterns. This information is saved to .forge/learnings/ for future self-improvement.",
-		ReadOnly:    false,
+		Name: "Reflect",
+		Description: `Save actionable learnings discovered during this session. Each learning should be a specific, reusable insight — a gotcha, workaround, or discovery that would help future sessions avoid mistakes or find solutions faster.
+
+Good learnings:
+- "DuckDuckGo Instant Answer API returns HTTP 202 for bot-detected requests — use Anthropic's server-side web_search instead"
+- "git rebase in worktrees requires --onto with explicit SHAs; interactive mode hangs"
+- "The Anthropic SDK at v1.27.1 silently drops tool_result blocks if they're not immediately after tool_use"
+
+Bad learnings (don't do these):
+- "Implemented feature X" (that's a commit message, not a learning)
+- "Tests passed" (obvious, not actionable)
+- "User asked to fix a bug" (that's a summary, not an insight)`,
+		ReadOnly: false,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"summary": map[string]any{
 					"type":        "string",
-					"description": "Brief summary of what was accomplished in this session",
+					"description": "One-line summary of what the session accomplished (for the filename only)",
 				},
-				"mistakes": map[string]any{
+				"learnings": map[string]any{
 					"type":        "array",
-					"description": "List of mistakes made or things that could have been done better",
-					"items": map[string]any{
-						"type": "string",
-					},
-				},
-				"successes": map[string]any{
-					"type":        "array",
-					"description": "List of patterns or approaches that worked well",
-					"items": map[string]any{
-						"type": "string",
-					},
-				},
-				"suggestions": map[string]any{
-					"type":        "array",
-					"description": "Ideas for future improvement or things to remember",
+					"description": "Actionable gotchas, workarounds, or discoveries. Each entry should be specific enough that a future agent can act on it without context.",
 					"items": map[string]any{
 						"type": "string",
 					},
 				},
 			},
-			"required": []string{"summary"},
+			"required": []string{"summary", "learnings"},
 		},
 		Handler: executeReflect,
 	}
@@ -65,11 +61,12 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		return types.ToolResult{IsError: true}, err
 	}
 
-	mistakes := extractStringArray(input, "mistakes")
-	successes := extractStringArray(input, "successes")
-	suggestions := extractStringArray(input, "suggestions")
+	learnings := extractStringArray(input, "learnings")
+	if len(learnings) == 0 {
+		return types.ToolResult{IsError: true}, fmt.Errorf("learnings array is required and must contain at least one entry")
+	}
 
-	outPath, err := writeReflection(ctx.CWD, summary, mistakes, successes, suggestions)
+	outPath, err := writeReflection(ctx.CWD, summary, learnings)
 	if err != nil {
 		return types.ToolResult{IsError: true}, err
 	}
@@ -77,43 +74,15 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 	return textResult(fmt.Sprintf("Reflection saved to %s", outPath)), nil
 }
 
-// SaveReflection writes a reflection file directly (no tool registry needed).
-// Used by the loop's auto-reflection on session completion.
-func SaveReflection(cwd, summary string) error {
-	_, err := writeReflection(cwd, summary, nil, nil, nil)
-	return err
-}
-
 // writeReflection formats and persists a reflection file, returning its path.
-func writeReflection(cwd, summary string, mistakes, successes, suggestions []string) (string, error) {
+func writeReflection(cwd, summary string, learnings []string) (string, error) {
 	now := time.Now()
 
 	var entry strings.Builder
-	fmt.Fprintf(&entry, "# Session Reflection - %s\n\n", now.Format("2006-01-02 15:04"))
-	fmt.Fprintf(&entry, "**Summary:** %s\n\n", summary)
+	fmt.Fprintf(&entry, "# Learnings - %s\n\n", now.Format("2006-01-02 15:04"))
 
-	if len(mistakes) > 0 {
-		entry.WriteString("**Mistakes & Improvements:**\n")
-		for _, m := range mistakes {
-			fmt.Fprintf(&entry, "- %s\n", m)
-		}
-		entry.WriteString("\n")
-	}
-
-	if len(successes) > 0 {
-		entry.WriteString("**Successful Patterns:**\n")
-		for _, s := range successes {
-			fmt.Fprintf(&entry, "- %s\n", s)
-		}
-		entry.WriteString("\n")
-	}
-
-	if len(suggestions) > 0 {
-		entry.WriteString("**Future Suggestions:**\n")
-		for _, s := range suggestions {
-			fmt.Fprintf(&entry, "- %s\n", s)
-		}
-		entry.WriteString("\n")
+	for _, l := range learnings {
+		fmt.Fprintf(&entry, "- %s\n", l)
 	}
 
 	dir := filepath.Join(cwd, learningsDir)

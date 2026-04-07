@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -110,7 +109,6 @@ func (w *Worker) Run(ctx context.Context) {
 			Model:        model,
 			MaxTurns:     0, // unlimited
 			AuditLogger:  &StdAuditLogger{},
-			OnComplete:   autoReflect(w.cwd),
 		}
 		l := loop.New(opts)
 
@@ -459,58 +457,4 @@ func (w *Worker) connectMCPServers(ctx context.Context, store *mcp.Store) {
 
 		log.Printf("[agent:%s] MCP server %q connected (lazy tools)", w.sessionID, name)
 	}
-}
-
-// autoReflect returns an OnComplete callback that saves a reflection summary
-// built from conversation history. Errors are logged, never propagated.
-func autoReflect(cwd string) func([]types.ChatMessage) {
-	return func(history []types.ChatMessage) {
-		summary := buildReflectionSummary(history)
-		if summary == "" {
-			return
-		}
-		if err := tools.SaveReflection(cwd, summary); err != nil {
-			log.Printf("[auto-reflect] failed to save reflection: %v", err)
-		}
-	}
-}
-
-// buildReflectionSummary extracts a short summary from conversation history.
-//
-// Format: "User asked: <first prompt>. Tools used: Bash, Edit, Read (5 calls)"
-func buildReflectionSummary(history []types.ChatMessage) string {
-	var userPrompt string
-	toolCounts := map[string]int{}
-
-	for _, msg := range history {
-		for _, block := range msg.Content {
-			switch {
-			case block.Type == "text" && msg.Role == "user" && userPrompt == "":
-				userPrompt = block.Text
-			case block.Type == "tool_use":
-				toolCounts[block.Name]++
-			}
-		}
-	}
-
-	if len(toolCounts) == 0 {
-		return ""
-	}
-
-	// Truncate prompt to keep summary concise.
-	const maxPromptLen = 120
-	prompt := userPrompt
-	if len(prompt) > maxPromptLen {
-		prompt = prompt[:maxPromptLen] + "..."
-	}
-
-	var toolNames []string
-	total := 0
-	for name, count := range toolCounts {
-		toolNames = append(toolNames, name)
-		total += count
-	}
-	sort.Strings(toolNames)
-
-	return fmt.Sprintf("User asked: %s. Tools used: %s (%d calls)", prompt, strings.Join(toolNames, ", "), total)
 }
