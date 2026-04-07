@@ -272,7 +272,7 @@ func TestQueueImmediate_BlocksEnvFile(t *testing.T) {
 	r := require.New(t)
 	dir := t.TempDir()
 
-	result, err := handleQueueImmediate(map[string]any{
+	result, err := QueueImmediateTool.Handler(map[string]any{
 		"command": "cat .env.production",
 	}, newTestCtx(t, dir))
 	r.NoError(err)
@@ -284,7 +284,7 @@ func TestQueueOnComplete_BlocksEnvFile(t *testing.T) {
 	r := require.New(t)
 	dir := t.TempDir()
 
-	result, err := handleQueueOnComplete(map[string]any{
+	result, err := QueueOnCompleteTool.Handler(map[string]any{
 		"command": "source .env.local",
 	}, newTestCtx(t, dir))
 	r.NoError(err)

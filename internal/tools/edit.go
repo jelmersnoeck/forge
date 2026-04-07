@@ -42,16 +42,14 @@ func EditTool() types.ToolDefinition {
 }
 
 func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	filePath, ok := input["file_path"].(string)
-	if !ok {
-		return types.ToolResult{IsError: true}, fmt.Errorf("file_path is required")
+	filePath, err := requireString(input, "file_path")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
-
-	oldString, ok := input["old_string"].(string)
-	if !ok {
-		return types.ToolResult{IsError: true}, fmt.Errorf("old_string is required")
+	oldString, err := requireString(input, "old_string")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
-
 	newString, ok := input["new_string"].(string)
 	if !ok {
 		return types.ToolResult{IsError: true}, fmt.Errorf("new_string is required")
@@ -61,70 +59,36 @@ func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		return envFileError(filePath), nil
 	}
 
-	replaceAll := false
-	if ra, ok := input["replace_all"].(bool); ok {
-		replaceAll = ra
-	}
+	replaceAll := optionalBool(input, "replace_all", false)
 
-	// Read file
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return types.ToolResult{
-				Content: []types.ToolResultContent{{
-					Type: "text",
-					Text: fmt.Sprintf("file not found: %s", filePath),
-				}},
-				IsError: true,
-			}, nil
+			return errResultf("file not found: %s", filePath)
 		}
 		return types.ToolResult{IsError: true}, err
 	}
 
 	content := string(data)
-
-	// Count occurrences
 	count := strings.Count(content, oldString)
 
 	switch {
 	case count == 0:
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("old_string not found in %s", filePath),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("old_string not found in %s", filePath)
 	case count > 1 && !replaceAll:
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("old_string appears %d times in %s; use replace_all: true to replace all occurrences", count, filePath),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("old_string appears %d times in %s; use replace_all: true to replace all occurrences", count, filePath)
 	}
 
-	// Perform replacement
-	var newContent string
+	n := 1
 	if replaceAll {
-		newContent = strings.ReplaceAll(content, oldString, newString)
-	} else {
-		newContent = strings.Replace(content, oldString, newString, 1)
+		n = -1
 	}
+	newContent := strings.Replace(content, oldString, newString, n)
 
-	// Write back
 	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: fmt.Sprintf("failed to write file: %v", err),
-			}},
-			IsError: true,
-		}, nil
+		return errResultf("failed to write file: %v", err)
 	}
 
-	// Invalidate read dedup — next Read must return fresh content.
 	if ctx.ReadState != nil {
 		delete(ctx.ReadState, filePath)
 	}
@@ -134,10 +98,5 @@ func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		replacedCount = 1
 	}
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{{
-			Type: "text",
-			Text: fmt.Sprintf("replaced %d occurrence(s) in %s", replacedCount, filePath),
-		}},
-	}, nil
+	return textResult(fmt.Sprintf("replaced %d occurrence(s) in %s", replacedCount, filePath)), nil
 }

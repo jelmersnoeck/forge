@@ -90,7 +90,7 @@ func handleUseMCPTool(input map[string]any, ctx types.ToolContext) (types.ToolRe
 	case "call":
 		return handleCallTool(ctx, server, tool, arguments)
 	default:
-		return errResult("Unknown action %q. Use list_servers, list_tools, or call.", action), nil
+		return errResultf("Unknown action %q. Use list_servers, list_tools, or call.", action)
 	}
 }
 
@@ -106,12 +106,12 @@ func handleListServers() (types.ToolResult, error) {
 
 func handleListTools(server string) (types.ToolResult, error) {
 	if server == "" {
-		return errResult("\"server\" is required for list_tools."), nil
+		return errResult("\"server\" is required for list_tools.")
 	}
 
 	tools, err := mcpGatewayStore.ListTools(server)
 	if err != nil {
-		return errResult("%v", err), nil
+		return errResultf("%v", err)
 	}
 
 	type toolSummary struct {
@@ -135,10 +135,10 @@ func handleListTools(server string) (types.ToolResult, error) {
 
 func handleCallTool(ctx types.ToolContext, server, tool string, arguments map[string]any) (types.ToolResult, error) {
 	if server == "" {
-		return errResult("\"server\" is required for call."), nil
+		return errResult("\"server\" is required for call.")
 	}
 	if tool == "" {
-		return errResult("\"tool\" is required for call."), nil
+		return errResult("\"tool\" is required for call.")
 	}
 	if arguments == nil {
 		arguments = make(map[string]any)
@@ -146,7 +146,7 @@ func handleCallTool(ctx types.ToolContext, server, tool string, arguments map[st
 
 	result, err := mcpGatewayStore.CallTool(ctx.Ctx, server, tool, arguments)
 	if err != nil {
-		return errResult("MCP call failed: %v", err), nil
+		return errResultf("MCP call failed: %v", err)
 	}
 
 	content := make([]types.ToolResultContent, 0, len(result.Content))
@@ -193,17 +193,4 @@ func firstSentence(s string) string {
 		return s[:200] + "..."
 	}
 	return s
-}
-
-func textResult(msg string) types.ToolResult {
-	return types.ToolResult{
-		Content: []types.ToolResultContent{{Type: "text", Text: msg}},
-	}
-}
-
-func errResult(format string, args ...any) types.ToolResult {
-	return types.ToolResult{
-		Content: []types.ToolResultContent{{Type: "text", Text: fmt.Sprintf(format, args...)}},
-		IsError: true,
-	}
 }

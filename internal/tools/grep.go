@@ -57,63 +57,45 @@ func GrepTool() types.ToolDefinition {
 }
 
 func grepHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	pattern, ok := input["pattern"].(string)
-	if !ok {
-		return types.ToolResult{IsError: true}, fmt.Errorf("pattern is required")
+	pattern, err := requireString(input, "pattern")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
 
-	searchPath := ctx.CWD
-	if p, ok := input["path"].(string); ok && p != "" {
-		searchPath = p
-	}
+	searchPath := optionalString(input, "path", ctx.CWD)
 
-	// Block direct .env file access
 	if isEnvFile(searchPath) {
 		return envFileError(searchPath), nil
 	}
 
-	outputMode := "files_with_matches"
-	if om, ok := input["output_mode"].(string); ok {
-		outputMode = om
-	}
+	outputMode := optionalString(input, "output_mode", "files_with_matches")
 
-	// Build rg arguments
 	args := []string{}
 
-	// Output mode flags
 	switch outputMode {
 	case "files_with_matches":
 		args = append(args, "-l")
 	case "count":
 		args = append(args, "-c")
 	case "content":
-		args = append(args, "-n") // line numbers
-		// Context lines
-		if c, ok := input["-C"].(float64); ok {
+		args = append(args, "-n")
+		if c := optionalFloat(input, "-C", 0); c > 0 {
 			args = append(args, fmt.Sprintf("-C%d", int(c)))
 		}
 	}
 
-	// Case insensitive
-	if i, ok := input["-i"].(bool); ok && i {
+	if optionalBool(input, "-i", false) {
 		args = append(args, "-i")
 	}
 
-	// Glob filter
-	if glob, ok := input["glob"].(string); ok && glob != "" {
+	if glob := optionalString(input, "glob", ""); glob != "" {
 		args = append(args, "--glob", glob)
 	}
 
-	// Ripgrep skips hidden files by default, so .env files are already
-	// excluded from directory searches. Direct .env path access is guarded
-	// by the isEnvFile check above. We add explicit exclusions as
-	// defense-in-depth in case hidden file search gets enabled upstream.
+	// Defense-in-depth: exclude .env files even if hidden file search is enabled
 	args = append(args, "--glob", "!.env", "--glob", "!.env.*")
-
-	// Pattern and path
 	args = append(args, pattern, searchPath)
 
-	// Execute ripgrep
 	execCtx, cancel := context.WithTimeout(ctx.Ctx, 30*time.Second)
 	defer cancel()
 
@@ -122,69 +104,35 @@ func grepHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
-	// rg exit codes:
-	// 0 = matches found
-	// 1 = no matches
-	// 2+ = error
 	output := stdout.String()
 
 	if err != nil {
-		// Check for exit code
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode := exitErr.ExitCode()
-			if exitCode == 1 {
-				// No matches found, not an error
-				return types.ToolResult{
-					Content: []types.ToolResultContent{{
-						Type: "text",
-						Text: "(no matches)",
-					}},
-				}, nil
-			}
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return textResult("(no matches)"), nil
 		}
 
-		// Real error
 		errMsg := stderr.String()
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("ripgrep error: %v", err)
 		}
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: errMsg,
-			}},
-			IsError: true,
-		}, nil
+		return errResult(errMsg)
 	}
 
-	// Apply head_limit if specified
-	if limit, ok := input["head_limit"].(float64); ok && limit > 0 {
+	if limit := optionalFloat(input, "head_limit", 0); limit > 0 {
 		lines := strings.Split(output, "\n")
-		limitInt := int(limit)
-		if len(lines) > limitInt {
-			lines = lines[:limitInt]
+		if len(lines) > int(limit) {
+			lines = lines[:int(limit)]
 		}
 		output = strings.Join(lines, "\n")
 	}
 
-	// Trim trailing newline
 	output = strings.TrimRight(output, "\n")
 
 	if output == "" {
-		return types.ToolResult{
-			Content: []types.ToolResultContent{{
-				Type: "text",
-				Text: "(no matches)",
-			}},
-		}, nil
+		return textResult("(no matches)"), nil
 	}
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{{
-			Type: "text",
-			Text: output,
-		}},
-	}, nil
+	return textResult(output), nil
 }

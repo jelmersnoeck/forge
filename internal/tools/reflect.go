@@ -58,9 +58,9 @@ func ReflectTool() types.ToolDefinition {
 }
 
 func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
-	summary, _ := input["summary"].(string)
-	if summary == "" {
-		return types.ToolResult{IsError: true}, fmt.Errorf("summary is required")
+	summary, err := requireString(input, "summary")
+	if err != nil {
+		return types.ToolResult{IsError: true}, err
 	}
 
 	mistakes := extractStringArray(input, "mistakes")
@@ -118,11 +118,7 @@ func executeReflect(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		return types.ToolResult{IsError: true}, fmt.Errorf("update .gitattributes: %v", err)
 	}
 
-	return types.ToolResult{
-		Content: []types.ToolResultContent{
-			{Type: "text", Text: fmt.Sprintf("Reflection saved to %s", outPath)},
-		},
-	}, nil
+	return textResult(fmt.Sprintf("Reflection saved to %s", outPath)), nil
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
