@@ -35,8 +35,9 @@ Files and systems that change:
 - `cmd/forge/cli_test.go` — isReviewCommand, parseReviewBase, and slash command autocomplete tests
 
 ## Behavior
-- `/review` in TUI triggers a review of the current git diff (staged + unstaged vs base branch)
+- `/review` in TUI triggers a review of committed changes on the current branch vs base branch
 - `/review --base main` allows specifying a different base branch
+- Only committed changes are reviewed (base...HEAD) — uncommitted and untracked files are excluded
 - The review spawns 5 reviewer agents in parallel:
   1. **Security** — vulnerabilities, injection, auth issues, secret leaks
   2. **Code Quality & Tests** — correctness, test coverage, error handling, edge cases
@@ -48,7 +49,10 @@ Files and systems that change:
   - Each agent gets: git diff, project AGENTS.md, active specs, reviewer-specific prompt
   - Each agent is read-only (no tool access — just analysis)
 - Results stream back as `review_finding` events
+- Per-provider summaries emitted as `review_provider_summary` events after all reviewers for that provider complete
 - Final `review_summary` event aggregates all findings by severity
+- After review completes, actionable findings (non-praise) are automatically sent to the main conversation loop for remediation
+- If only praise findings exist, review emits `done` without triggering remediation
 - Severity levels: `critical`, `warning`, `suggestion`, `praise`
 - Review can be re-run multiple times in the same session
 - Agent HTTP API: `POST /review` with optional `{"base": "main"}`
@@ -157,6 +161,8 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 func DefaultReviewers() []Reviewer          // 4 reviewers
 func DefaultReviewersWithSpec() []Reviewer   // 5 reviewers (includes spec validation)
 func GetDiff(cwd, baseBranch string) (string, error)
+func FormatFindingsMessage(results []ReviewResult) string
+func HasActionableFindings(results []ReviewResult) bool
 ```
 
 ```go
@@ -177,6 +183,7 @@ func (h *Hub) ReviewChannel() <-chan string
 
 ## Edge Cases
 - No git diff available (not a git repo, or no changes) → return early with informative message
+- Uncommitted/untracked changes exist but no committed branch delta → empty diff, no review
 - Missing ANTHROPIC_API_KEY → skip Anthropic provider, continue with others
 - Missing OPENAI_API_KEY → skip OpenAI provider, continue with others
 - All providers unavailable → return error "no providers available for review"
@@ -191,3 +198,5 @@ func (h *Hub) ReviewChannel() <-chan string
 - Deleting back to empty after typing `/review` → suggestions cleared, dropdown hidden
 - Accepting a suggestion then continuing to type (e.g. `/review --base`) → dropdown hidden after accept since input no longer matches a pure command prefix
 - Up/Down arrow while dropdown is visible → cycles suggestions (does not scroll output)
+- All findings are praise → review emits done, no remediation message sent
+- Remediation message sent to main loop → agent implements fixes, emits its own done event
