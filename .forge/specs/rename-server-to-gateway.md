@@ -1,6 +1,6 @@
 ---
 id: rename-server-to-gateway
-status: active
+status: implemented
 ---
 # Rename `forge server` subcommand to `forge gateway`
 
@@ -12,9 +12,9 @@ proxy — it spawns agents, not serves them. The `--server` CLI flag becomes
 
 ## Context
 - `cmd/forge/main.go` — subcommand dispatch + help text
-- `cmd/forge/server.go` — `runServer()` function, log messages, daemon output
-- `cmd/forge/cli.go` — `--server` flag, error messages, serverURL variables, hints
-- `justfile` — `dev-server`, `dev-server-daemon`, `stop-server`, `tail-server` recipes
+- `cmd/forge/gateway.go` — `runGateway()` function (renamed from server.go), log messages, daemon output
+- `cmd/forge/cli.go` — `--gateway` flag (was `--server`), error messages, gatewayURL variables, hints
+- `justfile` — `dev-gateway`, `dev-gateway-daemon`, `stop-gateway`, `tail-gateway` recipes
 - `AGENTS.md` — documentation references
 - `README.md` — usage docs
 - `.forge/specs/forge-architecture.md` — architecture spec
@@ -33,8 +33,8 @@ proxy — it spawns agents, not serves them. The `--server` CLI flag becomes
 ## Constraints
 - Do not rename the `internal/server/` package tree — "server" is accurate for the HTTP server code
 - Do not rename `GATEWAY_PORT`/`GATEWAY_HOST` env vars — they already say gateway
-- Do not change the `cmd/forge/server.go` filename — it can stay as-is or be renamed; prefer rename for clarity
-- Keep backward compat: `forge server` should still work but print a deprecation hint
+- File renamed from `cmd/forge/server.go` → `cmd/forge/gateway.go`
+- Backward compat preserved: `forge server` and `--server` still work with deprecation notices
 
 ## Interfaces
 No type/API changes. Pure rename of user-facing strings and flags.
