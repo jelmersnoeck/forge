@@ -211,6 +211,9 @@ func runCLI(args []string) int {
 		effectiveCWD = worktreePath
 	}
 
+	// Try to detect an existing PR for the current branch.
+	prURL := detectCurrentPR(effectiveCWD)
+
 	m := model{
 		server:          serverURL,
 		sessionID:       sessionID,
@@ -227,6 +230,7 @@ func runCLI(args []string) int {
 		initialPrompt:   initialPrompt,
 		sessionTitle:    sessionID,
 		titleGenerated:  initialPrompt != "", // already named via Haiku if we had a prompt
+		prURL:           prURL,
 	}
 
 	// Add welcome message
@@ -1318,6 +1322,18 @@ var prURLRe = regexp.MustCompile(`https://github\.com/[^\s/]+/[^\s/]+/pull/\d+`)
 // extractPRURL finds the first GitHub PR URL in text, or returns "".
 func extractPRURL(text string) string {
 	return prURLRe.FindString(text)
+}
+
+// detectCurrentPR checks if the current branch has an open PR on GitHub.
+// Returns the PR URL or "" if none found (no gh, no repo, no PR — all silent).
+func detectCurrentPR(cwd string) string {
+	cmd := exec.Command("gh", "pr", "view", "--json", "url", "--jq", ".url")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // isReviewCommand checks if the input is a /review command.
