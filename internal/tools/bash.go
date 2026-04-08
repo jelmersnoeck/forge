@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -100,6 +101,24 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	cmd := exec.CommandContext(execCtx, "bash", "-l", "-c", command)
 	cmd.Dir = ctx.CWD
 
+	// Run in a new process group so we can kill the entire tree (bash + all
+	// children like tail, sleep, etc.) on cancel/timeout. Without this,
+	// CommandContext only sends SIGKILL to the bash process itself and
+	// grandchildren keep the stdout/stderr pipes open, blocking cmd.Wait().
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// On context cancellation, kill the entire process group instead of just
+	// the root process. This ensures children (tail -f, long-running servers,
+	// etc.) are terminated too.
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+
+	// If pipes are still open after the process group is killed (shouldn't
+	// happen, but defense in depth), give up after 5 seconds instead of
+	// blocking forever.
+	cmd.WaitDelay = 5 * time.Second
+
 	// Set environment variables to prevent interactive editors from being invoked.
 	// GIT_EDITOR=true: git commands that need an editor (rebase, commit --amend, etc.)
 	//                  will use 'true' (a no-op that exits 0), preventing hangs
@@ -128,15 +147,19 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	isError := false
 	if err != nil {
-		// Check if it's a timeout
-		if execCtx.Err() == context.DeadlineExceeded {
+		// Check if it's a timeout or interrupt
+		switch execCtx.Err() {
+		case context.DeadlineExceeded:
 			output += fmt.Sprintf("\nCommand timed out after %dms", timeoutMs)
 			output += "\n\nIf this command requires user input or is long-running, consider:"
 			output += "\n- Using non-interactive flags (e.g., -y, --batch, --no-input)"
 			output += "\n- Running it in the background with '&' and redirecting output"
 			output += "\n- Breaking it into smaller, non-interactive steps"
 			isError = true
-		} else {
+		case context.Canceled:
+			output += "\nCommand interrupted"
+			isError = true
+		default:
 			// Non-zero exit code
 			isError = true
 			if len(output) == 0 {

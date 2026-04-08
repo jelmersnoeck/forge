@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
@@ -310,6 +311,70 @@ func TestBashToolInteractiveCommands(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBashToolContextCancellation verifies that cancelling the parent context
+// kills the entire process tree (including children like tail -f) and returns
+// promptly instead of blocking on zombie pipe holders.
+func TestBashToolContextCancellation(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tool := BashTool()
+
+	done := make(chan struct{})
+	var result types.ToolResult
+	var err error
+	go func() {
+		defer close(done)
+		// tail -f /dev/null blocks forever; the child process must be killed
+		// when the context is cancelled — not just the parent bash.
+		result, err = tool.Handler(
+			map[string]any{"command": "tail -f /dev/null"},
+			types.ToolContext{Ctx: ctx, CWD: dir},
+		)
+	}()
+
+	// Give the process time to start
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Returned promptly — that's the whole point of this fix.
+	case <-time.After(10 * time.Second):
+		t.Fatal("bashHandler did not return within 10s after context cancel — process group leak")
+	}
+
+	r.NoError(err)
+	r.True(result.IsError)
+	r.Contains(result.Content[0].Text, "interrupted")
+}
+
+// TestBashToolTimeoutKillsChildren verifies that a timeout kills child
+// processes (not just bash itself), preventing pipe-holder zombies.
+func TestBashToolTimeoutKillsChildren(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+	tool := BashTool()
+
+	start := time.Now()
+	result, err := tool.Handler(
+		map[string]any{
+			"command": "tail -f /dev/null",
+			"timeout": float64(500), // 500ms
+		},
+		types.ToolContext{Ctx: context.Background(), CWD: dir},
+	)
+	elapsed := time.Since(start)
+
+	r.NoError(err)
+	r.True(result.IsError)
+	r.Contains(result.Content[0].Text, "timed out")
+	// Should return within a few seconds — without the process group fix,
+	// this blocks forever because tail keeps stdout open.
+	r.Less(elapsed, 10*time.Second, "timeout took too long — child process may still be holding pipes")
 }
 
 func TestCheckInteractiveCommand(t *testing.T) {

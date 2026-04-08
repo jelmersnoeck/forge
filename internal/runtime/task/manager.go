@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -84,6 +85,14 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", task.Command)
 	cmd.Dir = task.CWD
+
+	// Run in a new process group so cancellation/timeout kills the entire
+	// process tree, not just the top-level bash.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
 
 	output, err := cmd.CombinedOutput()
 	now := time.Now()
