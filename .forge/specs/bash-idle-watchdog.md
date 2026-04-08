@@ -1,6 +1,6 @@
 ---
 id: bash-idle-watchdog
-status: draft
+status: implemented
 ---
 # Bash tool: idle watchdog, progress events, and proper process cleanup
 
@@ -14,11 +14,12 @@ Three related improvements to the Bash tool:
    actually kills child processes instead of orphaning them.
 
 ## Context
-- `internal/tools/bash.go` — bashHandler, the synchronous Bash tool
-- `internal/runtime/loop/loop.go` — executeToolsGated, executeSingleTool
-- `cmd/forge/cli.go` — TUI event rendering (tool_use, thinking, etc.)
-- `internal/types/types.go` — OutboundEvent, ToolContext (has Emit)
-- `internal/agent/worker.go` — interrupt flow: turnCtx cancel → ctx.Ctx
+- `internal/tools/bash.go` — bashHandler rewritten with streaming + watchdog
+- `internal/tools/bash_procgroup_unix.go` — setProcGroup (Setpgid + SIGTERM)
+- `internal/tools/bash_procgroup_other.go` — no-op for Windows
+- `internal/tools/bash_watchdog_test.go` — new tests for all behaviors
+- `cmd/forge/cli.go` — tool_progress event rendering + spinner for progress
+- `internal/types/types.go` — OutboundEvent (unchanged, uses existing shape)
 
 ## Behavior
 
@@ -111,15 +112,18 @@ The process is still running. You can:
 ```
 
 ## Edge Cases
-- **Command finishes during diagnostic gathering**: Check pid validity before
-  and after; if process exited, return normal output instead.
-- **Command produces output exactly at idle boundary**: Timer reset should
-  win; no false positive.
-- **Very large output**: Cap the captured output buffer at ~100KB to avoid
-  memory issues; note truncation in result.
-- **No Emit function**: ToolContext.Emit may be nil in tests; guard calls.
-- **Multiple idle timeouts**: Only fire once per command invocation. After
-  returning diagnostics, the command is left running but the tool has
-  returned — the LLM decides next steps.
-- **Platform differences**: `lsof`/`ps` flags differ on Linux vs macOS.
-  Use portable flags or detect platform.
+- **Command finishes during diagnostic gathering**: The select loop returns
+  on waitDone before idleTimer can fire if both are ready simultaneously.
+  If process exits between idle fire and diag commands, ps/lsof just
+  return empty (gracefully handled).
+- **Command produces output exactly at idle boundary**: Timer reset on
+  outputCh wins; no false positive.
+- **Very large output**: Cap at 100KB (bashMaxOutputBuffer). Once exceeded,
+  truncated flag is set and noted in result.
+- **No Emit function**: All emit calls guarded with `if emit != nil`.
+- **Multiple idle timeouts**: Only fires once — the handler returns
+  immediately on idle, ending the tool call. LLM decides next steps.
+- **Platform differences**: Setpgid and negative-PID kill work on both
+  Darwin and Linux. Windows gets no-op via build tags.
+- **Context cancellation (Ctrl+C)**: SIGTERM sent to process group via
+  cmd.Cancel. WaitDelay of 5s gives cleanup time before SIGKILL.
