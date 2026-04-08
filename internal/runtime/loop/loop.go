@@ -530,12 +530,20 @@ func (l *Loop) findToolUseBlocks(msg types.ChatMessage) []types.ChatContentBlock
 // immediately with "interrupted" results for any tools that haven't finished.
 // Running tools still get the cancelled context and will clean up on their own.
 //
+// Results flow through a channel to avoid data races between background tool
+// goroutines and the caller reading the returned slice.
+//
 //	             ┌─────────────┐
-//	ctx.Done ──►│ select {    │◄── all tools complete
-//	             │ case <-done │
+//	ctx.Done ──►│ select {    │◄── resultCh delivers completed tools
+//	             │ case result │
 //	             │ case <-ctx  │
 //	             └─────────────┘
 func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.ChatContentBlock, emit func(types.OutboundEvent)) []types.ChatContentBlock {
+	type indexedResult struct {
+		idx    int
+		result types.ChatContentBlock
+	}
+
 	type indexedBlock struct {
 		idx   int
 		block types.ChatContentBlock
@@ -550,10 +558,8 @@ func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.Chat
 		}
 	}
 
+	// Pre-fill all slots with interrupted stubs.
 	results := make([]types.ChatContentBlock, len(toolUseBlocks))
-
-	// Pre-fill all slots with interrupted results so we can bail early
-	// on context cancellation and still return valid tool_result blocks.
 	for i, block := range toolUseBlocks {
 		results[i] = types.ChatContentBlock{
 			Type:      "tool_result",
@@ -564,12 +570,11 @@ func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.Chat
 		}
 	}
 
-	// done signals that all tool goroutines have finished.
-	done := make(chan struct{})
+	total := len(toolUseBlocks)
+	resultCh := make(chan indexedResult, total)
 
+	// Background: run tools and send results through channel.
 	go func() {
-		defer close(done)
-
 		// Phase 1: ReadOnly tools — fan out.
 		if len(readOnly) > 0 {
 			var wg sync.WaitGroup
@@ -577,15 +582,10 @@ func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.Chat
 			for _, ib := range readOnly {
 				go func(idx int, block types.ChatContentBlock) {
 					defer wg.Done()
-					results[idx] = l.executeSingleTool(ctx, block, emit)
+					resultCh <- indexedResult{idx, l.executeSingleTool(ctx, block, emit)}
 				}(ib.idx, ib.block)
 			}
 			wg.Wait()
-		}
-
-		// Bail between phases if interrupted.
-		if ctx.Err() != nil {
-			return
 		}
 
 		// Phase 2: Mutating tools — sequential.
@@ -593,16 +593,22 @@ func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.Chat
 			if ctx.Err() != nil {
 				return
 			}
-			results[ib.idx] = l.executeSingleTool(ctx, ib.block, emit)
+			resultCh <- indexedResult{ib.idx, l.executeSingleTool(ctx, ib.block, emit)}
 		}
 	}()
 
-	select {
-	case <-done:
-		// All tools finished normally.
-	case <-ctx.Done():
-		// Interrupted — return whatever results we have (completed tools
-		// have real results, others have the pre-filled "interrupted" stubs).
+	// Collect results until all tools finish or context is cancelled.
+	// Only the collector goroutine (this one) writes to results[],
+	// so there's no race with background goroutines.
+	collected := 0
+	for collected < total {
+		select {
+		case ir := <-resultCh:
+			results[ir.idx] = ir.result
+			collected++
+		case <-ctx.Done():
+			return results
+		}
 	}
 
 	return results
