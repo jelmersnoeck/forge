@@ -884,3 +884,158 @@ func TestLoop_OnComplete_PanicRecovery(t *testing.T) {
 	err := l.Send(context.Background(), "Trigger a tool call", emit)
 	r.NoError(err)
 }
+
+// MockSlowToolProvider returns a tool_use that blocks until context cancel.
+type MockSlowToolProvider struct {
+	callCount int
+	mu        sync.Mutex
+}
+
+func (m *MockSlowToolProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu.Unlock()
+
+	ch := make(chan types.ChatDelta, 8)
+	go func() {
+		defer close(ch)
+		switch count {
+		case 1:
+			ch <- types.ChatDelta{Type: "tool_use_start", ID: "slow-1", Name: "slow_tool"}
+			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{}`}
+			ch <- types.ChatDelta{Type: "tool_use_end"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "tool_use"}
+		default:
+			ch <- types.ChatDelta{Type: "text_delta", Text: "Done"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+		}
+	}()
+	return ch, nil
+}
+
+// TestLoop_InterruptDuringToolExecution verifies that cancelling the context
+// while a tool is executing causes runLoop to return promptly instead of
+// blocking until the tool finishes.
+//
+//	                ┌─────────────────────┐
+//	                │ runLoop goroutine   │
+//	                │ executeToolsGated() │
+//	                │   ┌───────────────┐ │
+//	                │   │ slow tool     │ │  ← blocks 10s
+//	                │   └───────────────┘ │
+//	cancel() ──────►│ select { <-ctx }    │  ← returns immediately
+//	                └─────────────────────┘
+func TestLoop_InterruptDuringToolExecution(t *testing.T) {
+	r := require.New(t)
+
+	toolStarted := make(chan struct{})
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "slow_tool",
+		ReadOnly: false,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			close(toolStarted)
+			// Block until context is cancelled (simulating tail -f etc.)
+			<-ctx.Ctx.Done()
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "interrupted"}},
+				IsError: true,
+			}, nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	l := makeLoop(t, &MockSlowToolProvider{}, registry)
+
+	done := make(chan error, 1)
+	go func() {
+		emit := func(e types.OutboundEvent) {}
+		done <- l.Send(ctx, "Run the slow tool", emit)
+	}()
+
+	// Wait for the tool to actually start executing.
+	<-toolStarted
+
+	// Cancel — the loop should return promptly.
+	cancel()
+
+	select {
+	case err := <-done:
+		// context.Canceled is the expected error from runLoop.
+		r.ErrorIs(err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Loop.Send did not return within 5s after cancel — executeToolsGated is still blocking")
+	}
+}
+
+// TestLoop_InterruptDuringReadOnlyTools verifies interrupt works when
+// read-only tools are running concurrently.
+func TestLoop_InterruptDuringReadOnlyTools(t *testing.T) {
+	r := require.New(t)
+
+	toolStarted := make(chan struct{})
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "slow_read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			close(toolStarted)
+			<-ctx.Ctx.Done()
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "interrupted"}},
+				IsError: true,
+			}, nil
+		},
+	})
+
+	// Provider that asks for the slow read-only tool.
+	customProvider := &mockSlowReadProvider{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	l := makeLoop(t, customProvider, registry)
+
+	done := make(chan error, 1)
+	go func() {
+		emit := func(e types.OutboundEvent) {}
+		done <- l.Send(ctx, "Read slowly", emit)
+	}()
+
+	<-toolStarted
+	cancel()
+
+	select {
+	case err := <-done:
+		r.ErrorIs(err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Loop.Send did not return within 5s after cancel — wg.Wait is blocking on read-only tools")
+	}
+}
+
+type mockSlowReadProvider struct {
+	callCount int
+	mu        sync.Mutex
+}
+
+func (m *mockSlowReadProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu.Unlock()
+
+	ch := make(chan types.ChatDelta, 8)
+	go func() {
+		defer close(ch)
+		switch count {
+		case 1:
+			ch <- types.ChatDelta{Type: "tool_use_start", ID: "sr-1", Name: "slow_read"}
+			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{}`}
+			ch <- types.ChatDelta{Type: "tool_use_end"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "tool_use"}
+		default:
+			ch <- types.ChatDelta{Type: "text_delta", Text: "Done"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+		}
+	}()
+	return ch, nil
+}

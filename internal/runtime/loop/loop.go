@@ -526,7 +526,15 @@ func (l *Loop) findToolUseBlocks(msg types.ChatMessage) []types.ChatContentBlock
 //  1. ReadOnly tools run concurrently (Read, Glob, Grep, WebSearch, etc.)
 //  2. Mutating tools run sequentially (Write, Edit, Bash, etc.)
 //
-// This prevents races between writes while keeping reads fast.
+// If the context is cancelled (e.g., user interrupt), the method returns
+// immediately with "interrupted" results for any tools that haven't finished.
+// Running tools still get the cancelled context and will clean up on their own.
+//
+//	             ┌─────────────┐
+//	ctx.Done ──►│ select {    │◄── all tools complete
+//	             │ case <-done │
+//	             │ case <-ctx  │
+//	             └─────────────┘
 func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.ChatContentBlock, emit func(types.OutboundEvent)) []types.ChatContentBlock {
 	type indexedBlock struct {
 		idx   int
@@ -544,22 +552,57 @@ func (l *Loop) executeToolsGated(ctx context.Context, toolUseBlocks []types.Chat
 
 	results := make([]types.ChatContentBlock, len(toolUseBlocks))
 
-	// Phase 1: ReadOnly tools — fan out.
-	if len(readOnly) > 0 {
-		var wg sync.WaitGroup
-		wg.Add(len(readOnly))
-		for _, ib := range readOnly {
-			go func(idx int, block types.ChatContentBlock) {
-				defer wg.Done()
-				results[idx] = l.executeSingleTool(ctx, block, emit)
-			}(ib.idx, ib.block)
+	// Pre-fill all slots with interrupted results so we can bail early
+	// on context cancellation and still return valid tool_result blocks.
+	for i, block := range toolUseBlocks {
+		results[i] = types.ChatContentBlock{
+			Type:      "tool_result",
+			ToolUseID: block.ID,
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: "Interrupted before completion"},
+			},
 		}
-		wg.Wait()
 	}
 
-	// Phase 2: Mutating tools — sequential.
-	for _, ib := range mutating {
-		results[ib.idx] = l.executeSingleTool(ctx, ib.block, emit)
+	// done signals that all tool goroutines have finished.
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		// Phase 1: ReadOnly tools — fan out.
+		if len(readOnly) > 0 {
+			var wg sync.WaitGroup
+			wg.Add(len(readOnly))
+			for _, ib := range readOnly {
+				go func(idx int, block types.ChatContentBlock) {
+					defer wg.Done()
+					results[idx] = l.executeSingleTool(ctx, block, emit)
+				}(ib.idx, ib.block)
+			}
+			wg.Wait()
+		}
+
+		// Bail between phases if interrupted.
+		if ctx.Err() != nil {
+			return
+		}
+
+		// Phase 2: Mutating tools — sequential.
+		for _, ib := range mutating {
+			if ctx.Err() != nil {
+				return
+			}
+			results[ib.idx] = l.executeSingleTool(ctx, ib.block, emit)
+		}
+	}()
+
+	select {
+	case <-done:
+		// All tools finished normally.
+	case <-ctx.Done():
+		// Interrupted — return whatever results we have (completed tools
+		// have real results, others have the pre-filled "interrupted" stubs).
 	}
 
 	return results
