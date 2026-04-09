@@ -18,6 +18,8 @@ state to the CLI.
 - `internal/agent/task_broadcast_test.go` — broadcaster tests
 - `internal/agent/worker.go` — wires up broadcaster goroutine
 - `internal/runtime/loop/loop.go` — toolSummaryKeys for TaskGet/AgentGet/TaskOutput
+- `internal/runtime/task/manager.go` — syncBuffer for streaming output while running
+- `internal/runtime/task/manager_test.go` — streaming output test
 - `internal/tools/task.go` — handleTaskGet, emitTaskStatus helper
 - `internal/tools/task_test.go` — event emission tests
 - `internal/tools/agent.go` — handleAgentGet emits task_status
