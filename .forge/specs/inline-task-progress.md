@@ -1,31 +1,38 @@
 ---
 id: inline-task-progress
-status: draft
+status: implemented
 ---
 # Inline task progress with spinner and rolling output
 
 ## Description
 Replace repeated TaskGet/AgentGet tool_use lines in the CLI with a single
-live-updating line per task. Each task shows a spinner, description, and the
-last 5 lines of output, updated every second. Multiple concurrent tasks each
-get their own block.
+live-updating block per task. Each task shows a spinner, description, and the
+last 5 lines of output. Multiple concurrent tasks each get their own block.
+A new `task_status` event is emitted from the tool handlers to carry task
+state to the CLI.
 
 ## Context
-- `cmd/forge/cli.go` — model, handleEvent, View, tick, spinner
-- `internal/runtime/loop/loop.go` — tool_use event emission, toolUseSummary
-- `internal/tools/task.go` — TaskGet handler, emits task status
-- `internal/types/types.go` — OutboundEvent (may need new fields or event type)
+- `cmd/forge/cli.go` — model, handleEvent, View, tick, spinner, taskTracker
+- `cmd/forge/task_tracker_test.go` — CLI-side tracker tests
+- `internal/runtime/loop/loop.go` — toolSummaryKeys for TaskGet/AgentGet/TaskOutput
+- `internal/tools/task.go` — handleTaskGet, emitTaskStatus helper
+- `internal/tools/task_test.go` — event emission tests
+- `internal/tools/agent.go` — handleAgentGet emits task_status
+- `internal/tools/agent_test.go` — agent event emission test
+- `internal/types/types.go` — OutboundEvent type list (added task_status)
 
 ## Behavior
-- When a `tool_use` event arrives for `TaskGet` or `AgentGet`, the CLI does
-  **not** append a new output line. Instead it updates an in-memory tracker
+- When a `tool_use` event arrives for `TaskGet`, `AgentGet`, or `TaskOutput`,
+  the CLI does **not** append a new output line.
+- The tool handlers (`handleTaskGet`, `handleAgentGet`) emit a `task_status`
+  event containing JSON with id, description, status, outputTail (last 5
+  non-empty lines), startTime, and duration (if terminal).
+- The CLI parses `task_status` events and creates/updates a `taskTracker`
   keyed by task/agent ID.
-- The tracker stores: task ID, description (from the tool_use content),
-  status, and last 5 lines of output.
 - The View renders active task trackers between the main output and the
   thinking indicator:
   ```
-  ⠹ Running tests (b3)                    [running]
+  ⠹ Running tests (b3)                    running
       PASS TestFoo
       PASS TestBar
       --- FAIL TestBaz
@@ -33,20 +40,21 @@ get their own block.
       FAIL ./pkg/...
   ```
 - Once a task reaches a terminal state (completed/failed/killed), the tracker
-  line is replaced with a final one-line summary (checkmark/cross + description
-  + duration) and output lines are removed. This final line gets appended to
-  the scrollback output.
-- The spinner ticks at 100ms (existing tick rate), but task output polling
-  happens every ~1s (every 10th tick).
+  is finalized: a one-line summary (icon + description + task ID + duration)
+  is appended to scrollback output and the tracker is removed.
+- The spinner ticks at 100ms (existing tick rate) and animates whenever there
+  are active task trackers or the thinking indicator is shown.
 - Multiple TaskGet calls for the same task ID update the same tracker entry.
-- Multiple tasks show as separate blocks, stacked vertically.
+- Multiple tasks show as separate blocks, stacked vertically, in insertion order.
+- When the agent emits a `done` event, all remaining trackers are finalized.
 
 ## Constraints
-- Do not change the agent-side tool handlers or event emission — all changes
-  are CLI-only rendering logic.
-- Do not introduce new dependencies.
-- Do not break existing non-task tool_use rendering.
-- The task output preview must not exceed 5 lines to keep the display compact.
+- The agent-side change is minimal: a single `emitTaskStatus` call added to
+  `handleTaskGet` and `handleAgentGet`, plus toolSummaryKeys entries.
+- No new dependencies.
+- Non-task tool_use rendering is unchanged.
+- Task output preview is capped at 5 non-empty lines.
+- Long output lines are truncated to terminal width minus indent.
 
 ## Interfaces
 ```go
@@ -55,24 +63,39 @@ type taskTracker struct {
     taskID      string
     description string
     status      string
-    outputLines []string // last 5 lines
-    startTime   time.Time
+    outputTail  []string  // last 5 lines of output
+    startTime   time.Time // for duration display on completion
+    duration    string    // set when terminal
 }
-```
 
-Model additions:
-```go
+// Model additions:
 type model struct {
     // ...existing fields...
-    taskTrackers map[string]*taskTracker // keyed by task/agent ID
+    taskTrackers     map[string]*taskTracker // keyed by task/agent ID
+    taskTrackerOrder []string                // insertion order for stable rendering
 }
+
+// emitTaskStatus sends a task_status OutboundEvent from tool handlers.
+func emitTaskStatus(ctx types.ToolContext, id, description, status, output string, startTime time.Time, endTime *time.Time)
+
+// task_status event Content JSON schema:
+// {
+//   "id":          string,
+//   "description": string,
+//   "status":      string,
+//   "outputTail":  []string,
+//   "startTime":   string,
+//   "duration":    string   // only present if endTime is set
+// }
 ```
 
 ## Edge Cases
-- TaskGet for unknown/missing task: falls through to normal tool_use rendering.
-- TaskGet returns terminal state on first call: show final summary immediately,
-  no spinner.
-- Agent exits while tasks are tracked: trackers are abandoned (no cleanup needed,
-  view simply stops rendering them).
+- TaskGet for unknown/missing task: normal error result, no task_status emitted.
+- TaskGet returns terminal state on first call: tracker created and immediately
+  finalized — shows final summary, no spinner.
+- Agent emits `done` while tasks are tracked: all trackers finalized, summaries
+  appended to scrollback.
 - Output is empty: show spinner + description, no indented lines.
-- Very long output lines: truncate to terminal width minus indent.
+- Very long output lines: truncated to terminal width minus 8 chars indent.
+- Invalid JSON in task_status Content: silently ignored (no crash).
+- TaskOutput tool_use lines: also suppressed (handled via same tracker).
