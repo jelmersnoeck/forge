@@ -158,6 +158,9 @@ func handleAgentGet(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		return errResultf("agent not found: %s", agentID)
 	}
 
+	// Emit task_status for the CLI's inline progress display.
+	emitTaskStatus(ctx, agent.ID, agent.Description, string(agent.Status), agent.Output, agent.StartTime, agent.EndTime)
+
 	result := map[string]any{
 		"id":          agent.ID,
 		"sessionId":   agent.SessionID,

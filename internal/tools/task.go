@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jelmersnoeck/forge/internal/runtime/task"
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -131,6 +132,9 @@ func handleTaskGet(input map[string]any, ctx types.ToolContext) (types.ToolResul
 	if !found {
 		return errResultf("task not found: %s", taskID)
 	}
+
+	// Emit task_status for the CLI's inline progress display.
+	emitTaskStatus(ctx, task.ID, task.Description, string(task.Status), task.Output, task.StartTime, task.EndTime)
 
 	result := map[string]any{
 		"id":          task.ID,
@@ -283,4 +287,41 @@ func handleTaskOutput(input map[string]any, ctx types.ToolContext) (types.ToolRe
 	result += fmt.Sprintf("\nOutput:\n%s", output)
 
 	return textResult(result), nil
+}
+
+// emitTaskStatus sends a task_status event for the CLI's inline progress
+// display. The Content field is a JSON object with id, description, status,
+// and the last 5 lines of output (outputTail). The CLI uses this to render
+// a live-updating spinner block instead of repeated [TaskGet] lines.
+func emitTaskStatus(ctx types.ToolContext, id, description, status, output string, startTime time.Time, endTime *time.Time) {
+	// Extract last 5 non-empty lines of output.
+	var tail []string
+	if output != "" {
+		lines := strings.Split(output, "\n")
+		// Walk backwards to collect up to 5 non-empty lines.
+		for i := len(lines) - 1; i >= 0 && len(tail) < 5; i-- {
+			if strings.TrimSpace(lines[i]) != "" {
+				tail = append([]string{lines[i]}, tail...)
+			}
+		}
+	}
+
+	payload := map[string]any{
+		"id":          id,
+		"description": description,
+		"status":      status,
+		"outputTail":  tail,
+		"startTime":   startTime.Format("2006-01-02 15:04:05"),
+	}
+	if endTime != nil {
+		payload["duration"] = endTime.Sub(startTime).String()
+	}
+
+	data, _ := json.Marshal(payload)
+	ctx.Emit(types.OutboundEvent{
+		Type:      "task_status",
+		SessionID: ctx.SessionID,
+		Content:   string(data),
+		Timestamp: time.Now().Unix(),
+	})
 }

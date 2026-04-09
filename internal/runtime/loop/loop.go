@@ -654,6 +654,8 @@ func (l *Loop) executeSingleTool(ctx context.Context, block types.ChatContentBlo
 var toolSummaryKeys = map[string]string{
 	"Bash": "command", "Read": "file_path", "Write": "file_path",
 	"Edit": "file_path", "Glob": "pattern", "Grep": "pattern",
+	"TaskGet": "task_id", "AgentGet": "agent_id",
+	"TaskOutput": "task_id",
 }
 
 // toolUseSummary returns a short description of what a tool call is doing.
