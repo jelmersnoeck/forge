@@ -123,7 +123,6 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	// Process group setup: kill the entire tree on cancel, not just bash.
 	setProcGroup(cmd)
 
-
 	cmd.Env = append(os.Environ(),
 		"GIT_EDITOR=true",
 		"EDITOR=true",
