@@ -21,7 +21,7 @@ type InboundMessage struct {
 
 // OutboundEvent is streamed back to subscribers via pub/sub.
 //
-// Type is one of: "text", "tool_use", "done", "error", "thinking",
+// Type is one of: "text", "tool_use", "done", "error", "interrupted", "thinking",
 // "compact", "retry", "usage", "queued_task_result", "queued_task_error",
 // "queue_immediate", "queue_on_complete", "pr_monitor", "pr_url".
 type OutboundEvent struct {

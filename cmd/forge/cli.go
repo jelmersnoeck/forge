@@ -481,7 +481,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.thinking = false
 			m.working = true
 			m.exitAttempts = 0 // reset exit attempts when work starts
-		case "done", "error":
+		case "done", "error", "interrupted":
 			m.thinking = false
 			m.working = false
 		}
@@ -852,6 +852,10 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 				m.output = append(m.output, "       "+line)
 			}
 		}
+
+	case "interrupted":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("interrupted by user"))
 
 	case "done":
 		m.flushText()

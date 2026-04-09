@@ -170,7 +170,7 @@ func (w *Worker) Run(ctx context.Context) {
 			// Distinguish interrupts from real errors.
 			switch turnCtx.Err() {
 			case context.Canceled:
-				emit(types.OutboundEvent{Type: "error", Content: "Interrupted by user"})
+				emit(types.OutboundEvent{Type: "interrupted"})
 			default:
 				emit(types.OutboundEvent{Type: "error", Content: runErr.Error()})
 			}
