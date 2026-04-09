@@ -9,3 +9,4 @@ forge-agent
 *.test
 /forge
 worktrees/
+.forge-session
