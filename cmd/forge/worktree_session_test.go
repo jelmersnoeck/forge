@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -93,42 +92,4 @@ func TestFindResumableSessions_NonExistentDir(t *testing.T) {
 	r := require.New(t)
 	sessions := findResumableSessions("/some/repo", "/nonexistent/path")
 	r.Empty(sessions)
-}
-
-func TestIsBranchMerged_NoGH(t *testing.T) {
-	// If gh is not available, should return false (not merged)
-	// This test works whether or not gh is installed because
-	// it uses a branch that definitely doesn't exist
-	r := require.New(t)
-	r.False(isBranchMerged(t.TempDir(), "jelmer/nonexistent-branch-troy-and-abed"))
-}
-
-func TestRemoveWorktreeAndBranch(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not found on PATH")
-	}
-
-	r := require.New(t)
-	repoDir := initTestRepo(t, r)
-
-	// Create a worktree
-	wtDir := filepath.Join(resolveSymlinks(t, t.TempDir()), "wt")
-	branch := "jelmer/test-cleanup"
-	cmd := exec.Command("git", "worktree", "add", "-b", branch, wtDir, "HEAD")
-	cmd.Dir = repoDir
-	r.NoError(cmd.Run())
-	r.DirExists(wtDir)
-
-	// Remove it
-	removeWorktreeAndBranch(repoDir, wtDir, branch)
-
-	// Worktree dir should be gone
-	r.NoDirExists(wtDir)
-
-	// Branch should be gone
-	cmd = exec.Command("git", "branch", "--list", branch)
-	cmd.Dir = repoDir
-	out, err := cmd.Output()
-	r.NoError(err)
-	r.Empty(string(out))
 }

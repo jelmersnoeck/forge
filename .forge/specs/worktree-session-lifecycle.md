@@ -48,11 +48,10 @@ When `--branch jelmer/some-session` is passed and a worktree already exists
 for that branch, reuse it AND reload the session JSONL (using the sessionID
 from `.forge-session`). The agent gets the full conversation history.
 
-### B5: Cleanup on merged PR
-Before creating a new worktree for a session, check any existing worktrees
-for this repo. For each one, check if its branch's PR was merged into the
-default branch (using `gh pr view <branch> --json state --jq .state`). If
-merged, clean up the worktree and branch. This is the ONLY automatic cleanup.
+### B5: Cleanup on merged PR (deferred)
+Not implemented in this iteration. Merged-PR cleanup is a server-level
+concern and should not block session startup with synchronous network calls.
+Future work: a background server process or async CLI hook can handle this.
 
 ### B6: Manual cleanup command (deferred)
 Not implemented in this iteration. Users can manually run

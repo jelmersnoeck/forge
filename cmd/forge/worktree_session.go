@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -70,52 +68,4 @@ func findResumableSessions(repoRoot, worktreeBase string) []SessionInfo {
 		sessions = append(sessions, info)
 	}
 	return sessions
-}
-
-// cleanupMergedWorktrees removes worktrees whose branch PR has been merged.
-// Requires `gh` CLI. Silently skips if gh is not available.
-func cleanupMergedWorktrees(repoRoot, worktreeBase string) {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return
-	}
-
-	sessions := findResumableSessions(repoRoot, worktreeBase)
-	for _, s := range sessions {
-		if isBranchMerged(repoRoot, s.Branch) {
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  merged PR detected, cleaning up: "+s.Branch))
-			removeWorktreeAndBranch(repoRoot, s.WorktreePath, s.Branch)
-		}
-	}
-}
-
-// isBranchMerged checks if the branch's PR was merged using `gh pr view`.
-func isBranchMerged(repoRoot, branch string) bool {
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "state", "--jq", ".state")
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(out)) == "MERGED"
-}
-
-// removeWorktreeAndBranch removes a worktree directory and its branch.
-func removeWorktreeAndBranch(repoRoot, worktreePath, branch string) {
-	cmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
-	cmd.Dir = repoRoot
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, dimStyle.Render("  worktree remove failed: "+err.Error()))
-		// Try manual removal as fallback
-		_ = os.RemoveAll(worktreePath)
-	}
-
-	cmd = exec.Command("git", "worktree", "prune")
-	cmd.Dir = repoRoot
-	_ = cmd.Run()
-
-	cmd = exec.Command("git", "branch", "-D", branch)
-	cmd.Dir = repoRoot
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, dimStyle.Render("  branch delete failed: "+err.Error()))
-	}
 }

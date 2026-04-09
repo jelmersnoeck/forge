@@ -1129,13 +1129,6 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 		}
 	}
 
-	// Clean up any worktrees whose PRs have been merged before creating new ones
-	if !skipWorktree && !isInWorktree(cwd) {
-		if root := findRepoRoot(cwd); root != "" {
-			cleanupMergedWorktrees(root, worktreeBase)
-		}
-	}
-
 	if branchName != "" {
 		// --branch mode: find or create worktree for the named branch
 		repoRoot = findRepoRoot(cwd)
