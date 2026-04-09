@@ -86,6 +86,9 @@ func (w *Worker) Run(ctx context.Context) {
 	// Monitor PR health (rebase, CI) in the background.
 	go w.prHealthMonitor(ctx)
 
+	// Broadcast task progress every second for live CLI display.
+	go w.taskStatusBroadcaster(ctx, mgr)
+
 	var historyID string
 	for {
 		select {

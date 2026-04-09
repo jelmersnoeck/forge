@@ -14,6 +14,9 @@ state to the CLI.
 ## Context
 - `cmd/forge/cli.go` — model, handleEvent, View, tick, spinner, taskTracker
 - `cmd/forge/task_tracker_test.go` — CLI-side tracker tests
+- `internal/agent/task_broadcast.go` — background 1s broadcaster for live progress
+- `internal/agent/task_broadcast_test.go` — broadcaster tests
+- `internal/agent/worker.go` — wires up broadcaster goroutine
 - `internal/runtime/loop/loop.go` — toolSummaryKeys for TaskGet/AgentGet/TaskOutput
 - `internal/tools/task.go` — handleTaskGet, emitTaskStatus helper
 - `internal/tools/task_test.go` — event emission tests
@@ -44,6 +47,10 @@ state to the CLI.
   is appended to scrollback output and the tracker is removed.
 - The spinner ticks at 100ms (existing tick rate) and animates whenever there
   are active task trackers or the thinking indicator is shown.
+- A background goroutine (`taskStatusBroadcaster`) in the agent worker emits
+  task_status events every 1 second for all non-terminal tasks, ensuring the
+  CLI's output tail stays fresh even while the LLM is thinking or running
+  other tools. This complements the per-TaskGet emissions from tool handlers.
 - Multiple TaskGet calls for the same task ID update the same tracker entry.
 - Multiple tasks show as separate blocks, stacked vertically, in insertion order.
 - When the agent emits a `done` event, all remaining trackers are finalized.
