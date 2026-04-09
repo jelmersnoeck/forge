@@ -1,6 +1,6 @@
 ---
 id: worktree-session-lifecycle
-status: draft
+status: implemented
 ---
 # Preserve worktrees on exit; auto-resume by branch
 
@@ -15,10 +15,10 @@ by detecting the branch → session mapping, so users don't need `--resume`.
 
 ## Context
 - `cmd/forge/cli.go` — `spawnLocalAgent`, cleanup func, `runCLI` flag handling
+- `cmd/forge/worktree_session.go` — `SessionInfo`, read/write `.forge-session`, cleanup merged
+- `cmd/forge/worktree_session_test.go` — tests for session metadata and resumable session scanning
 - `cmd/forge/worktree_test.go` — worktree helper tests
-- `internal/server/backend/worktree.go` — `WorktreeManager` (server-mode)
-- `internal/server/backend/worktree_test.go` — server-mode tests
-- `internal/runtime/session/store.go` — JSONL session persistence
+- `.gitignore` — added `.forge-session` entry
 - Session JSONL lives at `/tmp/forge/sessions/<sessionID>.jsonl`
 - Worktrees live at `/tmp/forge/worktrees/<sessionID>/`
 - Branch convention: `jelmer/<sessionID>` for ephemeral sessions
@@ -54,10 +54,9 @@ for this repo. For each one, check if its branch's PR was merged into the
 default branch (using `gh pr view <branch> --json state --jq .state`). If
 merged, clean up the worktree and branch. This is the ONLY automatic cleanup.
 
-### B6: Manual cleanup command
-Add a `/cleanup` slash command that lists all worktrees for the current repo
-and lets the user delete specific ones or all stale ones. For now, just
-print a message telling the user to run `git worktree remove <path>`.
+### B6: Manual cleanup command (deferred)
+Not implemented in this iteration. Users can manually run
+`git worktree remove <path>` and `git branch -D <branch>` to clean up.
 
 ### B7: Resume hint on exit
 When the session exits and a worktree is preserved, print a message:
@@ -94,8 +93,8 @@ worktree in the ephemeral path (only kills the agent process).
 New function. Scans worktreeBase for `.forge-session` files, checks PR
 merge status, removes merged ones.
 
-### `findResumableSession(repoRoot, worktreeBase string) ([]SessionInfo, error)`
-New function. Returns sessions that can be resumed for this repo.
+### `findResumableSessions(repoRoot, worktreeBase string) []SessionInfo`
+Scans worktreeBase for `.forge-session` files matching repoRoot.
 
 ```go
 type SessionInfo struct {
