@@ -241,7 +241,11 @@ func runCLI(args []string) int {
 		modeDesc = "remote"
 		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge-cli --server " + *server + " --resume " + sessionID)
 	} else {
-		resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. (ephemeral session)")
+		if worktreeBranch != "" {
+			resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit. Resume: forge --branch " + worktreeBranch)
+		} else {
+			resumeHint = dimStyle.Render("Press Ctrl+C to interrupt work, twice to exit.")
+		}
 	}
 
 	m.output = append(m.output,
@@ -552,7 +556,10 @@ func (m model) View() string {
 	}
 
 	if m.quitting {
-		return dimStyle.Render("To resume: forge-cli --resume " + m.sessionID + "\n")
+		if m.worktreeBranch != "" {
+			return dimStyle.Render("Resume: forge --branch "+m.worktreeBranch) + "\n"
+		}
+		return "\n"
 	}
 
 	// Calculate available space
@@ -1101,8 +1108,8 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	// Check if we're in a git repo and should create a worktree
 	var worktreePath string
 	var worktreeBranch string
-	var shouldCleanupWorktree bool
 	var repoRoot string
+	worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
 
 	// Auto-detect branch: if no --branch flag, not skipping worktrees, and not
 	// already in a worktree, check the current branch. If it's a feature branch
@@ -1122,6 +1129,13 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 		}
 	}
 
+	// Clean up any worktrees whose PRs have been merged before creating new ones
+	if !skipWorktree && !isInWorktree(cwd) {
+		if root := findRepoRoot(cwd); root != "" {
+			cleanupMergedWorktrees(root, worktreeBase)
+		}
+	}
+
 	if branchName != "" {
 		// --branch mode: find or create worktree for the named branch
 		repoRoot = findRepoRoot(cwd)
@@ -1135,15 +1149,18 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 		}
 
 		if wtPath != "" {
-			// Existing worktree found — reuse it
+			// Existing worktree found — reuse it; recover session ID if possible
 			worktreePath = wtPath
 			worktreeBranch = branchName
 			cwd = worktreePath
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  🌳 Reusing worktree: "+worktreePath))
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  📦 Branch: "+branchName))
+			if info, err := readSessionFile(wtPath); err == nil {
+				sessionID = info.SessionID
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  resuming session: "+sessionID))
+			}
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  reusing worktree: "+worktreePath))
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))
 		} else {
 			// No existing worktree — create one
-			worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
 			worktreePath = filepath.Join(worktreeBase, sessionID)
 			if err := os.MkdirAll(worktreeBase, 0o755); err != nil {
 				return "", "", "", "", nil, fmt.Errorf("create worktree dir: %w", err)
@@ -1163,41 +1180,84 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 
 			worktreeBranch = branchName
 			cwd = worktreePath
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  🌳 Created worktree: "+worktreePath))
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  📦 Branch: "+branchName))
-			// NOT cleaned up on exit — user named this branch explicitly
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))
 		}
 	} else if !skipWorktree && !isInWorktree(cwd) {
-		// Default mode: create ephemeral worktree from current branch
+		// Default mode: create worktree from current branch
 		repoRoot = findRepoRoot(cwd)
 		if repoRoot != "" {
-			// Get current branch
-			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-			cmd.Dir = repoRoot
-			if branchOut, err := cmd.Output(); err == nil {
-				currentBranch := strings.TrimSpace(string(branchOut))
+			// Check for existing resumable sessions before creating a new one
+			sessions := findResumableSessions(repoRoot, worktreeBase)
+			switch len(sessions) {
+			case 1:
+				// Single existing session — auto-resume
+				s := sessions[0]
+				worktreePath = s.WorktreePath
+				worktreeBranch = s.Branch
+				sessionID = s.SessionID
+				cwd = worktreePath
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  resuming session: "+sessionID))
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  worktree: "+worktreePath))
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+worktreeBranch))
+			case 0:
+				// No existing sessions — create a new worktree
+				cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+				cmd.Dir = repoRoot
+				if branchOut, err := cmd.Output(); err == nil {
+					currentBranch := strings.TrimSpace(string(branchOut))
+					worktreePath = filepath.Join(worktreeBase, sessionID)
 
-				// Create worktree directory
-				worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
-				worktreePath = filepath.Join(worktreeBase, sessionID)
+					if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
+						newBranch := fmt.Sprintf("jelmer/%s", sessionID)
+						cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
+						cmd.Dir = repoRoot
+						if err := cmd.Run(); err == nil {
+							worktreeBranch = newBranch
+							fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
+							fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch))
+							cwd = worktreePath
+						}
+					}
+				}
+			default:
+				// Multiple sessions — list them and start fresh
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  multiple existing sessions found:"))
+				for _, s := range sessions {
+					fmt.Fprintln(os.Stderr, dimStyle.Render(fmt.Sprintf("    - %s (branch: %s)", s.SessionID, s.Branch)))
+				}
+				fmt.Fprintln(os.Stderr, dimStyle.Render("  starting fresh session (use --branch to resume a specific one)"))
 
-				// Ensure base directory exists
-				if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
-					// Create the worktree
-					newBranch := fmt.Sprintf("jelmer/%s", sessionID)
-					cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
-					cmd.Dir = repoRoot
-					if err := cmd.Run(); err == nil {
-						// Successfully created worktree
-						worktreeBranch = newBranch
-						fmt.Fprintln(os.Stderr, dimStyle.Render("  🌳 Created worktree: "+worktreePath))
-						fmt.Fprintln(os.Stderr, dimStyle.Render("  📦 Branch: "+newBranch))
-						cwd = worktreePath
-						shouldCleanupWorktree = true
+				cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+				cmd.Dir = repoRoot
+				if branchOut, err := cmd.Output(); err == nil {
+					currentBranch := strings.TrimSpace(string(branchOut))
+					worktreePath = filepath.Join(worktreeBase, sessionID)
+
+					if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
+						newBranch := fmt.Sprintf("jelmer/%s", sessionID)
+						cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
+						cmd.Dir = repoRoot
+						if err := cmd.Run(); err == nil {
+							worktreeBranch = newBranch
+							fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
+							fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch))
+							cwd = worktreePath
+						}
 					}
 				}
 			}
 		}
+	}
+
+	// Write .forge-session metadata for resume
+	if worktreePath != "" && repoRoot != "" {
+		_ = writeSessionFile(worktreePath, SessionInfo{
+			SessionID: sessionID,
+			Branch:    worktreeBranch,
+			RepoRoot:  repoRoot,
+			CreatedAt: time.Now(),
+		})
 	}
 
 	// Spawn agent subcommand on random port (0 = OS picks)
@@ -1275,31 +1335,11 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 			_ = cmd.Wait()
 		}
 
-		// Cleanup worktree if we created one
-		if shouldCleanupWorktree && worktreePath != "" && repoRoot != "" {
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  🧹 Cleaning up worktree..."))
-
-			// Remove the worktree
-			gitCmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
-			gitCmd.Dir = repoRoot
-			if err := gitCmd.Run(); err != nil {
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  ⚠  worktree remove failed: "+err.Error()))
-			}
-
-			// Prune worktree references
-			gitCmd = exec.Command("git", "worktree", "prune")
-			gitCmd.Dir = repoRoot
-			_ = gitCmd.Run()
-
-			// Delete the branch
-			branchName := fmt.Sprintf("jelmer/%s", sessionID)
-			gitCmd = exec.Command("git", "branch", "-D", branchName)
-			gitCmd.Dir = repoRoot
-			if err := gitCmd.Run(); err != nil {
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  ⚠  branch delete failed: "+err.Error()))
-			}
-
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  ✅ Worktree cleanup complete"))
+		// Print resume hint if worktree is preserved
+		if worktreePath != "" && worktreeBranch != "" {
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  worktree preserved: "+worktreePath))
+			fmt.Fprintln(os.Stderr, dimStyle.Render("  resume: forge --branch "+worktreeBranch))
 		}
 	}
 
