@@ -1,6 +1,6 @@
 ---
 id: learnings-integration
-status: draft
+status: implemented
 ---
 # Improve learnings integration: auto-AGENTS.md, prompt guidance, learnings section
 
