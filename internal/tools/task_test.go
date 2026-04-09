@@ -22,12 +22,12 @@ func TestHandleTaskGet_EmitsTaskStatus(t *testing.T) {
 	tk, err := mgr.CreateBashTask("session-greendale", "Running paintball sim", "echo 'Troy Barnes wins'", t.TempDir(), 10)
 	r.NoError(err)
 
-	// Wait for the task to finish.
+	// Wait for the task to finish via race-safe snapshot.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		got, ok := mgr.GetTask(tk.ID)
+		snap, ok := mgr.GetTaskSnapshot(tk.ID)
 		r.True(ok)
-		if got.Status.IsTerminal() {
+		if snap.Status.IsTerminal() {
 			break
 		}
 		if time.Now().After(deadline) {

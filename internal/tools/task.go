@@ -128,31 +128,31 @@ func handleTaskGet(input map[string]any, ctx types.ToolContext) (types.ToolResul
 		return errResult("task_id must be a string")
 	}
 
-	task, found := taskMgr.GetTask(taskID)
+	snap, found := taskMgr.GetTaskSnapshot(taskID)
 	if !found {
 		return errResultf("task not found: %s", taskID)
 	}
 
 	// Emit task_status for the CLI's inline progress display.
-	emitTaskStatus(ctx, task.ID, task.Description, string(task.Status), task.Output, task.StartTime, task.EndTime)
+	emitTaskStatus(ctx, snap.ID, snap.Description, string(snap.Status), snap.Output, snap.StartTime, snap.EndTime)
 
 	result := map[string]any{
-		"id":          task.ID,
-		"type":        string(task.Type),
-		"status":      string(task.Status),
-		"description": task.Description,
-		"startTime":   task.StartTime.Format("2006-01-02 15:04:05"),
+		"id":          snap.ID,
+		"type":        string(snap.Type),
+		"status":      string(snap.Status),
+		"description": snap.Description,
+		"startTime":   snap.StartTime.Format("2006-01-02 15:04:05"),
 	}
 
-	if task.EndTime != nil {
-		result["endTime"] = task.EndTime.Format("2006-01-02 15:04:05")
-		result["duration"] = task.EndTime.Sub(task.StartTime).String()
+	if snap.EndTime != nil {
+		result["endTime"] = snap.EndTime.Format("2006-01-02 15:04:05")
+		result["duration"] = snap.EndTime.Sub(snap.StartTime).String()
 	}
-	if task.ExitCode != nil {
-		result["exitCode"] = *task.ExitCode
+	if snap.ExitCode != nil {
+		result["exitCode"] = *snap.ExitCode
 	}
-	if task.Error != "" {
-		result["error"] = task.Error
+	if snap.Error != "" {
+		result["error"] = snap.Error
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
@@ -263,26 +263,26 @@ func handleTaskOutput(input map[string]any, ctx types.ToolContext) (types.ToolRe
 		return errResult("task_id must be a string")
 	}
 
-	task, found := taskMgr.GetTask(taskID)
+	snap, found := taskMgr.GetTaskSnapshot(taskID)
 	if !found {
 		return errResultf("task not found: %s", taskID)
 	}
 
-	if !task.Status.IsTerminal() {
-		return textResult(fmt.Sprintf("Task is still %s. Wait for completion before retrieving output.", task.Status)), nil
+	if !snap.Status.IsTerminal() {
+		return textResult(fmt.Sprintf("Task is still %s. Wait for completion before retrieving output.", snap.Status)), nil
 	}
 
-	output := task.Output
+	output := snap.Output
 	if output == "" {
 		output = "(no output)"
 	}
 
-	result := fmt.Sprintf("Task %s (%s):\nStatus: %s\n", task.ID, task.Description, task.Status)
-	if task.ExitCode != nil {
-		result += fmt.Sprintf("Exit Code: %d\n", *task.ExitCode)
+	result := fmt.Sprintf("Task %s (%s):\nStatus: %s\n", snap.ID, snap.Description, snap.Status)
+	if snap.ExitCode != nil {
+		result += fmt.Sprintf("Exit Code: %d\n", *snap.ExitCode)
 	}
-	if task.Error != "" {
-		result += fmt.Sprintf("Error: %s\n", task.Error)
+	if snap.Error != "" {
+		result += fmt.Sprintf("Error: %s\n", snap.Error)
 	}
 	result += fmt.Sprintf("\nOutput:\n%s", output)
 

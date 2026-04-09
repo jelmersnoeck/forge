@@ -116,19 +116,19 @@ func TestManager_StreamingOutput(t *testing.T) {
 	task, err := m.CreateBashTask("session-streaming", "Streaming test", cmd, "/tmp", 10)
 	r.NoError(err)
 
-	// Wait ~800ms (the sync goroutine flushes every 500ms).
+	// Wait ~800ms — GetTaskOutput reads live buffer contents.
 	time.Sleep(800 * time.Millisecond)
 
-	retrieved, found := m.GetTask(task.ID)
+	snap, found := m.GetTaskSnapshot(task.ID)
 	r.True(found)
-	r.Equal(types.TaskStatusRunning, retrieved.Status, "task should still be running at 800ms")
-	r.Contains(retrieved.Output, "line1", "partial output should be visible while running")
+	r.Equal(types.TaskStatusRunning, snap.Status, "task should still be running at 800ms")
+	r.Contains(snap.Output, "line1", "partial output should be visible while running")
 
 	// Wait for completion.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		retrieved, _ = m.GetTask(task.ID)
-		if retrieved.Status.IsTerminal() {
+		snap, _ = m.GetTaskSnapshot(task.ID)
+		if snap.Status.IsTerminal() {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -137,8 +137,8 @@ func TestManager_StreamingOutput(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	r.Equal(types.TaskStatusCompleted, retrieved.Status)
-	r.Contains(retrieved.Output, "line5")
+	r.Equal(types.TaskStatusCompleted, snap.Status)
+	r.Contains(snap.Output, "line5")
 }
 
 func TestManager_CreateAgent(t *testing.T) {

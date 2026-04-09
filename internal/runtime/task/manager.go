@@ -30,15 +30,21 @@ type Manager struct {
 	agentRunner AgentRunner
 	warnings    chan string // Channel for timeout warnings
 	stopMon     chan struct{}
+
+	// Live output buffers for running tasks. Keyed by task ID.
+	// Written to by the bash command's stdout/stderr; read via
+	// GetTaskOutput() which copies the buffer under the lock.
+	liveOutput map[string]*syncBuffer
 }
 
 // NewManager creates a task manager.
 func NewManager() *Manager {
 	m := &Manager{
-		tasks:    make(map[string]*types.Task),
-		agents:   make(map[string]*types.SubAgent),
-		warnings: make(chan string, 100),
-		stopMon:  make(chan struct{}),
+		tasks:      make(map[string]*types.Task),
+		agents:     make(map[string]*types.SubAgent),
+		liveOutput: make(map[string]*syncBuffer),
+		warnings:   make(chan string, 100),
+		stopMon:    make(chan struct{}),
 	}
 	go m.monitorTasks()
 	return m
@@ -75,8 +81,8 @@ func (m *Manager) CreateBashTask(sessionID, description, command, cwd string, ti
 }
 
 // runBashTask executes a bash command in the background, streaming output
-// into a thread-safe buffer so task.Output is readable while the command
-// is still running (used by the CLI's live progress display).
+// into a thread-safe buffer so live output is readable via GetTaskOutput
+// while the command is still running (used by the CLI's live progress display).
 func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 	m.updateTaskStatus(task.ID, types.TaskStatusRunning)
 
@@ -98,38 +104,24 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 	}
 	cmd.WaitDelay = 5 * time.Second
 
-	// Stream output into a thread-safe buffer. We tee stdout and stderr
-	// into a shared syncBuffer so task.Output reflects partial output
-	// while the command runs (for the CLI's live progress display).
+	// Stream output into a thread-safe buffer stored in liveOutput.
+	// GetTaskOutput() reads from this buffer while the command runs.
 	var buf syncBuffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 
-	// Goroutine copies buffer contents into task.Output every 500ms so
-	// the broadcaster / TaskGet always sees the latest output.
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				m.mu.Lock()
-				task.Output = buf.String()
-				m.mu.Unlock()
-			case <-done:
-				return
-			}
-		}
-	}()
+	m.mu.Lock()
+	m.liveOutput[task.ID] = &buf
+	m.mu.Unlock()
 
 	err := cmd.Run()
-	close(done)
-
 	now := time.Now()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Move final output from buffer to task and remove the live buffer.
+	delete(m.liveOutput, task.ID)
 
 	// Already killed/stopped — don't overwrite terminal state.
 	if task.Status.IsTerminal() {
@@ -163,6 +155,110 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 		code := 0
 		task.ExitCode = &code
 	}
+}
+
+// GetTaskOutput returns the current output for a task, including live
+// output from still-running commands. Safe for concurrent use.
+func (m *Manager) GetTaskOutput(taskID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// If there's a live buffer (command still running), read from it.
+	if buf, ok := m.liveOutput[taskID]; ok {
+		return buf.String()
+	}
+
+	// Otherwise, return the finalized output from the task.
+	if task, ok := m.tasks[taskID]; ok {
+		return task.Output
+	}
+	return ""
+}
+
+// TaskSnapshot is a point-in-time copy of a Task's fields, safe to read
+// without holding the manager lock.
+type TaskSnapshot struct {
+	ID          string
+	Type        types.TaskType
+	Status      types.TaskStatus
+	Description string
+	StartTime   time.Time
+	EndTime     *time.Time
+	Output      string
+	Error       string
+	ExitCode    *int
+	Command     string
+}
+
+// GetTaskSnapshot returns a race-free copy of task fields plus live output.
+func (m *Manager) GetTaskSnapshot(taskID string) (TaskSnapshot, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	task, ok := m.tasks[taskID]
+	if !ok {
+		return TaskSnapshot{}, false
+	}
+
+	snap := TaskSnapshot{
+		ID:          task.ID,
+		Type:        task.Type,
+		Status:      task.Status,
+		Description: task.Description,
+		StartTime:   task.StartTime,
+		EndTime:     task.EndTime,
+		Error:       task.Error,
+		ExitCode:    task.ExitCode,
+		Command:     task.Command,
+		Output:      task.Output,
+	}
+
+	// If there's a live buffer, prefer its content over task.Output.
+	if buf, ok := m.liveOutput[taskID]; ok {
+		snap.Output = buf.String()
+	}
+
+	return snap, true
+}
+
+// AgentSnapshot is a point-in-time copy of a SubAgent's fields.
+type AgentSnapshot struct {
+	ID          string
+	SessionID   string
+	Type        string
+	Status      types.TaskStatus
+	Description string
+	StartTime   time.Time
+	EndTime     *time.Time
+	Output      string
+	Error       string
+	TurnCount   int
+	MaxTurns    int
+}
+
+// GetAgentSnapshot returns a race-free copy of sub-agent fields.
+func (m *Manager) GetAgentSnapshot(agentID string) (AgentSnapshot, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	agent, ok := m.agents[agentID]
+	if !ok {
+		return AgentSnapshot{}, false
+	}
+
+	return AgentSnapshot{
+		ID:          agent.ID,
+		SessionID:   agent.SessionID,
+		Type:        agent.Type,
+		Status:      agent.Status,
+		Description: agent.Description,
+		StartTime:   agent.StartTime,
+		EndTime:     agent.EndTime,
+		Output:      agent.Output,
+		Error:       agent.Error,
+		TurnCount:   agent.TurnCount,
+		MaxTurns:    agent.MaxTurns,
+	}, true
 }
 
 // syncBuffer is a goroutine-safe bytes.Buffer for streaming command output.
@@ -332,6 +428,63 @@ func (m *Manager) ListAgents(parentSessionID string) []*types.SubAgent {
 		}
 	}
 	return agents
+}
+
+// ListTaskSnapshots returns race-free snapshots of all tasks for a session.
+func (m *Manager) ListTaskSnapshots(sessionID string) []TaskSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var out []TaskSnapshot
+	for _, t := range m.tasks {
+		if t.SessionID != sessionID {
+			continue
+		}
+		snap := TaskSnapshot{
+			ID:          t.ID,
+			Type:        t.Type,
+			Status:      t.Status,
+			Description: t.Description,
+			StartTime:   t.StartTime,
+			EndTime:     t.EndTime,
+			Error:       t.Error,
+			ExitCode:    t.ExitCode,
+			Command:     t.Command,
+			Output:      t.Output,
+		}
+		if buf, ok := m.liveOutput[t.ID]; ok {
+			snap.Output = buf.String()
+		}
+		out = append(out, snap)
+	}
+	return out
+}
+
+// ListAgentSnapshots returns race-free snapshots of all sub-agents for a session.
+func (m *Manager) ListAgentSnapshots(parentSessionID string) []AgentSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var out []AgentSnapshot
+	for _, a := range m.agents {
+		if a.ParentSessionID != parentSessionID {
+			continue
+		}
+		out = append(out, AgentSnapshot{
+			ID:          a.ID,
+			SessionID:   a.SessionID,
+			Type:        a.Type,
+			Status:      a.Status,
+			Description: a.Description,
+			StartTime:   a.StartTime,
+			EndTime:     a.EndTime,
+			Output:      a.Output,
+			Error:       a.Error,
+			TurnCount:   a.TurnCount,
+			MaxTurns:    a.MaxTurns,
+		})
+	}
+	return out
 }
 
 // StopTask stops a running task.

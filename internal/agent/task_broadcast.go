@@ -34,18 +34,18 @@ func (w *Worker) taskStatusBroadcaster(ctx context.Context, mgr *task.Manager) {
 // sub-agent owned by this session that the CLI is likely tracking (i.e.
 // non-terminal, or recently-completed ones the CLI hasn't finalized yet).
 func (w *Worker) broadcastTaskStatuses(mgr *task.Manager) {
-	for _, t := range mgr.ListTasks(w.sessionID) {
-		if t.Status.IsTerminal() {
+	for _, snap := range mgr.ListTaskSnapshots(w.sessionID) {
+		if snap.Status.IsTerminal() {
 			continue
 		}
-		w.emitTaskStatusEvent(t.ID, t.Description, string(t.Status), t.Output, t.StartTime, t.EndTime)
+		w.emitTaskStatusEvent(snap.ID, snap.Description, string(snap.Status), snap.Output, snap.StartTime, snap.EndTime)
 	}
 
-	for _, a := range mgr.ListAgents(w.sessionID) {
-		if a.Status.IsTerminal() {
+	for _, snap := range mgr.ListAgentSnapshots(w.sessionID) {
+		if snap.Status.IsTerminal() {
 			continue
 		}
-		w.emitTaskStatusEvent(a.ID, a.Description, string(a.Status), a.Output, a.StartTime, a.EndTime)
+		w.emitTaskStatusEvent(snap.ID, snap.Description, string(snap.Status), snap.Output, snap.StartTime, snap.EndTime)
 	}
 }
 

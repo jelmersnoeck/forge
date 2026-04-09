@@ -27,11 +27,11 @@ func TestBroadcastTaskStatuses(t *testing.T) {
 	tk, err := mgr.CreateBashTask("session-paintball", "Paintball simulation", "sleep 30", t.TempDir(), 60)
 	r.NoError(err)
 
-	// Wait for status to become running.
+	// Wait for status to become running via race-safe snapshot.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		got, _ := mgr.GetTask(tk.ID)
-		if string(got.Status) == "running" {
+		snap, _ := mgr.GetTaskSnapshot(tk.ID)
+		if string(snap.Status) == "running" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -85,13 +85,13 @@ func TestBroadcastTaskStatuses_SkipsTerminal(t *testing.T) {
 	_, err := mgr.CreateBashTask("session-greendale", "Quick task", "echo 'pop pop'", t.TempDir(), 10)
 	r.NoError(err)
 
-	// Wait for it to complete.
+	// Wait for it to complete via race-safe snapshots.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		tasks := mgr.ListTasks("session-greendale")
+		snaps := mgr.ListTaskSnapshots("session-greendale")
 		allDone := true
-		for _, tk := range tasks {
-			if !tk.Status.IsTerminal() {
+		for _, snap := range snaps {
+			if !snap.Status.IsTerminal() {
 				allDone = false
 			}
 		}
