@@ -102,7 +102,12 @@ func writeReflection(cwd, summary string, learnings []string) (string, error) {
 		return "", fmt.Errorf("update .gitattributes: %v", err)
 	}
 
-	commitLearning(cwd, outPath)
+	agentsMDPath, err := ensureAgentsMD(cwd)
+	if err != nil {
+		return "", fmt.Errorf("update AGENTS.md: %v", err)
+	}
+
+	commitLearning(cwd, outPath, agentsMDPath)
 
 	return outPath, nil
 }
@@ -110,13 +115,14 @@ func writeReflection(cwd, summary string, learnings []string) (string, error) {
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
 // commitLearning stages, commits, and pushes a learning file (and .gitattributes).
+// If agentsMDPath is non-empty, it's staged too.
 // Best-effort: logs and returns silently on failure (non-git dirs, no remote, etc.).
 //
 //	git rev-parse --git-dir   (bail if not a repo)
-//	git add -- <file> .gitattributes
+//	git add -- <file> .gitattributes [AGENTS.md]
 //	git commit -m "..." --no-verify
 //	git push                  (only if a remote tracking branch exists)
-func commitLearning(cwd, learningPath string) {
+func commitLearning(cwd, learningPath, agentsMDPath string) {
 	// Quick check: is this a git repo?
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	cmd.Dir = cwd
@@ -130,6 +136,13 @@ func commitLearning(cwd, learningPath string) {
 		rel = learningPath
 	}
 	filesToAdd := []string{rel, ".gitattributes"}
+	if agentsMDPath != "" {
+		agentsRel, err := filepath.Rel(cwd, agentsMDPath)
+		if err != nil {
+			agentsRel = agentsMDPath
+		}
+		filesToAdd = append(filesToAdd, agentsRel)
+	}
 	addArgs := append([]string{"add", "--"}, filesToAdd...)
 	add := exec.Command("git", addArgs...)
 	add.Dir = cwd
@@ -172,6 +185,56 @@ func slugify(s string, maxLen int) string {
 		s = "reflection"
 	}
 	return s
+}
+
+const agentsMDLearningsSection = `
+# Agent Learnings
+
+Actionable discoveries from past sessions are stored in ` + "`.forge/learnings/`" + `.
+Consult them when starting a task — if a learning is relevant, factor it into
+your approach to avoid repeating past mistakes.
+`
+
+// ensureAgentsMD creates or appends a learnings section to the project's AGENTS.md.
+// Returns the path of the created/modified file (empty string if no change was needed).
+//
+// Resolution order:
+//  1. Root AGENTS.md exists → append section if missing
+//  2. .forge/AGENTS.md exists → append section if missing
+//  3. Neither exists (CLAUDE.md doesn't count) → create .forge/AGENTS.md
+func ensureAgentsMD(cwd string) (string, error) {
+	rootPath := filepath.Join(cwd, "AGENTS.md")
+	forgePath := filepath.Join(cwd, ".forge", "AGENTS.md")
+
+	// Try root first, then .forge/
+	for _, path := range []string{rootPath, forgePath} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(content), "# Agent Learnings") {
+			return "", nil // already has the section
+		}
+		// Append the section
+		toWrite := string(content)
+		if !strings.HasSuffix(toWrite, "\n") {
+			toWrite += "\n"
+		}
+		toWrite += agentsMDLearningsSection
+		if err := os.WriteFile(path, []byte(toWrite), 0644); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+
+	// Neither exists — create .forge/AGENTS.md
+	if err := os.MkdirAll(filepath.Join(cwd, ".forge"), 0755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(forgePath, []byte(strings.TrimLeft(agentsMDLearningsSection, "\n")), 0644); err != nil {
+		return "", err
+	}
+	return forgePath, nil
 }
 
 // ensureGitattributes idempotently adds the learnings line to .gitattributes.

@@ -79,6 +79,7 @@ func TestAssemble_AgentsMD_Learnings(t *testing.T) {
 	r.GreaterOrEqual(len(blocks), 2)
 	r.Contains(blocks[1].Text, "Self-improvement learnings")
 	r.Contains(blocks[1].Text, "Troy session")
+	r.Contains(blocks[1].Text, "scan the learnings above")
 }
 
 func TestAssemble_Rules(t *testing.T) {

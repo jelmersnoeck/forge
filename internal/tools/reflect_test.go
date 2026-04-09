@@ -76,9 +76,10 @@ func TestReflectTool(t *testing.T) {
 			r.Contains(string(content), tc.wantContain)
 			r.Contains(string(content), "# Learnings -")
 
-			// No AGENTS.md should be created
-			_, err = os.Stat(filepath.Join(tmpDir, "AGENTS.md"))
-			r.True(os.IsNotExist(err), "AGENTS.md should not be created")
+			// .forge/AGENTS.md should be auto-created
+			agentsMD, err := os.ReadFile(filepath.Join(tmpDir, ".forge", "AGENTS.md"))
+			r.NoError(err, ".forge/AGENTS.md should be auto-created")
+			r.Contains(string(agentsMD), "# Agent Learnings")
 		})
 	}
 }
@@ -332,4 +333,151 @@ func TestReflectPushesWhenRemoteExists(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(verify, ".forge", "learnings"))
 	r.NoError(err)
 	r.Len(entries, 1)
+}
+
+func TestEnsureAgentsMD(t *testing.T) {
+	tests := map[string]struct {
+		setup    func(testing.TB, string)
+		wantPath string // relative to tmpDir; "" = .forge/AGENTS.md created
+		wantNew  bool   // true if file should be newly created
+		wantNoop bool   // true if nothing should change
+	}{
+		"no AGENTS.md exists, creates .forge/AGENTS.md": {
+			setup:    func(_ testing.TB, _ string) {},
+			wantPath: ".forge/AGENTS.md",
+			wantNew:  true,
+		},
+		"root AGENTS.md exists without section, appends": {
+			setup: func(tb testing.TB, dir string) {
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Greendale Handbook\n\nGo Human Beings!\n"), 0644))
+			},
+			wantPath: "AGENTS.md",
+		},
+		"root AGENTS.md already has section, noop": {
+			setup: func(tb testing.TB, dir string) {
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Greendale\n\n# Agent Learnings\n\nStuff here.\n"), 0644))
+			},
+			wantNoop: true,
+		},
+		".forge/AGENTS.md exists without section, appends": {
+			setup: func(tb testing.TB, dir string) {
+				require.NoError(tb, os.MkdirAll(filepath.Join(dir, ".forge"), 0755))
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, ".forge", "AGENTS.md"), []byte("# Project Config\n"), 0644))
+			},
+			wantPath: ".forge/AGENTS.md",
+		},
+		".forge/AGENTS.md already has section, noop": {
+			setup: func(tb testing.TB, dir string) {
+				require.NoError(tb, os.MkdirAll(filepath.Join(dir, ".forge"), 0755))
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, ".forge", "AGENTS.md"), []byte("# Agent Learnings\n"), 0644))
+			},
+			wantNoop: true,
+		},
+		"CLAUDE.md exists but no AGENTS.md, creates .forge/AGENTS.md": {
+			setup: func(tb testing.TB, dir string) {
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# Legacy\n"), 0644))
+			},
+			wantPath: ".forge/AGENTS.md",
+			wantNew:  true,
+		},
+		"root AGENTS.md without trailing newline": {
+			setup: func(tb testing.TB, dir string) {
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# No newline at end"), 0644))
+			},
+			wantPath: "AGENTS.md",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			tmpDir := t.TempDir()
+			tc.setup(t, tmpDir)
+
+			path, err := ensureAgentsMD(tmpDir)
+			r.NoError(err)
+
+			if tc.wantNoop {
+				r.Empty(path, "expected no-op but got path: %s", path)
+				return
+			}
+
+			wantFull := filepath.Join(tmpDir, tc.wantPath)
+			r.Equal(wantFull, path)
+
+			content, err := os.ReadFile(path)
+			r.NoError(err)
+			r.Contains(string(content), "# Agent Learnings")
+			r.Contains(string(content), ".forge/learnings/")
+
+			if !tc.wantNew {
+				// Appended files should still contain original content
+				switch tc.wantPath {
+				case "AGENTS.md":
+					// Original content should be preserved
+					r.True(
+						strings.Contains(string(content), "Greendale") ||
+							strings.Contains(string(content), "No newline"),
+						"original content should be preserved",
+					)
+				case ".forge/AGENTS.md":
+					r.Contains(string(content), "Project Config")
+				}
+			}
+		})
+	}
+}
+
+func TestEnsureAgentsMD_Idempotent(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+
+	// First call creates
+	path1, err := ensureAgentsMD(tmpDir)
+	r.NoError(err)
+	r.NotEmpty(path1)
+
+	content1, err := os.ReadFile(path1)
+	r.NoError(err)
+
+	// Second call is a noop
+	path2, err := ensureAgentsMD(tmpDir)
+	r.NoError(err)
+	r.Empty(path2)
+
+	// Content unchanged
+	content2, err := os.ReadFile(path1)
+	r.NoError(err)
+	r.Equal(string(content1), string(content2))
+}
+
+func TestReflectCommitsAgentsMD(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir, "main")
+
+	ctx := types.ToolContext{CWD: tmpDir}
+	tool := ReflectTool()
+	_, err := tool.Handler(map[string]any{
+		"summary":   "Annie Edison organized the study group notes",
+		"learnings": []any{"The study room F whiteboard API is append-only"},
+	}, ctx)
+	r.NoError(err)
+
+	// .forge/AGENTS.md should be committed
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = tmpDir
+	out, err := cmd.Output()
+	r.NoError(err)
+	r.Empty(strings.TrimSpace(string(out)), "working tree should be clean — .forge/AGENTS.md should be committed")
+
+	// Verify .forge/AGENTS.md is tracked
+	cmd = exec.Command("git", "ls-files", ".forge/AGENTS.md")
+	cmd.Dir = tmpDir
+	out, err = cmd.Output()
+	r.NoError(err)
+	r.Contains(string(out), ".forge/AGENTS.md")
 }
