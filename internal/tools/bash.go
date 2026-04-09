@@ -140,13 +140,15 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	// Collect output in a goroutine, signalling on each chunk.
 	var (
-		outputBuf bytes.Buffer
-		outputMu  sync.Mutex
-		truncated bool
-		outputCh  = make(chan struct{}, 1) // signals new output arrived
+		outputBuf  bytes.Buffer
+		outputMu   sync.Mutex
+		truncated  bool
+		outputCh   = make(chan struct{}, 1) // signals new output arrived
+		readerDone = make(chan struct{})    // closed when reader goroutine exits
 	)
 
 	go func() {
+		defer close(readerDone)
 		defer func() { _ = outReader.Close() }()
 		buf := make([]byte, 4096)
 		for {
@@ -193,7 +195,8 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	for {
 		select {
 		case err := <-waitDone:
-			// Command finished — normal path.
+			// Command finished — wait for reader goroutine to drain all output.
+			<-readerDone
 			return bashResult(cmd, err, execCtx, &outputBuf, &outputMu, truncated, timeoutMs)
 
 		case <-outputCh:
