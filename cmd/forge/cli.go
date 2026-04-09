@@ -55,10 +55,11 @@ type model struct {
 	output          []string
 	ready           bool
 	quitting        bool
-	exitAttempts    int  // track number of exit attempts
-	working         bool // track if agent is currently working
-	thinking        bool // track if agent is currently thinking
-	spinnerFrame    int  // spinner animation frame
+	exitAttempts    int    // track number of exit attempts
+	working         bool   // track if agent is currently working
+	thinking        bool   // track if agent is currently thinking
+	toolProgress    string // current tool progress message (cleared on next event)
+	spinnerFrame    int    // spinner animation frame
 	width           int
 	height          int
 	renderer        *glamour.TermRenderer
@@ -298,7 +299,7 @@ func tick() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		if m.thinking {
+		if m.thinking || m.toolProgress != "" {
 			m.spinnerFrame++
 		}
 		return m, tick()
@@ -477,13 +478,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch event.Type {
 		case "thinking":
 			m.thinking = true
+			m.toolProgress = ""
+		case "tool_progress":
+			// Keep working/thinking state, just update progress
 		case "text", "tool_use", "review_start", "review_finding":
 			m.thinking = false
 			m.working = true
+			m.toolProgress = ""
 			m.exitAttempts = 0 // reset exit attempts when work starts
 		case "done", "error", "interrupted":
 			m.thinking = false
 			m.working = false
+			m.toolProgress = ""
 		}
 
 		// Auto-scroll to bottom on new content
@@ -527,8 +533,8 @@ func (m model) getOutputHeight() int {
 		queueHeight = len(m.queue) + 2 // header + messages + separator
 	}
 	thinkingHeight := 0
-	if m.thinking {
-		thinkingHeight = 1 // thinking indicator
+	if m.thinking || m.toolProgress != "" {
+		thinkingHeight = 1 // thinking/progress indicator
 	}
 	inputHeight := 3  // border + content
 	statusHeight := 1 // cwd + cost line (always shown)
@@ -566,9 +572,12 @@ func (m model) View() string {
 		outputArea = strings.Join(m.output, "\n")
 	}
 
-	// Build thinking indicator
+	// Build thinking/progress indicator
 	var thinkingIndicator string
-	if m.thinking {
+	switch {
+	case m.toolProgress != "":
+		thinkingIndicator = thinkingStyle.Render(m.spinner() + " " + m.toolProgress)
+	case m.thinking:
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
 	}
 
@@ -734,6 +743,9 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		} else {
 			m.output = append(m.output, toolStyle.Render("  ["+event.ToolName+"]"))
 		}
+
+	case "tool_progress":
+		m.toolProgress = event.Content
 
 	case "queued_task_result":
 		m.flushText()

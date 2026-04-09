@@ -4,13 +4,31 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
+)
+
+const (
+	// bashIdleTimeout is how long we wait with no output before investigating.
+	bashIdleTimeout = 30 * time.Second
+
+	// bashProgressInterval is how often we emit progress events to the TUI.
+	bashProgressInterval = 10 * time.Second
+
+	// bashMaxOutputBuffer caps captured output to avoid memory issues.
+	bashMaxOutputBuffer = 100 * 1024 // 100KB
+
+	// bashDiagnosticTimeout is the timeout for diagnostic commands (ps, lsof).
+	bashDiagnosticTimeout = 5 * time.Second
+
+	// bashWaitDelay gives processes time to exit after SIGTERM before SIGKILL.
+	bashWaitDelay = 5 * time.Second
 )
 
 // interactiveCommands maps command names to their non-interactive alternatives or flags
@@ -100,67 +118,193 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	cmd := exec.CommandContext(execCtx, "bash", "-l", "-c", command)
 	cmd.Dir = ctx.CWD
+	cmd.WaitDelay = bashWaitDelay
 
-	// Run in a new process group so we can kill the entire tree (bash + all
-	// children like tail, sleep, etc.) on cancel/timeout. Without this,
-	// CommandContext only sends SIGKILL to the bash process itself and
-	// grandchildren keep the stdout/stderr pipes open, blocking cmd.Wait().
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Process group setup: kill the entire tree on cancel, not just bash.
+	setProcGroup(cmd)
 
-	// On context cancellation, kill the entire process group instead of just
-	// the root process. This ensures children (tail -f, long-running servers,
-	// etc.) are terminated too.
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-
-	// If pipes are still open after the process group is killed (shouldn't
-	// happen, but defense in depth), give up after 5 seconds instead of
-	// blocking forever.
-	cmd.WaitDelay = 5 * time.Second
-
-	// Set environment variables to prevent interactive editors from being invoked.
-	// GIT_EDITOR=true: git commands that need an editor (rebase, commit --amend, etc.)
-	//                  will use 'true' (a no-op that exits 0), preventing hangs
-	// EDITOR=true: fallback for any tool that uses $EDITOR
-	// VISUAL=true: fallback for any tool that uses $VISUAL
 	cmd.Env = append(os.Environ(),
 		"GIT_EDITOR=true",
 		"EDITOR=true",
 		"VISUAL=true",
 	)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Pipe stdout/stderr so we can stream output and detect idle.
+	outReader, outWriter := io.Pipe()
+	cmd.Stdout = outWriter
+	cmd.Stderr = outWriter
 
-	err = cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return errResultf("Failed to start command: %v", err)
+	}
 
-	// Combine stdout and stderr
-	output := stdout.String()
-	if stderr.Len() > 0 {
-		if len(output) > 0 {
-			output += "\n"
+	// Collect output in a goroutine, signalling on each chunk.
+	var (
+		outputBuf bytes.Buffer
+		outputMu  sync.Mutex
+		truncated bool
+		outputCh  = make(chan struct{}, 1) // signals new output arrived
+	)
+
+	go func() {
+		defer func() { _ = outReader.Close() }()
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := outReader.Read(buf)
+			if n > 0 {
+				outputMu.Lock()
+				if outputBuf.Len()+n > bashMaxOutputBuffer {
+					truncated = true
+					// Keep writing but discard oldest by resetting.
+					// In practice we just stop appending.
+				} else {
+					outputBuf.Write(buf[:n])
+				}
+				outputMu.Unlock()
+
+				// Signal new output (non-blocking).
+				select {
+				case outputCh <- struct{}{}:
+				default:
+				}
+			}
+			if readErr != nil {
+				return
+			}
 		}
-		output += stderr.String()
+	}()
+
+	// Wait for the command in a goroutine so we can select on it.
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+		_ = outWriter.Close() // unblock the reader
+	}()
+
+	startTime := time.Now()
+	idleTimer := time.NewTimer(bashIdleTimeout)
+	defer idleTimer.Stop()
+	progressTicker := time.NewTicker(bashProgressInterval)
+	defer progressTicker.Stop()
+	lastOutputTime := startTime
+
+	emit := ctx.Emit
+
+	for {
+		select {
+		case err := <-waitDone:
+			// Command finished — normal path.
+			return bashResult(cmd, err, execCtx, &outputBuf, &outputMu, truncated, timeoutMs)
+
+		case <-outputCh:
+			// New output arrived; reset idle timer.
+			lastOutputTime = time.Now()
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(bashIdleTimeout)
+
+		case <-progressTicker.C:
+			// Periodic TUI progress update.
+			if emit != nil {
+				elapsed := time.Since(startTime).Round(time.Second)
+				idleDur := time.Since(lastOutputTime).Round(time.Second)
+				content := fmt.Sprintf("%s (%s elapsed", truncateCommand(command, 60), elapsed)
+				if idleDur > 2*time.Second {
+					content += fmt.Sprintf(", no output for %s", idleDur)
+				}
+				content += ")"
+				emit(types.OutboundEvent{
+					Type:     "tool_progress",
+					ToolName: "Bash",
+					Content:  content,
+				})
+			}
+
+		case <-idleTimer.C:
+			// No output for bashIdleTimeout. Investigate and report.
+			pid := 0
+			if cmd.Process != nil {
+				pid = cmd.Process.Pid
+			}
+			diag := gatherDiagnostics(pid)
+
+			outputMu.Lock()
+			captured := outputBuf.String()
+			outputMu.Unlock()
+
+			var result strings.Builder
+			fmt.Fprintf(&result, "Command produced no new output for %s but is still running.\n", bashIdleTimeout)
+			if pid > 0 {
+				fmt.Fprintf(&result, "PID: %d\n", pid)
+			}
+			result.WriteString("\n--- Output so far ---\n")
+			if truncated {
+				result.WriteString("(output truncated to 100KB)\n")
+			}
+			if captured == "" {
+				result.WriteString("(no output)\n")
+			} else {
+				result.WriteString(captured)
+				if !strings.HasSuffix(captured, "\n") {
+					result.WriteByte('\n')
+				}
+			}
+			result.WriteString("\n--- Process diagnostics ---\n")
+			result.WriteString(diag)
+			result.WriteString("\nThe process is still running. You can:\n")
+			if pid > 0 {
+				fmt.Fprintf(&result, "- Kill it: kill %d\n", pid)
+				fmt.Fprintf(&result, "- Check on it: ps -p %d\n", pid)
+			}
+			result.WriteString("- Use TaskCreate for long-running commands\n")
+
+			if emit != nil {
+				emit(types.OutboundEvent{
+					Type:     "tool_progress",
+					ToolName: "Bash",
+					Content:  fmt.Sprintf("%s (idle for %s — returning diagnostics to LLM)", truncateCommand(command, 40), bashIdleTimeout),
+				})
+			}
+
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{
+					Type: "text",
+					Text: result.String(),
+				}},
+				IsError: true,
+			}, nil
+		}
+	}
+}
+
+// bashResult builds the ToolResult for a completed command.
+func bashResult(cmd *exec.Cmd, err error, execCtx context.Context, buf *bytes.Buffer, mu *sync.Mutex, truncated bool, timeoutMs int) (types.ToolResult, error) {
+	mu.Lock()
+	output := buf.String()
+	mu.Unlock()
+
+	if truncated {
+		output = "(output truncated to 100KB)\n" + output
 	}
 
 	isError := false
 	if err != nil {
-		// Check if it's a timeout or interrupt
-		switch execCtx.Err() {
-		case context.DeadlineExceeded:
+		switch {
+		case execCtx.Err() == context.DeadlineExceeded:
 			output += fmt.Sprintf("\nCommand timed out after %dms", timeoutMs)
 			output += "\n\nIf this command requires user input or is long-running, consider:"
 			output += "\n- Using non-interactive flags (e.g., -y, --batch, --no-input)"
-			output += "\n- Running it in the background with '&' and redirecting output"
+			output += "\n- Using TaskCreate for background execution"
 			output += "\n- Breaking it into smaller, non-interactive steps"
 			isError = true
-		case context.Canceled:
+		case execCtx.Err() == context.Canceled:
 			output += "\nCommand interrupted"
 			isError = true
 		default:
-			// Non-zero exit code
 			isError = true
 			if len(output) == 0 {
 				output = fmt.Sprintf("Command failed: %v", err)
@@ -175,6 +319,54 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		}},
 		IsError: isError,
 	}, nil
+}
+
+// gatherDiagnostics runs quick ps/lsof checks on the given PID. Each
+// diagnostic command has its own timeout so it can't hang us.
+func gatherDiagnostics(pid int) string {
+	if pid == 0 {
+		return "(no PID available)\n"
+	}
+
+	var result strings.Builder
+
+	// Process tree
+	psOut := runDiagnosticCmd("ps", "-o", "pid,ppid,stat,time,command", "-g", fmt.Sprintf("%d", pid))
+	if psOut != "" {
+		fmt.Fprintf(&result, "Process tree:\n%s\n", psOut)
+	}
+
+	// Listening ports (platform-portable flags)
+	lsofOut := runDiagnosticCmd("lsof", "-i", "-P", "-n", "-g", fmt.Sprintf("%d", pid))
+	switch {
+	case lsofOut != "":
+		fmt.Fprintf(&result, "Network connections:\n%s\n", lsofOut)
+	default:
+		result.WriteString("Network connections: (none detected)\n")
+	}
+
+	return result.String()
+}
+
+// runDiagnosticCmd executes a command with a short timeout, returning its
+// combined output or empty string on failure.
+func runDiagnosticCmd(name string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), bashDiagnosticTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// truncateCommand shortens a command string for display.
+func truncateCommand(cmd string, maxLen int) string {
+	cmd = strings.TrimSpace(cmd)
+	if len(cmd) <= maxLen {
+		return cmd
+	}
+	return cmd[:maxLen-3] + "..."
 }
 
 // checkInteractiveCommand detects if a command is likely to be interactive
