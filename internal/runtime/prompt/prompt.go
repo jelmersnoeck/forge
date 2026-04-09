@@ -191,6 +191,7 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 			bundledContent.WriteString(entry.Content)
 			bundledContent.WriteString("\n\n")
 		}
+		bundledContent.WriteString("Before starting work, scan the learnings above for anything relevant to the current task. If a learning applies, factor it into your approach.\n")
 		bundledContent.WriteString("</system-reminder>\n\n")
 		hasContent = true
 	}
