@@ -2,8 +2,10 @@
 package task
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -72,7 +74,9 @@ func (m *Manager) CreateBashTask(sessionID, description, command, cwd string, ti
 	return task, nil
 }
 
-// runBashTask executes a bash command in the background.
+// runBashTask executes a bash command in the background, streaming output
+// into a thread-safe buffer so task.Output is readable while the command
+// is still running (used by the CLI's live progress display).
 func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 	m.updateTaskStatus(task.ID, types.TaskStatusRunning)
 
@@ -94,7 +98,34 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 	}
 	cmd.WaitDelay = 5 * time.Second
 
-	output, err := cmd.CombinedOutput()
+	// Stream output into a thread-safe buffer. We tee stdout and stderr
+	// into a shared syncBuffer so task.Output reflects partial output
+	// while the command runs (for the CLI's live progress display).
+	var buf syncBuffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	// Goroutine copies buffer contents into task.Output every 500ms so
+	// the broadcaster / TaskGet always sees the latest output.
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				m.mu.Lock()
+				task.Output = buf.String()
+				m.mu.Unlock()
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	err := cmd.Run()
+	close(done)
+
 	now := time.Now()
 
 	m.mu.Lock()
@@ -106,7 +137,7 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 	}
 
 	task.EndTime = &now
-	task.Output = string(output)
+	task.Output = buf.String()
 
 	if err != nil {
 		task.Status = types.TaskStatusFailed
@@ -133,6 +164,34 @@ func (m *Manager) runBashTask(ctx context.Context, task *types.Task) {
 		task.ExitCode = &code
 	}
 }
+
+// syncBuffer is a goroutine-safe bytes.Buffer for streaming command output.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Read implements io.Reader for completeness.
+func (b *syncBuffer) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Read(p)
+}
+
+// Ensure syncBuffer satisfies io.Writer.
+var _ io.Writer = (*syncBuffer)(nil)
 
 // SetAgentRunner configures the function used to execute sub-agents.
 // Must be called before any Agent tool invocations (typically during worker setup).
