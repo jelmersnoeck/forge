@@ -136,7 +136,8 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-		gotResult := false
+		var resultMsg *cliMessage
+	readLoop:
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
@@ -169,22 +170,8 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 				p.handleAssistant(msg.Message, ch)
 
 			case "result":
-				gotResult = true
-				<-stderrDone
-				_ = cmd.Wait()
-
-				if msg.IsError {
-					ch <- types.ChatDelta{
-						Type: "error",
-						Text: "Claude CLI returned an error",
-					}
-					return
-				}
-				ch <- types.ChatDelta{
-					Type:       "message_stop",
-					StopReason: "end_turn",
-				}
-				return
+				resultMsg = &msg
+				break readLoop
 			}
 		}
 
@@ -202,7 +189,18 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		<-stderrDone
 		_ = cmd.Wait()
 
-		if gotResult {
+		if resultMsg != nil {
+			if resultMsg.IsError {
+				ch <- types.ChatDelta{
+					Type: "error",
+					Text: "Claude CLI returned an error",
+				}
+				return
+			}
+			ch <- types.ChatDelta{
+				Type:       "message_stop",
+				StopReason: "end_turn",
+			}
 			return
 		}
 
