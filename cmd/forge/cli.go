@@ -18,7 +18,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -62,7 +63,7 @@ type model struct {
 	server          string
 	sessionID       string
 	interactiveMode bool // true if talking directly to agent, false if via gateway
-	textInput       textinput.Model
+	textArea        textarea.Model
 	queue           []string
 	output          []string
 	ready           bool
@@ -240,13 +241,31 @@ func runCLI(args []string) int {
 		// Continue without cost tracking
 	}
 
-	// Initialize text input with slash-command autocomplete
-	ti := textinput.New()
-	ti.Placeholder = "Type your message..."
-	ti.Focus()
-	ti.CharLimit = 0 // no limit
-	ti.Width = 80    // will be updated on WindowSizeMsg
-	ti.SetSuggestions(slashCommandNames())
+	// Initialize textarea for multiline input
+	ta := textarea.New()
+	ta.Placeholder = "Type your message... (Shift+Enter for newline)"
+	ta.CharLimit = 0 // no limit
+	ta.ShowLineNumbers = false
+	ta.Prompt = "> "
+	ta.SetHeight(1)
+	ta.MaxHeight = 10
+	ta.SetWidth(76) // will be updated on WindowSizeMsg
+	ta.EndOfBufferCharacter = ' '
+	// Remap: Shift+Enter inserts newline, Enter is handled by us for sending
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("shift+enter", "ctrl+j"),
+		key.WithHelp("shift+enter", "insert newline"),
+	)
+	// Disable textarea's internal viewport scrolling keys — we handle scrolling ourselves
+	ta.KeyMap.LineNext = key.NewBinding(key.WithKeys("down"), key.WithHelp("down", ""))
+	ta.KeyMap.LinePrevious = key.NewBinding(key.WithKeys("up"), key.WithHelp("up", ""))
+	// Style: no visible border (the outer inputBorderStyle provides the border)
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Prompt = promptStyle.Inline(true)
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.Prompt = promptStyle.Inline(true)
 
 	// Determine effective working directory
 	effectiveCWD := cwd
@@ -261,7 +280,7 @@ func runCLI(args []string) int {
 		server:          serverURL,
 		sessionID:       sessionID,
 		interactiveMode: (*server == ""),
-		textInput:       ti,
+		textArea:        ta,
 		output:          []string{},
 		queue:           []string{},
 		renderer:        renderer,
@@ -335,7 +354,7 @@ func runCLI(args []string) int {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tick()}
+	cmds := []tea.Cmd{tick(), m.textArea.Focus()}
 	if m.initialPrompt != "" {
 		cmds = append(cmds, m.sendMessage(m.initialPrompt))
 	}
@@ -374,8 +393,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
-		// Update text input width
-		m.textInput.Width = msg.Width - 4 // account for border padding
+		// Update textarea width
+		m.textArea.SetWidth(msg.Width - 6) // account for border + padding
 		// Reinitialize renderer with updated width for proper wrapping
 		if m.width > 0 {
 			m.renderer, _ = glamour.NewTermRenderer(
@@ -435,10 +454,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyUp:
-			// Cycle suggestions when autocomplete is active
-			if m.hasSuggestions() {
+			// If textarea has multiple lines, let it handle cursor movement
+			if m.textArea.LineCount() > 1 {
 				var cmd tea.Cmd
-				m.textInput, cmd = m.textInput.Update(msg)
+				m.textArea, cmd = m.textArea.Update(msg)
 				return m, cmd
 			}
 			// Scroll up one line
@@ -451,10 +470,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyDown:
-			// Cycle suggestions when autocomplete is active
-			if m.hasSuggestions() {
+			// If textarea has multiple lines, let it handle cursor movement
+			if m.textArea.LineCount() > 1 {
 				var cmd tea.Cmd
-				m.textInput, cmd = m.textInput.Update(msg)
+				m.textArea, cmd = m.textArea.Update(msg)
 				return m, cmd
 			}
 			// Scroll down one line
@@ -466,14 +485,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case tea.KeyEnter:
-			if m.textInput.Value() == "" {
+		case tea.KeyTab:
+			// Slash command tab-completion
+			if completed := m.trySlashComplete(); completed {
 				return m, nil
 			}
-			text := m.textInput.Value()
-			m.textInput.SetValue("")            // Clear input immediately
-			m.textInput.ShowSuggestions = false // Hide suggestions
-			m.exitAttempts = 0                  // Reset exit attempts on new message
+			// Otherwise let textarea handle it
+			var cmd tea.Cmd
+			m.textArea, cmd = m.textArea.Update(msg)
+			return m, cmd
+
+		case tea.KeyEnter:
+			if m.textArea.Value() == "" {
+				return m, nil
+			}
+			text := m.textArea.Value()
+			m.textArea.Reset()
+			m.textArea.SetHeight(1) // Reset height after send
+			m.exitAttempts = 0      // Reset exit attempts on new message
 
 			// If nothing in queue and not working, send immediately without queuing
 			if len(m.queue) == 0 && !m.working {
@@ -514,11 +543,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		default:
-			// Let textinput handle all other keys (including navigation)
+			// Let textarea handle all other keys (including navigation)
 			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
+			m.textArea, cmd = m.textArea.Update(msg)
 			m.exitAttempts = 0 // Reset on any input
-			m.updateSlashSuggestions()
+			// Auto-resize textarea height based on content
+			m.resizeTextArea()
 			return m, cmd
 		}
 
@@ -577,7 +607,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m, nil
+	// Forward unhandled messages to textarea (cursor blink, etc.)
+	var cmd tea.Cmd
+	m.textArea, cmd = m.textArea.Update(msg)
+	return m, cmd
 }
 
 func (m model) getOutputHeight() int {
@@ -590,8 +623,8 @@ func (m model) getOutputHeight() int {
 		thinkingHeight = 1 // thinking/progress indicator
 	}
 	trackerHeight := m.taskTrackerHeight()
-	inputHeight := 3  // border + content
-	statusHeight := 1 // cwd + cost line (always shown)
+	inputHeight := m.textArea.LineCount() + 2 // border top/bottom + content lines
+	statusHeight := 1                         // cwd + cost line (always shown)
 	return m.height - queueHeight - thinkingHeight - trackerHeight - inputHeight - statusHeight - 1
 }
 
@@ -679,9 +712,9 @@ func (m model) View() string {
 		queueArea = strings.Join(queueLines, "\n")
 	}
 
-	// Build input area with textinput component
+	// Build input area with textarea component
 	inputArea := inputBorderStyle.Width(m.width - 4).Render(
-		promptStyle.Render("> ") + m.textInput.View(),
+		m.textArea.View(),
 	)
 
 	// Build status line below input: cwd (left) | PR (center) | cost (right)
@@ -1568,16 +1601,38 @@ func findWorktreeForBranch(repoRoot, branch string) (string, error) {
 	return "", nil
 }
 
-// updateSlashSuggestions enables or disables autocomplete based on whether the
-// input looks like a slash command prefix.
-func (m *model) updateSlashSuggestions() {
-	m.textInput.ShowSuggestions = strings.HasPrefix(m.textInput.Value(), "/")
+// trySlashComplete attempts tab-completion of slash commands.
+// Returns true if a completion was applied.
+func (m *model) trySlashComplete() bool {
+	val := m.textArea.Value()
+	if !strings.HasPrefix(val, "/") {
+		return false
+	}
+	// Find matching commands
+	var matches []string
+	for _, name := range slashCommandNames() {
+		if strings.HasPrefix(name, val) {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) == 1 {
+		m.textArea.SetValue(matches[0])
+		return true
+	}
+	return false
 }
 
-// hasSuggestions reports whether the autocomplete dropdown is active and has
-// matches to cycle through.
-func (m *model) hasSuggestions() bool {
-	return m.textInput.ShowSuggestions && len(m.textInput.MatchedSuggestions()) > 0
+// resizeTextArea adjusts the textarea height to fit content, clamped to [1, 10].
+func (m *model) resizeTextArea() {
+	lines := m.textArea.LineCount()
+	h := lines
+	if h < 1 {
+		h = 1
+	}
+	if h > 10 {
+		h = 10
+	}
+	m.textArea.SetHeight(h)
 }
 
 // prURLRe matches GitHub pull request URLs in text.
