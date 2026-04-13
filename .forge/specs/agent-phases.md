@@ -1,6 +1,6 @@
 ---
 id: agent-phases
-status: draft
+status: implemented
 ---
 # Split agent loop into spec-creator, coder, and reviewer phases
 
