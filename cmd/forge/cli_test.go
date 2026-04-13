@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/stretchr/testify/require"
 )
 
@@ -176,82 +177,54 @@ func TestSlashCommandNamesExcludesHidden(t *testing.T) {
 	}
 }
 
-func TestUpdateSlashSuggestions(t *testing.T) {
+func TestTrySlashComplete(t *testing.T) {
 	r := require.New(t)
 
 	tests := map[string]struct {
-		input string
-		want  bool
+		input     string
+		wantDone  bool
+		wantValue string
 	}{
-		"slash prefix enables suggestions": {
-			input: "/",
-			want:  true,
+		"completes partial slash command": {
+			input:     "/r",
+			wantDone:  true,
+			wantValue: "/review",
 		},
-		"slash with partial command": {
-			input: "/r",
-			want:  true,
+		"completes single-char prefix": {
+			input:     "/rev",
+			wantDone:  true,
+			wantValue: "/review",
 		},
-		"full command": {
-			input: "/review",
-			want:  true,
+		"no completion for non-slash input": {
+			input:     "hello",
+			wantDone:  false,
+			wantValue: "hello",
 		},
-		"empty input disables suggestions": {
-			input: "",
-			want:  false,
+		"no completion for empty input": {
+			input:     "",
+			wantDone:  false,
+			wantValue: "",
 		},
-		"normal message disables suggestions": {
-			input: "hello world",
-			want:  false,
+		"no completion for unknown command": {
+			input:     "/xyz",
+			wantDone:  false,
+			wantValue: "/xyz",
 		},
-		"slash in middle is not a command": {
-			input: "foo/bar",
-			want:  false,
+		"exact match still completes": {
+			input:     "/review",
+			wantDone:  true,
+			wantValue: "/review",
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			m := &model{}
-			m.textInput.SetValue(tc.input)
-			m.updateSlashSuggestions()
-			r.Equal(tc.want, m.textInput.ShowSuggestions)
-		})
-	}
-}
-
-func TestHasSuggestions(t *testing.T) {
-	r := require.New(t)
-
-	tests := map[string]struct {
-		input    string
-		showSugg bool
-		want     bool
-	}{
-		"active with matching prefix": {
-			input:    "/r",
-			showSugg: true,
-			want:     true,
-		},
-		"active but no matches": {
-			input:    "/xyz",
-			showSugg: true,
-			want:     false,
-		},
-		"not active": {
-			input:    "hello",
-			showSugg: false,
-			want:     false,
-		},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			m := &model{}
-			m.textInput.ShowSuggestions = tc.showSugg
-			m.textInput.SetValue(tc.input)
-			// SetSuggestions triggers updateSuggestions which populates matches
-			m.textInput.SetSuggestions(slashCommandNames())
-			r.Equal(tc.want, m.hasSuggestions())
+			ta := textarea.New()
+			ta.SetValue(tc.input)
+			m := &model{textArea: ta}
+			done := m.trySlashComplete()
+			r.Equal(tc.wantDone, done)
+			r.Equal(tc.wantValue, m.textArea.Value())
 		})
 	}
 }

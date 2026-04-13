@@ -12,7 +12,7 @@ var slashCommands = []slashCommand{
 	{Name: "/review", Description: "Run multi-agent code review on current diff"},
 }
 
-// slashCommandNames returns just the command names for textinput.SetSuggestions.
+// slashCommandNames returns just the command names for tab-completion.
 func slashCommandNames() []string {
 	names := make([]string, 0, len(slashCommands))
 	for _, cmd := range slashCommands {
