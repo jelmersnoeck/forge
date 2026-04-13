@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
+	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/mcp"
 	"github.com/jelmersnoeck/forge/internal/review"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
@@ -592,11 +593,27 @@ func (w *Worker) makeAgentRunner(
 	}
 }
 
-// selectProvider picks the LLM provider based on environment:
-//   - ANTHROPIC_API_KEY set → Anthropic API
-//   - `claude` on PATH → Claude CLI (uses Claude.ai subscription)
-//   - Neither → fall back to Anthropic (will fail on first API call with clear error)
+// selectProvider picks the LLM provider with this priority:
+//  1. FORGE_PROVIDER env var (explicit override)
+//  2. ~/.forge/config.toml [provider].default
+//  3. Auto-detect: ANTHROPIC_API_KEY → Anthropic API, `claude` on PATH → CLI
+//  4. Fallback to Anthropic (will fail on first call with clear error)
 func selectProvider() types.LLMProvider {
+	// Priority 1: explicit env override
+	if envProv := os.Getenv("FORGE_PROVIDER"); envProv != "" {
+		return providerFromName(envProv)
+	}
+
+	// Priority 2: user config
+	userCfg, err := config.LoadUserConfig()
+	if err != nil {
+		log.Printf("[provider] warning: failed to load user config: %v", err)
+	} else if userCfg.Provider.Default != "" {
+		log.Printf("[provider] using configured default: %s", userCfg.Provider.Default)
+		return providerFromName(userCfg.Provider.Default)
+	}
+
+	// Priority 3: auto-detect from environment
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		return provider.NewAnthropic(key)
 	}
@@ -608,6 +625,33 @@ func selectProvider() types.LLMProvider {
 
 	log.Println("[provider] WARNING: ANTHROPIC_API_KEY not set and claude CLI not found — API calls will fail")
 	return provider.NewAnthropic("")
+}
+
+// providerFromName instantiates a provider by name. Falls back to Anthropic
+// with a warning if the name is unrecognized.
+func providerFromName(name string) types.LLMProvider {
+	switch name {
+	case "anthropic":
+		key := os.Getenv("ANTHROPIC_API_KEY")
+		if key == "" {
+			log.Println("[provider] WARNING: provider=anthropic but ANTHROPIC_API_KEY not set — API calls will fail")
+		}
+		return provider.NewAnthropic(key)
+	case "claude-cli":
+		if _, err := exec.LookPath("claude"); err != nil {
+			log.Println("[provider] WARNING: provider=claude-cli but `claude` not found on PATH")
+		}
+		return provider.NewClaudeCLI()
+	case "openai":
+		key := os.Getenv("OPENAI_API_KEY")
+		if key == "" {
+			log.Println("[provider] WARNING: provider=openai but OPENAI_API_KEY not set — API calls will fail")
+		}
+		return provider.NewOpenAI(key)
+	default:
+		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
+		return provider.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
+	}
 }
 
 // connectMCPServers loads MCP config and connects to all configured servers,
