@@ -36,12 +36,12 @@ On worktree creation, write a `.forge-session` JSON file inside the worktree
 root containing `{ "sessionID": "...", "branch": "...", "repoRoot": "..." }`.
 This links the worktree back to its session for resume.
 
-### B3: Auto-resume from branch detection
+### B3: Fresh worktree on every default launch
 When `forge` starts without `--resume` or `--branch`, and the user is on
-`main`/`master`, scan existing worktrees (`/tmp/forge/worktrees/`) for
-`.forge-session` files belonging to this repo. If exactly one active worktree
-is found, offer to resume it (or just resume it — no prompting). If multiple
-are found, list them and ask the user to pick one or start fresh.
+`main`/`master`, always create a new worktree with a unique session ID.
+No session scanning or auto-resume occurs in the default path — this
+prevents multiple forge invocations from the same branch silently reusing
+the same worktree. Use `--branch` to explicitly resume an existing session.
 
 ### B4: Resume via --branch
 When `--branch jelmer/some-session` is passed and a worktree already exists
@@ -92,9 +92,6 @@ worktree in the ephemeral path (only kills the agent process).
 New function. Scans worktreeBase for `.forge-session` files, checks PR
 merge status, removes merged ones.
 
-### `findResumableSessions(repoRoot, worktreeBase string) []SessionInfo`
-Scans worktreeBase for `.forge-session` files matching repoRoot.
-
 ```go
 type SessionInfo struct {
     SessionID    string
@@ -107,9 +104,8 @@ type SessionInfo struct {
 ## Edge Cases
 
 ### E1: Multiple worktrees for same repo
-`findResumableSession` returns all of them. If >1 and no `--branch` flag,
-print the list and start a fresh session (don't block on user input since
-the TUI isn't started yet).
+Each `forge` invocation from a default branch creates a new worktree with a
+unique session ID. No conflict. Use `--branch` to resume a specific one.
 
 ### E2: Worktree directory deleted but branch still exists
 If `.forge-session` references a path that no longer exists, skip it.
