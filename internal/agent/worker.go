@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -43,8 +44,7 @@ func NewWorker(hub *Hub, sessionID, cwd, sessionsDir string) *Worker {
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[agent:%s] worker started, cwd=%s", w.sessionID, w.cwd)
 
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	prov := provider.NewAnthropic(apiKey)
+	prov := selectProvider()
 	registry := tools.NewDefaultRegistry()
 	loader := rctx.NewLoader(w.cwd)
 	bundle, err := loader.Load([]string{"user", "project", "local"})
@@ -73,11 +73,16 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 	}()
 
-	// Pick model: settings override if it's a real API model ID
+	// Pick model: settings override, but only pass through real API model IDs
+	// to the Anthropic provider. Claude CLI accepts aliases (sonnet, opus, etc.).
+	_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
 	const defaultModel = "claude-opus-4-6"
 	model := defaultModel
-	if m := bundle.Settings.Model; m != "" && strings.HasPrefix(m, "claude-") {
-		model = m
+	switch {
+	case isClaudeCLI && bundle.Settings.Model != "":
+		model = bundle.Settings.Model
+	case bundle.Settings.Model != "" && strings.HasPrefix(bundle.Settings.Model, "claude-"):
+		model = bundle.Settings.Model
 	}
 
 	// Listen for review triggers in a separate goroutine.
@@ -296,11 +301,14 @@ func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		providers["openai"] = provider.NewOpenAI(key)
 	}
+	if _, err := exec.LookPath("claude"); err == nil {
+		providers["claude-cli"] = provider.NewClaudeCLI()
+	}
 
 	if len(providers) == 0 {
 		emit(types.OutboundEvent{
 			Type:    "review_error",
-			Content: "No providers available for review. Set ANTHROPIC_API_KEY and/or OPENAI_API_KEY.",
+			Content: "No providers available for review. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or install the claude CLI.",
 		})
 		emit(types.OutboundEvent{Type: "done"})
 		return
@@ -436,6 +444,24 @@ func (w *Worker) makeAgentRunner(
 		agent.Output = output.String()
 		return nil
 	}
+}
+
+// selectProvider picks the LLM provider based on environment:
+//   - ANTHROPIC_API_KEY set → Anthropic API
+//   - `claude` on PATH → Claude CLI (uses Claude.ai subscription)
+//   - Neither → fall back to Anthropic (will fail on first API call with clear error)
+func selectProvider() types.LLMProvider {
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		return provider.NewAnthropic(key)
+	}
+
+	if _, err := exec.LookPath("claude"); err == nil {
+		log.Println("[provider] ANTHROPIC_API_KEY not set, using Claude CLI provider")
+		return provider.NewClaudeCLI()
+	}
+
+	log.Println("[provider] WARNING: ANTHROPIC_API_KEY not set and claude CLI not found — API calls will fail")
+	return provider.NewAnthropic("")
 }
 
 // connectMCPServers loads MCP config and connects to all configured servers,
