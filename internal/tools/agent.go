@@ -153,30 +153,33 @@ func handleAgentGet(input map[string]any, ctx types.ToolContext) (types.ToolResu
 		return errResult("agent_id must be a string")
 	}
 
-	agent, found := taskMgr.GetAgent(agentID)
+	snap, found := taskMgr.GetAgentSnapshot(agentID)
 	if !found {
 		return errResultf("agent not found: %s", agentID)
 	}
 
+	// Emit task_status for the CLI's inline progress display.
+	emitTaskStatus(ctx, snap.ID, snap.Description, string(snap.Status), snap.Output, snap.StartTime, snap.EndTime)
+
 	result := map[string]any{
-		"id":          agent.ID,
-		"sessionId":   agent.SessionID,
-		"type":        agent.Type,
-		"status":      string(agent.Status),
-		"description": agent.Description,
-		"turnCount":   agent.TurnCount,
-		"maxTurns":    agent.MaxTurns,
-		"startTime":   agent.StartTime.Format("2006-01-02 15:04:05"),
+		"id":          snap.ID,
+		"sessionId":   snap.SessionID,
+		"type":        snap.Type,
+		"status":      string(snap.Status),
+		"description": snap.Description,
+		"turnCount":   snap.TurnCount,
+		"maxTurns":    snap.MaxTurns,
+		"startTime":   snap.StartTime.Format("2006-01-02 15:04:05"),
 	}
-	if agent.EndTime != nil {
-		result["endTime"] = agent.EndTime.Format("2006-01-02 15:04:05")
-		result["duration"] = agent.EndTime.Sub(agent.StartTime).String()
+	if snap.EndTime != nil {
+		result["endTime"] = snap.EndTime.Format("2006-01-02 15:04:05")
+		result["duration"] = snap.EndTime.Sub(snap.StartTime).String()
 	}
-	if agent.Error != "" {
-		result["error"] = agent.Error
+	if snap.Error != "" {
+		result["error"] = snap.Error
 	}
-	if agent.Output != "" {
-		result["output"] = agent.Output
+	if snap.Output != "" {
+		result["output"] = snap.Output
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")

@@ -106,6 +106,41 @@ func TestManager_StopTask(t *testing.T) {
 	r.NotNil(retrieved.EndTime)
 }
 
+func TestManager_StreamingOutput(t *testing.T) {
+	r := require.New(t)
+
+	m := NewManager()
+	// This command prints lines with 200ms gaps. After 800ms we should see
+	// partial output before the command finishes at ~1s.
+	cmd := `for i in 1 2 3 4 5; do echo "line$i"; sleep 0.2; done`
+	task, err := m.CreateBashTask("session-streaming", "Streaming test", cmd, "/tmp", 10)
+	r.NoError(err)
+
+	// Wait ~800ms — GetTaskOutput reads live buffer contents.
+	time.Sleep(800 * time.Millisecond)
+
+	snap, found := m.GetTaskSnapshot(task.ID)
+	r.True(found)
+	r.Equal(types.TaskStatusRunning, snap.Status, "task should still be running at 800ms")
+	r.Contains(snap.Output, "line1", "partial output should be visible while running")
+
+	// Wait for completion.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snap, _ = m.GetTaskSnapshot(task.ID)
+		if snap.Status.IsTerminal() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("task did not finish in 5s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	r.Equal(types.TaskStatusCompleted, snap.Status)
+	r.Contains(snap.Output, "line5")
+}
+
 func TestManager_CreateAgent(t *testing.T) {
 	r := require.New(t)
 

@@ -46,6 +46,18 @@ var (
 				Padding(0, 1)
 )
 
+// taskTracker holds live state for a background task being polled by the LLM.
+// Instead of showing repeated [TaskGet] lines, the CLI renders a single
+// spinner + description block with rolling output for each tracked task.
+type taskTracker struct {
+	taskID      string
+	description string
+	status      string
+	outputTail  []string  // last 5 lines of output
+	startTime   time.Time // for duration display on completion
+	duration    string    // set when terminal
+}
+
 type model struct {
 	server          string
 	sessionID       string
@@ -88,6 +100,10 @@ type model struct {
 
 	// PR tracking
 	prURL string // PR URL from pr_monitor or PRCreate
+
+	// Inline task progress — keyed by task/agent ID
+	taskTrackers     map[string]*taskTracker
+	taskTrackerOrder []string // insertion order for stable rendering
 }
 
 type serverEvent types.OutboundEvent
@@ -232,6 +248,7 @@ func runCLI(args []string) int {
 		sessionTitle:    sessionID,
 		titleGenerated:  initialPrompt != "", // already named via Haiku if we had a prompt
 		prURL:           prURL,
+		taskTrackers:    make(map[string]*taskTracker),
 	}
 
 	// Add welcome message
@@ -303,7 +320,7 @@ func tick() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		if m.thinking || m.toolProgress != "" {
+		if m.thinking || m.toolProgress != "" || len(m.taskTrackers) > 0 {
 			m.spinnerFrame++
 		}
 		return m, tick()
@@ -485,7 +502,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolProgress = ""
 		case "tool_progress":
 			// Keep working/thinking state, just update progress
-		case "text", "tool_use", "review_start", "review_finding":
+		case "text", "tool_use", "task_status", "review_start", "review_finding":
 			m.thinking = false
 			m.working = true
 			m.toolProgress = ""
@@ -540,9 +557,23 @@ func (m model) getOutputHeight() int {
 	if m.thinking || m.toolProgress != "" {
 		thinkingHeight = 1 // thinking/progress indicator
 	}
+	trackerHeight := m.taskTrackerHeight()
 	inputHeight := 3  // border + content
 	statusHeight := 1 // cwd + cost line (always shown)
-	return m.height - queueHeight - thinkingHeight - inputHeight - statusHeight - 1
+	return m.height - queueHeight - thinkingHeight - trackerHeight - inputHeight - statusHeight - 1
+}
+
+// taskTrackerHeight returns how many terminal lines the task tracker block
+// will occupy (header line + up to 5 output lines per tracked task).
+func (m model) taskTrackerHeight() int {
+	h := 0
+	for _, id := range m.taskTrackerOrder {
+		if tt, ok := m.taskTrackers[id]; ok {
+			h++ // header line
+			h += len(tt.outputTail)
+		}
+	}
+	return h
 }
 
 func (m model) spinner() string {
@@ -668,6 +699,10 @@ func (m model) View() string {
 	if outputArea != "" {
 		parts = append(parts, outputArea)
 	}
+	// Task progress trackers sit between output and thinking indicator
+	if trackerArea := m.renderTaskTrackers(); trackerArea != "" {
+		parts = append(parts, trackerArea)
+	}
 	if thinkingIndicator != "" {
 		parts = append(parts, thinkingIndicator)
 	}
@@ -731,24 +766,31 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 
 	case "tool_use":
 		m.flushText()
-		if event.Content != "" {
-			// Wrap long tool content to terminal width
-			maxWidth := m.width - 10 // account for prefix and margins
-			if maxWidth < 40 {
-				maxWidth = 40
-			}
-			wrapped := wrapText(event.Content, maxWidth)
-			prefix := toolStyle.Render("  ["+event.ToolName+"]") + " "
-			for i, line := range wrapped {
-				if i == 0 {
-					m.output = append(m.output, prefix+dimStyle.Render(line))
-				} else {
-					// Indent continuation lines
-					m.output = append(m.output, "    "+dimStyle.Render(line))
+		// Suppress repeated TaskGet/AgentGet lines — the inline task
+		// progress display handles these via task_status events.
+		switch event.ToolName {
+		case "TaskGet", "AgentGet", "TaskOutput":
+			// Don't render a line; the task_status event updates the tracker.
+		default:
+			if event.Content != "" {
+				// Wrap long tool content to terminal width
+				maxWidth := m.width - 10 // account for prefix and margins
+				if maxWidth < 40 {
+					maxWidth = 40
 				}
+				wrapped := wrapText(event.Content, maxWidth)
+				prefix := toolStyle.Render("  ["+event.ToolName+"]") + " "
+				for i, line := range wrapped {
+					if i == 0 {
+						m.output = append(m.output, prefix+dimStyle.Render(line))
+					} else {
+						// Indent continuation lines
+						m.output = append(m.output, "    "+dimStyle.Render(line))
+					}
+				}
+			} else {
+				m.output = append(m.output, toolStyle.Render("  ["+event.ToolName+"]"))
 			}
-		} else {
-			m.output = append(m.output, toolStyle.Render("  ["+event.ToolName+"]"))
 		}
 
 	case "tool_progress":
@@ -878,6 +920,12 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 
 	case "done":
 		m.flushText()
+		// Finalize any remaining task trackers (agent done, no more polling).
+		for _, id := range append([]string{}, m.taskTrackerOrder...) {
+			if tt, ok := m.taskTrackers[id]; ok {
+				m.finalizeTaskTracker(tt)
+			}
+		}
 		m.output = append(m.output, "")
 
 	case "review_start":
@@ -917,9 +965,136 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 	case "pr_monitor":
 		m.flushText()
 		m.output = append(m.output, dimStyle.Render("  [pr] ")+event.Content)
+
+	case "task_status":
+		m.handleTaskStatus(event.Content)
 	}
 }
 
+// handleTaskStatus parses a task_status event and updates (or creates) the
+// inline tracker for that task. When the task reaches a terminal state the
+// tracker is finalized: a one-line summary is appended to scrollback output
+// and the tracker is removed so it no longer takes up screen space.
+func (m *model) handleTaskStatus(content string) {
+	var payload struct {
+		ID          string   `json:"id"`
+		Description string   `json:"description"`
+		Status      string   `json:"status"`
+		OutputTail  []string `json:"outputTail"`
+		Duration    string   `json:"duration"`
+	}
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return
+	}
+
+	tt, exists := m.taskTrackers[payload.ID]
+	if !exists {
+		tt = &taskTracker{
+			taskID:    payload.ID,
+			startTime: time.Now(),
+		}
+		m.taskTrackers[payload.ID] = tt
+		m.taskTrackerOrder = append(m.taskTrackerOrder, payload.ID)
+	}
+
+	tt.description = payload.Description
+	tt.status = payload.Status
+	tt.outputTail = payload.OutputTail
+	tt.duration = payload.Duration
+
+	// Terminal? Flush a final summary into scrollback and remove the tracker.
+	switch tt.status {
+	case "completed", "failed", "killed":
+		m.finalizeTaskTracker(tt)
+	}
+}
+
+// finalizeTaskTracker moves a finished task from the live tracker area into
+// the scrollback output as a single summary line.
+func (m *model) finalizeTaskTracker(tt *taskTracker) {
+	icon := dimStyle.Render("?")
+	switch tt.status {
+	case "completed":
+		icon = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓")
+	case "failed":
+		icon = errorStyle.Render("✗")
+	case "killed":
+		icon = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("⊘")
+	}
+
+	dur := tt.duration
+	if dur == "" {
+		dur = time.Since(tt.startTime).Round(time.Second).String()
+	}
+
+	m.output = append(m.output,
+		fmt.Sprintf("  %s %s (%s) %s",
+			icon,
+			tt.description,
+			tt.taskID,
+			dimStyle.Render(dur),
+		),
+	)
+
+	delete(m.taskTrackers, tt.taskID)
+	// Remove from order slice.
+	for i, id := range m.taskTrackerOrder {
+		if id == tt.taskID {
+			m.taskTrackerOrder = append(m.taskTrackerOrder[:i], m.taskTrackerOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// renderTaskTrackers produces the live task progress block shown between
+// the main output area and the thinking indicator / input box.
+//
+//	⠹ Running tests (b3)                 running
+//	    PASS TestFoo
+//	    PASS TestBar
+func (m model) renderTaskTrackers() string {
+	if len(m.taskTrackers) == 0 {
+		return ""
+	}
+
+	var lines []string
+	for _, id := range m.taskTrackerOrder {
+		tt, ok := m.taskTrackers[id]
+		if !ok {
+			continue
+		}
+
+		// Header: spinner + description (task_id) + status
+		statusColor := lipgloss.Color("6") // cyan = running
+		switch tt.status {
+		case "pending":
+			statusColor = lipgloss.Color("8")
+		}
+		statusStr := lipgloss.NewStyle().Foreground(statusColor).Render(tt.status)
+
+		header := fmt.Sprintf("  %s %s %s %s",
+			thinkingStyle.Render(m.spinner()),
+			tt.description,
+			dimStyle.Render("("+tt.taskID+")"),
+			statusStr,
+		)
+		lines = append(lines, header)
+
+		// Output tail — indented
+		maxWidth := m.width - 8
+		if maxWidth < 40 {
+			maxWidth = 40
+		}
+		for _, ol := range tt.outputTail {
+			if len(ol) > maxWidth {
+				ol = ol[:maxWidth]
+			}
+			lines = append(lines, "      "+dimStyle.Render(ol))
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
 func (m *model) flushText() {
 	text := m.textBuf
 	m.textBuf = ""
