@@ -43,29 +43,3 @@ func readSessionFile(worktreePath string) (SessionInfo, error) {
 	info.WorktreePath = worktreePath
 	return info, nil
 }
-
-// findResumableSessions scans worktreeBase for .forge-session files belonging
-// to the given repoRoot.
-func findResumableSessions(repoRoot, worktreeBase string) []SessionInfo {
-	entries, err := os.ReadDir(worktreeBase)
-	if err != nil {
-		return nil
-	}
-
-	var sessions []SessionInfo
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		wtPath := filepath.Join(worktreeBase, entry.Name())
-		info, err := readSessionFile(wtPath)
-		if err != nil {
-			continue
-		}
-		if info.RepoRoot != repoRoot {
-			continue
-		}
-		sessions = append(sessions, info)
-	}
-	return sessions
-}
