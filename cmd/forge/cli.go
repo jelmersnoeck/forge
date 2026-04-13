@@ -1352,66 +1352,25 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))
 		}
 	} else if !skipWorktree && !isInWorktree(cwd) {
-		// Default mode: create worktree from current branch
+		// Default mode: always create a fresh worktree from current branch.
+		// Use --branch to explicitly resume an existing session.
 		repoRoot = findRepoRoot(cwd)
 		if repoRoot != "" {
-			// Check for existing resumable sessions before creating a new one
-			sessions := findResumableSessions(repoRoot, worktreeBase)
-			switch len(sessions) {
-			case 1:
-				// Single existing session — auto-resume
-				s := sessions[0]
-				worktreePath = s.WorktreePath
-				worktreeBranch = s.Branch
-				sessionID = s.SessionID
-				cwd = worktreePath
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  resuming session: "+sessionID))
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  worktree: "+worktreePath))
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+worktreeBranch))
-			case 0:
-				// No existing sessions — create a new worktree
-				cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-				cmd.Dir = repoRoot
-				if branchOut, err := cmd.Output(); err == nil {
-					currentBranch := strings.TrimSpace(string(branchOut))
-					worktreePath = filepath.Join(worktreeBase, sessionID)
+			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+			cmd.Dir = repoRoot
+			if branchOut, err := cmd.Output(); err == nil {
+				currentBranch := strings.TrimSpace(string(branchOut))
+				worktreePath = filepath.Join(worktreeBase, sessionID)
 
-					if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
-						newBranch := fmt.Sprintf("jelmer/%s", sessionID)
-						cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
-						cmd.Dir = repoRoot
-						if err := cmd.Run(); err == nil {
-							worktreeBranch = newBranch
-							fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
-							fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch))
-							cwd = worktreePath
-						}
-					}
-				}
-			default:
-				// Multiple sessions — list them and start fresh
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  multiple existing sessions found:"))
-				for _, s := range sessions {
-					fmt.Fprintln(os.Stderr, dimStyle.Render(fmt.Sprintf("    - %s (branch: %s)", s.SessionID, s.Branch)))
-				}
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  starting fresh session (use --branch to resume a specific one)"))
-
-				cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-				cmd.Dir = repoRoot
-				if branchOut, err := cmd.Output(); err == nil {
-					currentBranch := strings.TrimSpace(string(branchOut))
-					worktreePath = filepath.Join(worktreeBase, sessionID)
-
-					if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
-						newBranch := fmt.Sprintf("jelmer/%s", sessionID)
-						cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
-						cmd.Dir = repoRoot
-						if err := cmd.Run(); err == nil {
-							worktreeBranch = newBranch
-							fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
-							fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch))
-							cwd = worktreePath
-						}
+				if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
+					newBranch := fmt.Sprintf("jelmer/%s", sessionID)
+					cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
+					cmd.Dir = repoRoot
+					if err := cmd.Run(); err == nil {
+						worktreeBranch = newBranch
+						fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
+						fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch))
+						cwd = worktreePath
 					}
 				}
 			}
