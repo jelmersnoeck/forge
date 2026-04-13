@@ -1,0 +1,168 @@
+package phase
+
+import (
+	"os"
+	"testing"
+
+	"github.com/jelmersnoeck/forge/internal/types"
+	"github.com/stretchr/testify/require"
+)
+
+func TestPhaseDefinitions(t *testing.T) {
+	tests := map[string]struct {
+		phase          Phase
+		wantName       string
+		wantMaxTurns   int
+		wantDisallowed []string
+		wantAllAllowed bool // true if no tool restrictions
+	}{
+		"spec creator": {
+			phase:        SpecCreator(),
+			wantName:     "spec",
+			wantMaxTurns: 200,
+			wantDisallowed: []string{
+				"Edit", "PRCreate",
+				"Agent", "AgentGet", "AgentList", "AgentStop",
+			},
+		},
+		"coder": {
+			phase:          Coder(),
+			wantName:       "code",
+			wantMaxTurns:   0,
+			wantAllAllowed: true,
+		},
+		"reviewer": {
+			phase:        Reviewer(),
+			wantName:     "review",
+			wantMaxTurns: 100,
+			wantDisallowed: []string{
+				"Write", "Edit", "PRCreate",
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.wantName, tc.phase.Name)
+			r.Equal(tc.wantMaxTurns, tc.phase.MaxTurns)
+
+			if tc.wantAllAllowed {
+				r.Empty(tc.phase.AllowedTools)
+				r.Empty(tc.phase.DisallowedTools)
+				return
+			}
+
+			for _, tool := range tc.wantDisallowed {
+				r.Contains(tc.phase.DisallowedTools, tool,
+					"expected %s to be disallowed", tool)
+			}
+		})
+	}
+}
+
+func TestPromptForPhase(t *testing.T) {
+	tests := map[string]struct {
+		phaseName    string
+		wantEmpty    bool
+		wantContains string
+	}{
+		"spec": {
+			phaseName:    "spec",
+			wantContains: "product manager",
+		},
+		"code": {
+			phaseName:    "code",
+			wantContains: "expert software engineer",
+		},
+		"review": {
+			phaseName:    "review",
+			wantContains: "code review coordinator",
+		},
+		"unknown defaults to coder": {
+			phaseName:    "greendale",
+			wantContains: "expert software engineer",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			prompt := PromptForPhase(tc.phaseName)
+
+			switch tc.wantEmpty {
+			case true:
+				r.Empty(prompt)
+			default:
+				r.NotEmpty(prompt)
+				r.Contains(prompt, tc.wantContains)
+			}
+		})
+	}
+}
+
+func TestInjectPhasePrompt(t *testing.T) {
+	r := require.New(t)
+
+	// Import types indirectly through the function.
+	bundle := emptyBundle()
+
+	// Inject spec phase prompt.
+	injected := injectPhasePrompt(bundle, "spec")
+
+	// Original bundle should be unchanged.
+	r.Empty(bundle.AgentsMD)
+
+	// Injected bundle should have the phase entry.
+	r.Len(injected.AgentsMD, 1)
+	r.Equal("phase:spec", injected.AgentsMD[0].Path)
+	r.Equal("phase", injected.AgentsMD[0].Level)
+	r.Contains(injected.AgentsMD[0].Content, "product manager")
+}
+
+func TestFindLatestSpec(t *testing.T) {
+	r := require.New(t)
+
+	// Non-existent directory should return empty.
+	path := findLatestSpec("/nonexistent/greendale/community/college")
+	r.Empty(path)
+
+	// Create a temp dir with specs.
+	dir := t.TempDir()
+	specsDir := dir + "/.forge/specs"
+	require.NoError(t, mkdirAll(specsDir))
+
+	// Write two spec files.
+	require.NoError(t, writeFile(specsDir+"/first.md", "# First"))
+	require.NoError(t, writeFile(specsDir+"/second.md", "# Second"))
+
+	// Should find the latest one (second, since it was written last).
+	path = findLatestSpec(dir)
+	r.NotEmpty(path)
+	r.Contains(path, ".md")
+}
+
+func TestConvertToResults(t *testing.T) {
+	r := require.New(t)
+
+	// Empty findings.
+	results := convertToResults(nil)
+	r.Len(results, 1)
+	r.Empty(results[0].Findings)
+}
+
+// helpers
+
+func emptyBundle() types.ContextBundle {
+	return types.ContextBundle{
+		AgentDefinitions: make(map[string]types.AgentDefinition),
+	}
+}
+
+func mkdirAll(path string) error {
+	return os.MkdirAll(path, 0o755)
+}
+
+func writeFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o644)
+}

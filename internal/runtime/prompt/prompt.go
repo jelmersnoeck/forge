@@ -132,12 +132,16 @@ discovered, files may have been added.
 func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var blocks []types.SystemBlock
 
-	// Split AgentsMD into "instructions" (user/project/local/parent) and
-	// "learnings" (.forge/learnings/* files). Instructions go in the static
-	// block; learnings go in the dynamic block.
+	// Split AgentsMD into categories:
+	// - "phase" entries → phase-specific system prompt (goes in static block)
+	// - "learnings" → .forge/learnings/* files (goes in dynamic block)
+	// - everything else → instructions (goes in static block)
 	var instructions, learnings []types.AgentsMDEntry
+	var phasePrompt string
 	for _, entry := range bundle.AgentsMD {
 		switch {
+		case entry.Level == "phase":
+			phasePrompt = entry.Content
 		case strings.Contains(entry.Path, ".forge/learnings/"):
 			learnings = append(learnings, entry)
 		default:
@@ -150,6 +154,13 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var staticContent strings.Builder
 	staticContent.WriteString(basePrompt)
 	staticContent.WriteString(specPrompt)
+
+	// Phase-specific prompt (injected by orchestrator/phase runner)
+	if phasePrompt != "" {
+		staticContent.WriteString("\n\n")
+		staticContent.WriteString(phasePrompt)
+	}
+
 	fmt.Fprintf(&staticContent, "\n\nEnvironment Information:\n- Working directory: %s\n- Platform: %s\n- Current date: %s",
 		cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
 

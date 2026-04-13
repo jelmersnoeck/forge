@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jelmersnoeck/forge/internal/agent/phase"
 	"github.com/jelmersnoeck/forge/internal/mcp"
 	"github.com/jelmersnoeck/forge/internal/review"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
@@ -27,15 +29,19 @@ type Worker struct {
 	sessionID   string
 	cwd         string
 	sessionsDir string
+	mode        string // "swe", "spec", "code", "review", or "" (legacy/default)
+	specPath    string // spec file path for --spec flag
 }
 
 // NewWorker creates a new Worker.
-func NewWorker(hub *Hub, sessionID, cwd, sessionsDir string) *Worker {
+func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath string) *Worker {
 	return &Worker{
 		hub:         hub,
 		sessionID:   sessionID,
 		cwd:         cwd,
 		sessionsDir: sessionsDir,
+		mode:        mode,
+		specPath:    specPath,
 	}
 }
 
@@ -43,8 +49,7 @@ func NewWorker(hub *Hub, sessionID, cwd, sessionsDir string) *Worker {
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[agent:%s] worker started, cwd=%s", w.sessionID, w.cwd)
 
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	prov := provider.NewAnthropic(apiKey)
+	prov := selectProvider()
 	registry := tools.NewDefaultRegistry()
 	loader := rctx.NewLoader(w.cwd)
 	bundle, err := loader.Load([]string{"user", "project", "local"})
@@ -73,11 +78,16 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 	}()
 
-	// Pick model: settings override if it's a real API model ID
+	// Pick model: settings override, but only pass through real API model IDs
+	// to the Anthropic provider. Claude CLI accepts aliases (sonnet, opus, etc.).
+	_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
 	const defaultModel = "claude-opus-4-6"
 	model := defaultModel
-	if m := bundle.Settings.Model; m != "" && strings.HasPrefix(m, "claude-") {
-		model = m
+	switch {
+	case isClaudeCLI && bundle.Settings.Model != "":
+		model = bundle.Settings.Model
+	case bundle.Settings.Model != "" && strings.HasPrefix(bundle.Settings.Model, "claude-"):
+		model = bundle.Settings.Model
 	}
 
 	// Listen for review triggers in a separate goroutine.
@@ -88,6 +98,10 @@ func (w *Worker) Run(ctx context.Context) {
 
 	// Broadcast task progress every second for live CLI display.
 	go w.taskStatusBroadcaster(ctx, mgr)
+
+	// Track whether the first message has been handled by the orchestrator.
+	// After the orchestrator completes, subsequent messages use the plain loop.
+	orchestratorDone := false
 
 	var historyID string
 	for {
@@ -104,19 +118,6 @@ func (w *Worker) Run(ctx context.Context) {
 		} else {
 			log.Printf("[agent:%s] <- %s", w.sessionID, msg.Text)
 		}
-
-		opts := loop.Options{
-			Provider:     prov,
-			Tools:        registry,
-			Context:      bundle,
-			CWD:          w.cwd,
-			SessionStore: store,
-			SessionID:    w.sessionID,
-			Model:        model,
-			MaxTurns:     0, // unlimited
-			AuditLogger:  &StdAuditLogger{},
-		}
-		l := loop.New(opts)
 
 		var emit func(types.OutboundEvent)
 		emit = func(event types.OutboundEvent) {
@@ -159,12 +160,48 @@ func (w *Worker) Run(ctx context.Context) {
 			}
 		}()
 
+		// Decide execution path: orchestrator, single phase, or plain loop.
+		useOrchestrator := !orchestratorDone && w.mode != ""
 		switch {
+		case useOrchestrator && w.mode == "swe":
+			runErr = w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
+			orchestratorDone = true
+
+		case useOrchestrator && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):
+			runErr = w.runSinglePhase(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
+			orchestratorDone = true
+
 		case historyID != "":
+			l := loop.New(loop.Options{
+				Provider:     prov,
+				Tools:        registry,
+				Context:      bundle,
+				CWD:          w.cwd,
+				SessionStore: store,
+				SessionID:    w.sessionID,
+				Model:        model,
+				MaxTurns:     0,
+				AuditLogger:  &StdAuditLogger{},
+			})
 			runErr = l.Resume(turnCtx, historyID, msg.Text, emit)
+			historyID = l.HistoryID()
+
 		default:
+			l := loop.New(loop.Options{
+				Provider:     prov,
+				Tools:        registry,
+				Context:      bundle,
+				CWD:          w.cwd,
+				SessionStore: store,
+				SessionID:    w.sessionID,
+				Model:        model,
+				MaxTurns:     0,
+				AuditLogger:  &StdAuditLogger{},
+			})
 			runErr = l.Send(turnCtx, msg.Text, emit)
+			historyID = l.HistoryID()
 		}
+
 		turnCancel() // clean up goroutine
 
 		if runErr != nil {
@@ -181,9 +218,123 @@ func (w *Worker) Run(ctx context.Context) {
 			// Always emit done so the CLI returns to the prompt.
 			emit(types.OutboundEvent{Type: "done"})
 		}
-
-		historyID = l.HistoryID()
 	}
+}
+
+// runOrchestrator runs the full SWE pipeline (spec → code → review).
+func (w *Worker) runOrchestrator(
+	ctx context.Context,
+	prov types.LLMProvider,
+	registry *tools.Registry,
+	bundle types.ContextBundle,
+	store *session.Store,
+	model, prompt string,
+	emit func(types.OutboundEvent),
+) error {
+	orch := phase.NewSWEOrchestrator()
+	opts := phase.OrchestratorOpts{
+		Provider:      prov,
+		Registry:      registry,
+		Bundle:        bundle,
+		CWD:           w.cwd,
+		SessionStore:  store,
+		SessionID:     w.sessionID,
+		Model:         model,
+		Emit:          emit,
+		AuditLogger:   &StdAuditLogger{},
+		InitialPrompt: prompt,
+		SpecPath:      w.specPath,
+	}
+
+	err := orch.Run(ctx, opts)
+
+	// Emit done so the CLI returns to prompt.
+	emit(types.OutboundEvent{Type: "done"})
+	return err
+}
+
+// runSinglePhase runs a standalone phase (spec, code, or review).
+func (w *Worker) runSinglePhase(
+	ctx context.Context,
+	prov types.LLMProvider,
+	registry *tools.Registry,
+	bundle types.ContextBundle,
+	store *session.Store,
+	model, prompt string,
+	emit func(types.OutboundEvent),
+) error {
+	var p phase.Phase
+	switch w.mode {
+	case "spec":
+		p = phase.SpecCreator()
+	case "code":
+		p = phase.Coder()
+	case "review":
+		p = phase.Reviewer()
+	default:
+		p = phase.Coder()
+	}
+
+	// For review mode, delegate to the reviewer orchestration.
+	if w.mode == "review" {
+		opts := phase.OrchestratorOpts{
+			Provider:      prov,
+			Registry:      registry,
+			Bundle:        bundle,
+			CWD:           w.cwd,
+			SessionStore:  store,
+			SessionID:     w.sessionID,
+			Model:         model,
+			Emit:          emit,
+			AuditLogger:   &StdAuditLogger{},
+			InitialPrompt: prompt,
+		}
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: w.sessionID,
+			Type:      "phase_start",
+			Content:   "review",
+			Timestamp: time.Now().Unix(),
+		})
+		err := phase.RunReviewOnly(ctx, opts)
+		emit(types.OutboundEvent{Type: "done"})
+		return err
+	}
+
+	opts := phase.OrchestratorOpts{
+		Provider:      prov,
+		Registry:      registry,
+		Bundle:        bundle,
+		CWD:           w.cwd,
+		SessionStore:  store,
+		SessionID:     w.sessionID,
+		Model:         model,
+		Emit:          emit,
+		AuditLogger:   &StdAuditLogger{},
+		InitialPrompt: prompt,
+		SpecPath:      w.specPath,
+	}
+
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: w.sessionID,
+		Type:      "phase_start",
+		Content:   p.Name,
+		Timestamp: time.Now().Unix(),
+	})
+
+	err := phase.RunSinglePhase(ctx, opts, p)
+
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: w.sessionID,
+		Type:      "phase_complete",
+		Content:   p.Name,
+		Timestamp: time.Now().Unix(),
+	})
+
+	emit(types.OutboundEvent{Type: "done"})
+	return err
 }
 
 // executeImmediateQueue runs all commands in the immediate queue
@@ -296,11 +447,14 @@ func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		providers["openai"] = provider.NewOpenAI(key)
 	}
+	if _, err := exec.LookPath("claude"); err == nil {
+		providers["claude-cli"] = provider.NewClaudeCLI()
+	}
 
 	if len(providers) == 0 {
 		emit(types.OutboundEvent{
 			Type:    "review_error",
-			Content: "No providers available for review. Set ANTHROPIC_API_KEY and/or OPENAI_API_KEY.",
+			Content: "No providers available for review. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or install the claude CLI.",
 		})
 		emit(types.OutboundEvent{Type: "done"})
 		return
@@ -436,6 +590,24 @@ func (w *Worker) makeAgentRunner(
 		agent.Output = output.String()
 		return nil
 	}
+}
+
+// selectProvider picks the LLM provider based on environment:
+//   - ANTHROPIC_API_KEY set → Anthropic API
+//   - `claude` on PATH → Claude CLI (uses Claude.ai subscription)
+//   - Neither → fall back to Anthropic (will fail on first API call with clear error)
+func selectProvider() types.LLMProvider {
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		return provider.NewAnthropic(key)
+	}
+
+	if _, err := exec.LookPath("claude"); err == nil {
+		log.Println("[provider] ANTHROPIC_API_KEY not set, using Claude CLI provider")
+		return provider.NewClaudeCLI()
+	}
+
+	log.Println("[provider] WARNING: ANTHROPIC_API_KEY not set and claude CLI not found — API calls will fail")
+	return provider.NewAnthropic("")
 }
 
 // connectMCPServers loads MCP config and connects to all configured servers,
