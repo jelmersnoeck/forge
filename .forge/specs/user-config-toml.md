@@ -1,6 +1,6 @@
 ---
 id: user-config-toml
-status: draft
+status: implemented
 ---
 # Persistent user config with TOML and `forge config` commands
 
@@ -33,13 +33,11 @@ selection so users don't need env vars or project-level JSON to pick their defau
 - The existing JSON project config (`config.json`) and settings files are unaffected.
 
 ## Constraints
-- No new dependencies — use Go stdlib for TOML writing (simple key=value under sections).
-  For reading, use a minimal hand-rolled parser or the stdlib-compatible approach.
-  Actually: use `github.com/BurntSushi/toml` — it's the de-facto Go TOML library,
-  well-maintained, zero transitive deps.
-- TOML file must be human-readable and hand-editable.
-- Don't break existing env-var-based provider selection — it's an override.
-- Don't touch project-level settings.json files.
+- Uses `github.com/BurntSushi/toml` v1.6.0 — de-facto Go TOML library, zero transitive deps.
+- TOML file is human-readable and hand-editable.
+- Existing env-var-based provider selection preserved as highest-priority override (FORGE_PROVIDER).
+- Project-level settings.json files untouched.
+- `selectProvider()` priority: FORGE_PROVIDER env var > config.toml > ANTHROPIC_API_KEY env > claude CLI on PATH > fallback.
 
 ## Interfaces
 
