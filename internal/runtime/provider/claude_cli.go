@@ -2,9 +2,11 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -107,28 +109,39 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 		return nil, fmt.Errorf("create stdout pipe: %w", err)
 	}
 
-	// Capture stderr for error reporting.
-	var stderrBuf strings.Builder
-	cmd.Stderr = &stderrBuf
+	// Use StderrPipe so we control when stderr is read, avoiding
+	// a data race between exec.Cmd's internal copy goroutine and ours.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("create stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start claude CLI: %w", err)
 	}
 
+	// Drain stderr in the background. Must finish before cmd.Wait() returns.
+	var stderrBuf bytes.Buffer
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		_, _ = io.Copy(&stderrBuf, stderrPipe)
+	}()
+
 	ch := make(chan types.ChatDelta, 16)
 
 	go func() {
 		defer close(ch)
-		defer func() {
-			_ = cmd.Wait()
-		}()
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		gotResult := false
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
+				<-stderrDone
+				_ = cmd.Wait()
 				return
 			default:
 			}
@@ -156,6 +169,10 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 				p.handleAssistant(msg.Message, ch)
 
 			case "result":
+				gotResult = true
+				<-stderrDone
+				_ = cmd.Wait()
+
 				if msg.IsError {
 					ch <- types.ChatDelta{
 						Type: "error",
@@ -163,7 +180,6 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 					}
 					return
 				}
-				// Final result — the conversation turn is complete.
 				ch <- types.ChatDelta{
 					Type:       "message_stop",
 					StopReason: "end_turn",
@@ -177,14 +193,24 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 				Type: "error",
 				Text: fmt.Sprintf("read claude stdout: %s", err),
 			}
+			<-stderrDone
+			_ = cmd.Wait()
 			return
 		}
 
-		// If we got here without a result message, check stderr.
-		if stderr := stderrBuf.String(); stderr != "" {
+		// Wait for stderr drain + process exit before reading the buffer.
+		<-stderrDone
+		_ = cmd.Wait()
+
+		if gotResult {
+			return
+		}
+
+		// No result message — check stderr for errors.
+		if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" {
 			ch <- types.ChatDelta{
 				Type: "error",
-				Text: fmt.Sprintf("claude CLI error: %s", strings.TrimSpace(stderr)),
+				Text: fmt.Sprintf("claude CLI error: %s", stderr),
 			}
 			return
 		}
