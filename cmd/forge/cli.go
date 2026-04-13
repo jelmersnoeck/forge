@@ -118,11 +118,37 @@ func runCLI(args []string) int {
 	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
 	specPath := fs.String("spec", "", "path to a spec file to implement directly")
 	branch := fs.String("branch", "", "branch to check out (reuses existing worktree if found)")
+	mode := fs.String("mode", "", "agent mode: swe (default), spec, code, review")
 	_ = fs.Parse(args[1:])
 
 	if *branch != "" && *skipWorktree {
 		fmt.Fprintln(os.Stderr, errorStyle.Render("cannot use --branch with --skip-worktree"))
 		os.Exit(1)
+	}
+
+	// Validate --mode flag.
+	switch *mode {
+	case "", "swe", "spec", "code", "review":
+		// valid
+	default:
+		fmt.Fprintln(os.Stderr, errorStyle.Render("invalid --mode: "+*mode+" (valid: swe, spec, code, review)"))
+		os.Exit(1)
+	}
+
+	// Validate mode/spec conflicts.
+	if *mode == "spec" && *specPath != "" {
+		fmt.Fprintln(os.Stderr, errorStyle.Render("cannot use --spec with --mode spec (spec creator writes specs, it doesn't consume them)"))
+		os.Exit(1)
+	}
+	if *mode == "code" && *specPath == "" {
+		fmt.Fprintln(os.Stderr, errorStyle.Render("coder mode requires a spec (use --spec path/to/spec.md)"))
+		os.Exit(1)
+	}
+
+	// Default mode: swe when --spec is provided, empty (legacy) otherwise.
+	effectiveMode := *mode
+	if effectiveMode == "" && *specPath != "" {
+		effectiveMode = "swe"
 	}
 
 	cwd, err := os.Getwd()
@@ -179,7 +205,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
@@ -276,6 +302,11 @@ func runCLI(args []string) int {
 		if worktreeBranch != "" {
 			m.output = append(m.output, dimStyle.Render("branch: "+worktreeBranch))
 		}
+	}
+
+	// Add mode info if not default
+	if effectiveMode != "" {
+		m.output = append(m.output, dimStyle.Render("mode: "+effectiveMode))
 	}
 
 	// Add spec info if present
@@ -502,7 +533,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolProgress = ""
 		case "tool_progress":
 			// Keep working/thinking state, just update progress
-		case "text", "tool_use", "task_status", "review_start", "review_finding":
+		case "text", "tool_use", "task_status", "review_start", "review_finding",
+			"phase_start", "phase_handoff":
 			m.thinking = false
 			m.working = true
 			m.toolProgress = ""
@@ -928,6 +960,20 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		}
 		m.output = append(m.output, "")
 
+	case "phase_start":
+		m.flushText()
+		m.output = append(m.output, "")
+		m.output = append(m.output, headerStyle.Render("  [phase] ")+event.Content+" starting")
+
+	case "phase_complete":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [phase] ")+event.Content)
+		m.output = append(m.output, "")
+
+	case "phase_handoff":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [phase] ")+event.Content)
+
 	case "review_start":
 		m.flushText()
 		m.output = append(m.output, headerStyle.Render("  [review] ")+event.Content)
@@ -1258,7 +1304,7 @@ func isInWorktree(dir string) bool {
 // If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
 // If branchName is set, reuses an existing worktree for that branch or creates one.
 // initialPrompt, when non-empty, is used to generate a human-readable session name via Haiku.
-func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string) (string, string, string, string, func(), error) {
+func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -1388,11 +1434,18 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	}
 
 	// Spawn agent subcommand on random port (0 = OS picks)
-	cmd := exec.Command(forgeBin, "agent",
+	agentArgs := []string{"agent",
 		"--port", "0",
 		"--cwd", cwd,
 		"--session-id", sessionID,
-	)
+	}
+	if mode != "" {
+		agentArgs = append(agentArgs, "--mode", mode)
+	}
+	if specPath != "" {
+		agentArgs = append(agentArgs, "--spec", specPath)
+	}
+	cmd := exec.Command(forgeBin, agentArgs...)
 
 	// Capture stdout to read the port
 	stdout, err := cmd.StdoutPipe()

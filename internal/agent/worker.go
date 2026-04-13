@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jelmersnoeck/forge/internal/agent/phase"
 	"github.com/jelmersnoeck/forge/internal/mcp"
 	"github.com/jelmersnoeck/forge/internal/review"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
@@ -28,15 +29,19 @@ type Worker struct {
 	sessionID   string
 	cwd         string
 	sessionsDir string
+	mode        string // "swe", "spec", "code", "review", or "" (legacy/default)
+	specPath    string // spec file path for --spec flag
 }
 
 // NewWorker creates a new Worker.
-func NewWorker(hub *Hub, sessionID, cwd, sessionsDir string) *Worker {
+func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath string) *Worker {
 	return &Worker{
 		hub:         hub,
 		sessionID:   sessionID,
 		cwd:         cwd,
 		sessionsDir: sessionsDir,
+		mode:        mode,
+		specPath:    specPath,
 	}
 }
 
@@ -94,6 +99,10 @@ func (w *Worker) Run(ctx context.Context) {
 	// Broadcast task progress every second for live CLI display.
 	go w.taskStatusBroadcaster(ctx, mgr)
 
+	// Track whether the first message has been handled by the orchestrator.
+	// After the orchestrator completes, subsequent messages use the plain loop.
+	orchestratorDone := false
+
 	var historyID string
 	for {
 		select {
@@ -109,19 +118,6 @@ func (w *Worker) Run(ctx context.Context) {
 		} else {
 			log.Printf("[agent:%s] <- %s", w.sessionID, msg.Text)
 		}
-
-		opts := loop.Options{
-			Provider:     prov,
-			Tools:        registry,
-			Context:      bundle,
-			CWD:          w.cwd,
-			SessionStore: store,
-			SessionID:    w.sessionID,
-			Model:        model,
-			MaxTurns:     0, // unlimited
-			AuditLogger:  &StdAuditLogger{},
-		}
-		l := loop.New(opts)
 
 		var emit func(types.OutboundEvent)
 		emit = func(event types.OutboundEvent) {
@@ -164,12 +160,48 @@ func (w *Worker) Run(ctx context.Context) {
 			}
 		}()
 
+		// Decide execution path: orchestrator, single phase, or plain loop.
+		useOrchestrator := !orchestratorDone && w.mode != ""
 		switch {
+		case useOrchestrator && w.mode == "swe":
+			runErr = w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
+			orchestratorDone = true
+
+		case useOrchestrator && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):
+			runErr = w.runSinglePhase(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
+			orchestratorDone = true
+
 		case historyID != "":
+			l := loop.New(loop.Options{
+				Provider:     prov,
+				Tools:        registry,
+				Context:      bundle,
+				CWD:          w.cwd,
+				SessionStore: store,
+				SessionID:    w.sessionID,
+				Model:        model,
+				MaxTurns:     0,
+				AuditLogger:  &StdAuditLogger{},
+			})
 			runErr = l.Resume(turnCtx, historyID, msg.Text, emit)
+			historyID = l.HistoryID()
+
 		default:
+			l := loop.New(loop.Options{
+				Provider:     prov,
+				Tools:        registry,
+				Context:      bundle,
+				CWD:          w.cwd,
+				SessionStore: store,
+				SessionID:    w.sessionID,
+				Model:        model,
+				MaxTurns:     0,
+				AuditLogger:  &StdAuditLogger{},
+			})
 			runErr = l.Send(turnCtx, msg.Text, emit)
+			historyID = l.HistoryID()
 		}
+
 		turnCancel() // clean up goroutine
 
 		if runErr != nil {
@@ -186,9 +218,123 @@ func (w *Worker) Run(ctx context.Context) {
 			// Always emit done so the CLI returns to the prompt.
 			emit(types.OutboundEvent{Type: "done"})
 		}
-
-		historyID = l.HistoryID()
 	}
+}
+
+// runOrchestrator runs the full SWE pipeline (spec → code → review).
+func (w *Worker) runOrchestrator(
+	ctx context.Context,
+	prov types.LLMProvider,
+	registry *tools.Registry,
+	bundle types.ContextBundle,
+	store *session.Store,
+	model, prompt string,
+	emit func(types.OutboundEvent),
+) error {
+	orch := phase.NewSWEOrchestrator()
+	opts := phase.OrchestratorOpts{
+		Provider:      prov,
+		Registry:      registry,
+		Bundle:        bundle,
+		CWD:           w.cwd,
+		SessionStore:  store,
+		SessionID:     w.sessionID,
+		Model:         model,
+		Emit:          emit,
+		AuditLogger:   &StdAuditLogger{},
+		InitialPrompt: prompt,
+		SpecPath:      w.specPath,
+	}
+
+	err := orch.Run(ctx, opts)
+
+	// Emit done so the CLI returns to prompt.
+	emit(types.OutboundEvent{Type: "done"})
+	return err
+}
+
+// runSinglePhase runs a standalone phase (spec, code, or review).
+func (w *Worker) runSinglePhase(
+	ctx context.Context,
+	prov types.LLMProvider,
+	registry *tools.Registry,
+	bundle types.ContextBundle,
+	store *session.Store,
+	model, prompt string,
+	emit func(types.OutboundEvent),
+) error {
+	var p phase.Phase
+	switch w.mode {
+	case "spec":
+		p = phase.SpecCreator()
+	case "code":
+		p = phase.Coder()
+	case "review":
+		p = phase.Reviewer()
+	default:
+		p = phase.Coder()
+	}
+
+	// For review mode, delegate to the reviewer orchestration.
+	if w.mode == "review" {
+		opts := phase.OrchestratorOpts{
+			Provider:      prov,
+			Registry:      registry,
+			Bundle:        bundle,
+			CWD:           w.cwd,
+			SessionStore:  store,
+			SessionID:     w.sessionID,
+			Model:         model,
+			Emit:          emit,
+			AuditLogger:   &StdAuditLogger{},
+			InitialPrompt: prompt,
+		}
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: w.sessionID,
+			Type:      "phase_start",
+			Content:   "review",
+			Timestamp: time.Now().Unix(),
+		})
+		err := phase.RunReviewOnly(ctx, opts)
+		emit(types.OutboundEvent{Type: "done"})
+		return err
+	}
+
+	opts := phase.OrchestratorOpts{
+		Provider:      prov,
+		Registry:      registry,
+		Bundle:        bundle,
+		CWD:           w.cwd,
+		SessionStore:  store,
+		SessionID:     w.sessionID,
+		Model:         model,
+		Emit:          emit,
+		AuditLogger:   &StdAuditLogger{},
+		InitialPrompt: prompt,
+		SpecPath:      w.specPath,
+	}
+
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: w.sessionID,
+		Type:      "phase_start",
+		Content:   p.Name,
+		Timestamp: time.Now().Unix(),
+	})
+
+	err := phase.RunSinglePhase(ctx, opts, p)
+
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: w.sessionID,
+		Type:      "phase_complete",
+		Content:   p.Name,
+		Timestamp: time.Now().Unix(),
+	})
+
+	emit(types.OutboundEvent{Type: "done"})
+	return err
 }
 
 // executeImmediateQueue runs all commands in the immediate queue

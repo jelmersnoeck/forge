@@ -19,6 +19,8 @@ type Config struct {
 	CWD         string
 	SessionID   string
 	SessionsDir string
+	Mode        string // "swe" (default), "spec", "code", "review"
+	SpecPath    string // path to spec file (for --spec flag)
 }
 
 // Start creates a Hub, starts the Worker in a background goroutine,
@@ -29,7 +31,7 @@ type Config struct {
 func Start(cfg Config) error {
 	hub := NewHub()
 
-	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir)
+	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir, cfg.Mode, cfg.SpecPath)
 	go worker.Run(context.Background())
 
 	mux := http.NewServeMux()
