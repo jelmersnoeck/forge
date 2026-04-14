@@ -161,6 +161,67 @@ func TestBranchExists(t *testing.T) {
 	}
 }
 
+func TestDetectBaseBranch(t *testing.T) {
+	tests := map[string]struct {
+		setup func(t *testing.T) string
+		want  string
+	}{
+		"local main only": {
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+				return dir
+			},
+			want: currentDefaultBranch, // "main" or "master" depending on git config
+		},
+		"origin/main preferred over local main": {
+			setup: func(t *testing.T) string {
+				// Create a "remote" repo, clone it so we get origin/main.
+				remote := t.TempDir()
+				initGitRepo(t, remote)
+
+				clone := t.TempDir()
+				cmd := exec.Command("git", "clone", remote, clone)
+				out, err := cmd.CombinedOutput()
+				require.NoError(t, err, "git clone: %s", string(out))
+
+				return clone
+			},
+			want: "origin/main",
+		},
+		"no known branches": {
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+				// Rename the branch to something unknown.
+				gitRun(t, dir, "branch", "-m", "jelmer/darkest-timeline")
+				return dir
+			},
+			want: "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			dir := tc.setup(t)
+			got := detectBaseBranch(dir)
+
+			switch tc.want {
+			case currentDefaultBranch:
+				// Accept either "main" or "master" depending on git version.
+				r.True(got == "main" || got == "master" || got == "origin/main" || got == "origin/master",
+					"got %q, want main/master or origin variant", got)
+			default:
+				r.Equal(tc.want, got)
+			}
+		})
+	}
+}
+
+// currentDefaultBranch is a sentinel for "whatever git defaults to."
+const currentDefaultBranch = "<default>"
+
 func TestGetDiff(t *testing.T) {
 	tests := map[string]struct {
 		setup      func(t *testing.T) (dir string, baseBranch string)
@@ -288,6 +349,52 @@ func TestGetDiff(t *testing.T) {
 				r.NotContains(diff, "pillow.go", "uncommitted changes should NOT be in diff")
 			},
 		},
+		"prefers origin/main over stale local main": {
+			setup: func(t *testing.T) (string, string) {
+				// Create a "remote" repo with main branch.
+				remote := t.TempDir()
+				initGitRepo(t, remote)
+
+				// Add an initial file on main in remote.
+				require.NoError(t, os.WriteFile(filepath.Join(remote, "base.go"), []byte("package greendale\n"), 0o644))
+				gitRun(t, remote, "add", "base.go")
+				gitRunEnv(t, remote, []string{"GIT_AUTHOR_DATE=2024-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-01T00:00:00Z"},
+					"commit", "-m", "base commit")
+
+				// Clone it.
+				clone := t.TempDir()
+				cmd := exec.Command("git", "clone", remote, clone)
+				out, err := cmd.CombinedOutput()
+				require.NoError(t, err, "git clone: %s", string(out))
+
+				// Advance remote's main by one commit.
+				require.NoError(t, os.WriteFile(filepath.Join(remote, "remote-only.go"), []byte("package greendale\n"), 0o644))
+				gitRun(t, remote, "add", "remote-only.go")
+				gitRunEnv(t, remote, []string{"GIT_AUTHOR_DATE=2024-01-02T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-02T00:00:00Z"},
+					"commit", "-m", "remote advance")
+
+				// Fetch in clone so origin/main is ahead of local main.
+				gitRun(t, clone, "fetch", "origin")
+
+				// Create feature branch from local main (which is behind origin/main).
+				gitRun(t, clone, "checkout", "-b", "jelmer/feature")
+
+				// Commit a change on the feature branch.
+				require.NoError(t, os.WriteFile(filepath.Join(clone, "feature.go"), []byte("package greendale\n"), 0o644))
+				gitRun(t, clone, "add", "feature.go")
+				gitRunEnv(t, clone, []string{"GIT_AUTHOR_DATE=2024-01-03T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-03T00:00:00Z"},
+					"commit", "-m", "feature commit")
+
+				// Auto-detect should use origin/main, so the diff should NOT
+				// include remote-only.go (which is on origin/main but not local main).
+				return clone, ""
+			},
+			check: func(t *testing.T, diff string) {
+				r := require.New(t)
+				r.Contains(diff, "feature.go", "feature branch changes should appear")
+				r.NotContains(diff, "remote-only.go", "changes on origin/main should NOT appear as branch diff")
+			},
+		},
 	}
 
 	for name, tc := range tests {
@@ -308,4 +415,23 @@ func TestGetDiff(t *testing.T) {
 			}
 		})
 	}
+}
+
+// gitRun runs a git command in dir and fails the test on error.
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, string(out))
+}
+
+// gitRunEnv runs a git command with extra env vars.
+func gitRunEnv(t *testing.T, dir string, env []string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, string(out))
 }
