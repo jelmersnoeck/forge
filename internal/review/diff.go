@@ -14,30 +14,46 @@ const maxDiffBytes = 100 * 1024 // 100KB
 //
 // Resolution order for baseBranch:
 //   - explicit value if non-empty
-//   - "main" (if it exists)
-//   - "master" (if it exists)
+//   - "origin/main"  (remote tracking — always up to date)
+//   - "origin/master"
+//   - "main"  (local fallback)
+//   - "master"
 //   - empty string (no base found — returns empty diff)
+//
+// Remote refs are preferred because local main/master may be stale in worktrees,
+// causing the review to include already-merged commits.
 func GetDiff(cwd, baseBranch string) (string, error) {
 	if !isGitRepo(cwd) {
 		return "", fmt.Errorf("not a git repository: %s", cwd)
 	}
 
-	var diff string
-	var err error
-
-	switch {
-	case baseBranch != "":
-		diff, err = gitDiff(cwd, baseBranch+"...HEAD")
-	case branchExists(cwd, "main"):
-		diff, err = gitDiff(cwd, "main...HEAD")
-	case branchExists(cwd, "master"):
-		diff, err = gitDiff(cwd, "master...HEAD")
+	if baseBranch == "" {
+		baseBranch = detectBaseBranch(cwd)
 	}
+
+	if baseBranch == "" {
+		return "", nil
+	}
+
+	diff, err := gitDiff(cwd, baseBranch+"...HEAD")
 	if err != nil {
 		return "", err
 	}
 
 	return truncateDiff(diff), nil
+}
+
+// detectBaseBranch picks the best available base ref.
+//
+//	origin/main → origin/master → main → master → ""
+func detectBaseBranch(cwd string) string {
+	candidates := []string{"origin/main", "origin/master", "main", "master"}
+	for _, c := range candidates {
+		if branchExists(cwd, c) {
+			return c
+		}
+	}
+	return ""
 }
 
 func isGitRepo(cwd string) bool {

@@ -1425,6 +1425,16 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 			if info, err := readSessionFile(wtPath); err == nil {
 				sessionID = info.SessionID
 				fmt.Fprintln(os.Stderr, dimStyle.Render("  resuming session: "+sessionID))
+
+				// Warn if session JSONL is missing (conversation history lost)
+				if jsonlPath, err := sessionFilePath(sessionID); err == nil {
+					switch _, err := os.Stat(jsonlPath); {
+					case os.IsNotExist(err):
+						fmt.Fprintln(os.Stderr, errorStyle.Render("  warning: session history unavailable, conversation will start fresh"))
+					case err != nil:
+						fmt.Fprintf(os.Stderr, "  warning: could not check session history: %v\n", err)
+					}
+				}
 			}
 			fmt.Fprintln(os.Stderr, dimStyle.Render("  reusing worktree: "+worktreePath))
 			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))

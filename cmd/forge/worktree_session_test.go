@@ -41,3 +41,74 @@ func TestReadSessionFile_Missing(t *testing.T) {
 	_, err := readSessionFile(dir)
 	r.Error(err)
 }
+
+func TestSessionFilePath(t *testing.T) {
+	r := require.New(t)
+
+	tests := map[string]struct {
+		sessionID string
+		wantErr   bool
+		wantPath  string
+	}{
+		"valid session ID": {
+			sessionID: "20260414-warm-bloom",
+			wantPath:  filepath.Join(defaultSessionsDir, "20260414-warm-bloom.jsonl"),
+		},
+		"path traversal with ../": {
+			sessionID: "../etc/passwd",
+			wantErr:   true,
+		},
+		"path traversal with subdirectory": {
+			sessionID: "foo/bar",
+			wantErr:   true,
+		},
+		"dot": {
+			sessionID: ".",
+			wantErr:   true,
+		},
+		"double dot": {
+			sessionID: "..",
+			wantErr:   true,
+		},
+		"empty string": {
+			sessionID: "",
+			wantErr:   true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := sessionFilePath(tc.sessionID)
+			if tc.wantErr {
+				r.Error(err)
+				return
+			}
+			r.NoError(err)
+			r.Equal(tc.wantPath, got)
+		})
+	}
+}
+
+func TestSessionFilePath_RespectsEnvVar(t *testing.T) {
+	r := require.New(t)
+
+	t.Setenv("SESSIONS_DIR", "/custom/sessions")
+
+	got, err := sessionFilePath("troy-barnes-session")
+	r.NoError(err)
+	r.Equal("/custom/sessions/troy-barnes-session.jsonl", got)
+}
+
+func TestSessionsDir_Default(t *testing.T) {
+	r := require.New(t)
+
+	t.Setenv("SESSIONS_DIR", "")
+	r.Equal(defaultSessionsDir, sessionsDir())
+}
+
+func TestSessionsDir_EnvOverride(t *testing.T) {
+	r := require.New(t)
+
+	t.Setenv("SESSIONS_DIR", "/greendale/community/college")
+	r.Equal("/greendale/community/college", sessionsDir())
+}
