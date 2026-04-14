@@ -107,6 +107,51 @@ Paintball is banned on campus after the incidents.
 	r.Equal("project", bundle.Rules[1].Level)
 }
 
+func TestLoader_LoadRules_Recursive(t *testing.T) {
+	r := require.New(t)
+
+	projectDir := t.TempDir()
+	rulesDir := filepath.Join(projectDir, ".forge", "rules")
+
+	// Top-level rule
+	r.NoError(os.MkdirAll(rulesDir, 0755))
+	r.NoError(os.WriteFile(filepath.Join(rulesDir, "campus-wide.md"), []byte("# Campus-wide: no running in the halls"), 0644))
+
+	// Nested: frontend/
+	frontendDir := filepath.Join(rulesDir, "frontend")
+	r.NoError(os.MkdirAll(frontendDir, 0755))
+	r.NoError(os.WriteFile(filepath.Join(frontendDir, "react.md"), []byte("# React: always use hooks"), 0644))
+
+	// Nested: backend/api/
+	apiDir := filepath.Join(rulesDir, "backend", "api")
+	r.NoError(os.MkdirAll(apiDir, 0755))
+	r.NoError(os.WriteFile(filepath.Join(apiDir, "validation.md"), []byte("# Validate all inputs like Dean Pelton validates costumes"), 0644))
+
+	// Non-.md file should be ignored
+	r.NoError(os.WriteFile(filepath.Join(frontendDir, "notes.txt"), []byte("not a rule"), 0644))
+
+	loader := NewLoader(projectDir)
+	bundle, err := loader.Load([]string{"project"})
+	r.NoError(err)
+
+	r.Len(bundle.Rules, 3)
+	for _, rule := range bundle.Rules {
+		r.Equal("project", rule.Level)
+		r.True(strings.HasSuffix(rule.Path, ".md"))
+	}
+
+	// Verify all three rule contents are present
+	var contents []string
+	for _, rule := range bundle.Rules {
+		contents = append(contents, rule.Content)
+	}
+	allContent := strings.Join(contents, "\n")
+	r.Contains(allContent, "no running in the halls")
+	r.Contains(allContent, "always use hooks")
+	r.Contains(allContent, "Dean Pelton validates costumes")
+	r.NotContains(allContent, "not a rule")
+}
+
 func TestLoader_LoadRules_ClaudeDirFallback(t *testing.T) {
 	r := require.New(t)
 
