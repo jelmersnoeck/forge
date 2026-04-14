@@ -31,6 +31,8 @@ func main() {
 		os.Exit(runStats(os.Args[1:]))
 	case "mcp":
 		os.Exit(runMCP(os.Args[1:]))
+	case "config":
+		os.Exit(runConfig(os.Args[1:]))
 	case "help", "-h", "--help":
 		printHelp()
 		os.Exit(0)
@@ -54,6 +56,7 @@ Usage:
   forge server       run gateway server  
   forge stats        show cost analytics
   forge mcp          manage MCP server connections
+  forge config       manage persistent configuration
   forge help         show this help
 
 Flags (interactive mode):
@@ -71,5 +74,7 @@ Examples:
   forge --server http://localhost:3000         # connect to remote server
   forge stats --month 2026-04                  # show costs for April 2026
   forge mcp add datadog --url https://mcp.datadoghq.com/mcp --auth oauth
-  forge mcp list                               # list MCP servers`)
+  forge mcp list                               # list MCP servers
+  forge config set provider.default claude-cli # set default provider
+  forge config list                            # show all config`)
 }
