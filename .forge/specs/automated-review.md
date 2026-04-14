@@ -21,7 +21,7 @@ Files and systems that change:
 - `internal/review/review.go` — types: Finding, ReviewResult, Reviewer interface, Severity constants
 - `internal/review/reviewers.go` — 5 built-in reviewer implementations + DefaultReviewers/DefaultReviewersWithSpec
 - `internal/review/orchestrator.go` — Orchestrator, ReviewRequest, parallel execution, JSON parsing, summary formatting
-- `internal/review/diff.go` — GetDiff, truncation, git helpers
+- `internal/review/diff.go` — GetDiff, detectBaseBranch, truncation, git helpers
 - `internal/review/orchestrator_test.go` — orchestrator, parser, reviewer, summary, diff tests (49 test cases)
 - `internal/review/diff_test.go` — diff truncation and git repo tests
 - `internal/runtime/provider/openai.go` — OpenAI LLMProvider via raw HTTP streaming SSE
@@ -38,6 +38,7 @@ Files and systems that change:
 - `/review` in TUI triggers a review of committed changes on the current branch vs base branch
 - `/review --base main` allows specifying a different base branch
 - Only committed changes are reviewed (base...HEAD) — uncommitted and untracked files are excluded
+- Base branch auto-detection prefers remote tracking refs (`origin/main` → `origin/master` → `main` → `master`) to avoid stale local branches in worktrees
 - The review spawns 5 reviewer agents in parallel:
   1. **Security** — vulnerabilities, injection, auth issues, secret leaks
   2. **Code Quality & Tests** — correctness, test coverage, error handling, edge cases
