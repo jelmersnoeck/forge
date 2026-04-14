@@ -1,6 +1,6 @@
 ---
 id: sharpen-phase-prompts
-status: draft
+status: implemented
 ---
 # Sharpen spec-creator and coder phase system prompts
 
@@ -58,7 +58,8 @@ from AGENTS.md / `.forge/rules/` and are already injected by the context loader.
 - Do not modify reviewer prompts in `reviewers.go`
 - Do not add project-specific conventions (Go, shell, etc.) to phase prompts —
   those belong in AGENTS.md / `.forge/rules/`
-- Keep prompts under ~2KB each to avoid bloating the system prompt token count
+- Keep prompts under ~2KB each to avoid bloating the system prompt token count.
+  Final sizes: specCreator 1648 bytes (~412 tokens), coder 1688 bytes (~422 tokens).
 - Phase prompts should be language-agnostic (the agent works on any codebase)
 - Do not duplicate the spec format already present in `specPrompt` — the spec
   creator prompt should reference it, not redefine it
@@ -73,9 +74,10 @@ const coderPrompt = `...`        // in internal/agent/phase/prompts.go
 ```
 
 ## Edge Cases
-- Spec creator prompt must not conflict with the spec format already defined in
-  `specPrompt` (which is always present in the system prompt). The phase prompt
-  should add *process guidance*, not redefine the format.
+- Spec creator prompt had a duplicate spec format definition (already in base
+  `specPrompt`). Removed it — prompt now references the format without redefining.
+- First draft exceeded 2KB; trimmed by condensing prose while keeping all
+  actionable guidance. Final versions are information-dense, not wordy.
 - Coder prompt must not conflict with base prompt's response format rules. Phase
   prompt adds *implementation methodology*, base prompt handles communication style.
 - If AGENTS.md has conflicting advice (e.g., "always use mocks"), the phase prompt
