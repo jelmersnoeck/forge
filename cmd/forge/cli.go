@@ -105,6 +105,9 @@ type model struct {
 	// Inline task progress — keyed by task/agent ID
 	taskTrackers     map[string]*taskTracker
 	taskTrackerOrder []string // insertion order for stable rendering
+
+	// cursor blink cmd captured from ta.Focus() before model creation
+	cursorBlinkCmd tea.Cmd
 }
 
 type serverEvent types.OutboundEvent
@@ -266,6 +269,7 @@ func runCLI(args []string) int {
 	ta.BlurredStyle.Base = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.Prompt = promptStyle.Inline(true)
+	cursorBlinkCmd := ta.Focus()
 
 	// Determine effective working directory
 	effectiveCWD := cwd
@@ -294,6 +298,7 @@ func runCLI(args []string) int {
 		titleGenerated:  initialPrompt != "", // already named via Haiku if we had a prompt
 		prURL:           prURL,
 		taskTrackers:    make(map[string]*taskTracker),
+		cursorBlinkCmd:  cursorBlinkCmd,
 	}
 
 	// Add welcome message
@@ -354,7 +359,10 @@ func runCLI(args []string) int {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tick(), m.textArea.Focus()}
+	cmds := []tea.Cmd{tick()}
+	if m.cursorBlinkCmd != nil {
+		cmds = append(cmds, m.cursorBlinkCmd)
+	}
 	if m.initialPrompt != "" {
 		cmds = append(cmds, m.sendMessage(m.initialPrompt))
 	}
@@ -1365,10 +1373,15 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	var repoRoot string
 	worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
 
+	// explicitBranch tracks whether --branch was passed by the user (reuse ok)
+	// vs auto-detected from the current checkout (always fresh worktree).
+	explicitBranch := branchName != ""
+
 	// Auto-detect branch: if no --branch flag, not skipping worktrees, and not
 	// already in a worktree, check the current branch. If it's a feature branch
-	// (not main/master/HEAD), treat it as if --branch was passed so forge works
-	// on that branch instead of creating an ephemeral one.
+	// (not main/master/HEAD), create a fresh worktree branched off it instead
+	// of an ephemeral one from HEAD.
+	var detectedBranch string
 	if branchName == "" && !skipWorktree && !isInWorktree(cwd) {
 		if root := findRepoRoot(cwd); root != "" {
 			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
@@ -1376,15 +1389,16 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 			if out, err := cmd.Output(); err == nil {
 				detected := strings.TrimSpace(string(out))
 				if !isDefaultBranch(detected) {
-					branchName = detected
-					fmt.Fprintln(os.Stderr, dimStyle.Render("  detected branch: "+branchName))
+					detectedBranch = detected
+					fmt.Fprintln(os.Stderr, dimStyle.Render("  detected branch: "+detectedBranch))
 				}
 			}
 		}
 	}
 
-	if branchName != "" {
-		// --branch mode: find or create worktree for the named branch
+	if explicitBranch {
+		// Explicit --branch: find or create worktree for the named branch.
+		// Reuses existing worktrees (intentional resume).
 		repoRoot = findRepoRoot(cwd)
 		if repoRoot == "" {
 			return "", "", "", "", nil, fmt.Errorf("not in a git repo")
@@ -1396,7 +1410,6 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 		}
 
 		if wtPath != "" {
-			// Existing worktree found — reuse it; recover session ID if possible
 			worktreePath = wtPath
 			worktreeBranch = branchName
 			cwd = worktreePath
@@ -1417,7 +1430,6 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 			cmd := exec.Command("git", "worktree", "add", worktreePath, branchName)
 			cmd.Dir = repoRoot
 			if out, err := cmd.CombinedOutput(); err != nil {
-				// Branch doesn't exist — create it from HEAD
 				cmd = exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, "HEAD")
 				cmd.Dir = repoRoot
 				if out2, err2 := cmd.CombinedOutput(); err2 != nil {
@@ -1431,24 +1443,29 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))
 		}
 	} else if !skipWorktree && !isInWorktree(cwd) {
-		// Default mode: always create a fresh worktree from current branch.
-		// Use --branch to explicitly resume an existing session.
+		// Fresh worktree mode: create a new branch from either the detected
+		// feature branch or the current branch.
 		repoRoot = findRepoRoot(cwd)
 		if repoRoot != "" {
-			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-			cmd.Dir = repoRoot
-			if branchOut, err := cmd.Output(); err == nil {
-				currentBranch := strings.TrimSpace(string(branchOut))
-				worktreePath = filepath.Join(worktreeBase, sessionID)
+			baseBranch := detectedBranch
+			if baseBranch == "" {
+				cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+				cmd.Dir = repoRoot
+				if branchOut, err := cmd.Output(); err == nil {
+					baseBranch = strings.TrimSpace(string(branchOut))
+				}
+			}
 
+			if baseBranch != "" {
+				worktreePath = filepath.Join(worktreeBase, sessionID)
 				if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
 					newBranch := fmt.Sprintf("jelmer/%s", sessionID)
-					cmd = exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, currentBranch)
+					cmd := exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, baseBranch)
 					cmd.Dir = repoRoot
 					if err := cmd.Run(); err == nil {
 						worktreeBranch = newBranch
 						fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
-						fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch))
+						fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch+" (from "+baseBranch+")"))
 						cwd = worktreePath
 					}
 				}
