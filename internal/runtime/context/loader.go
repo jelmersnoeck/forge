@@ -91,6 +91,30 @@ func configDir(candidates ...string) string {
 	return candidates[0]
 }
 
+// loadRules recursively walks dir for .md files and appends them as rules.
+func loadRules(bundle *types.ContextBundle, dir, level string) {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+			return nil
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		bundle.Rules = append(bundle.Rules, types.RuleEntry{
+			Path:    path,
+			Content: string(content),
+			Level:   level,
+		})
+		return nil
+	})
+}
+
 // loadMD tries to read path and appends it to bundle.AgentsMD if it exists.
 // Returns true if the file was found and loaded.
 func loadMD(bundle *types.ContextBundle, path, level string) bool {
@@ -119,26 +143,7 @@ func (l *Loader) loadUserContext(bundle *types.ContextBundle) error {
 	loadMD(bundle, filepath.Join(home, "CLAUDE.md"), "user")
 
 	// Load rules from ~/.forge/rules/ (fallback: ~/.claude/rules/)
-	rulesDir := filepath.Join(forgeDir, "rules")
-	if entries, err := os.ReadDir(rulesDir); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-				continue
-			}
-
-			path := filepath.Join(rulesDir, entry.Name())
-			content, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-
-			bundle.Rules = append(bundle.Rules, types.RuleEntry{
-				Path:    path,
-				Content: string(content),
-				Level:   "user",
-			})
-		}
-	}
+	loadRules(bundle, filepath.Join(forgeDir, "rules"), "user")
 
 	// Load user settings
 	settingsPath := filepath.Join(forgeDir, "settings.json")
@@ -197,26 +202,7 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 	forgeDir := configDir(filepath.Join(l.cwd, ".forge"), filepath.Join(l.cwd, ".claude"))
 
 	// Load rules
-	rulesDir := filepath.Join(forgeDir, "rules")
-	if entries, err := os.ReadDir(rulesDir); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-				continue
-			}
-
-			path := filepath.Join(rulesDir, entry.Name())
-			content, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-
-			bundle.Rules = append(bundle.Rules, types.RuleEntry{
-				Path:    path,
-				Content: string(content),
-				Level:   "project",
-			})
-		}
-	}
+	loadRules(bundle, filepath.Join(forgeDir, "rules"), "project")
 
 	// Load project settings
 	settingsPath := filepath.Join(forgeDir, "settings.json")
