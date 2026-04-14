@@ -73,7 +73,7 @@ func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "config", "user.email", "dean@greendale.edu"},
 		{"git", "config", "user.name", "Craig Pelton"},
 		{"git", "commit", "--allow-empty", "-m", "Welcome to Greendale, you're already accepted"},
@@ -86,6 +86,14 @@ func initGitRepo(t *testing.T, dir string) {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "command %v failed: %s", args, string(out))
 	}
+}
+
+// configGitIdentity sets user.email and user.name in the given repo.
+// Needed for cloned repos that don't inherit the source repo's local config.
+func configGitIdentity(t *testing.T, dir string) {
+	t.Helper()
+	gitRun(t, dir, "config", "user.email", "dean@greendale.edu")
+	gitRun(t, dir, "config", "user.name", "Craig Pelton")
 }
 
 // currentBranchName returns the name of the current branch in a git repo.
@@ -172,7 +180,7 @@ func TestDetectBaseBranch(t *testing.T) {
 				initGitRepo(t, dir)
 				return dir
 			},
-			want: currentDefaultBranch, // "main" or "master" depending on git config
+			want: "main",
 		},
 		"origin/main preferred over local main": {
 			setup: func(t *testing.T) string {
@@ -207,20 +215,10 @@ func TestDetectBaseBranch(t *testing.T) {
 			dir := tc.setup(t)
 			got := detectBaseBranch(dir)
 
-			switch tc.want {
-			case currentDefaultBranch:
-				// Accept either "main" or "master" depending on git version.
-				r.True(got == "main" || got == "master" || got == "origin/main" || got == "origin/master",
-					"got %q, want main/master or origin variant", got)
-			default:
-				r.Equal(tc.want, got)
-			}
+			r.Equal(tc.want, got)
 		})
 	}
 }
-
-// currentDefaultBranch is a sentinel for "whatever git defaults to."
-const currentDefaultBranch = "<default>"
 
 func TestGetDiff(t *testing.T) {
 	tests := map[string]struct {
@@ -366,6 +364,8 @@ func TestGetDiff(t *testing.T) {
 				cmd := exec.Command("git", "clone", remote, clone)
 				out, err := cmd.CombinedOutput()
 				require.NoError(t, err, "git clone: %s", string(out))
+
+				configGitIdentity(t, clone)
 
 				// Advance remote's main by one commit.
 				require.NoError(t, os.WriteFile(filepath.Join(remote, "remote-only.go"), []byte("package greendale\n"), 0o644))
