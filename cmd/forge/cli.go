@@ -105,6 +105,9 @@ type model struct {
 	// Inline task progress — keyed by task/agent ID
 	taskTrackers     map[string]*taskTracker
 	taskTrackerOrder []string // insertion order for stable rendering
+
+	// cursor blink cmd captured from ta.Focus() before model creation
+	cursorBlinkCmd tea.Cmd
 }
 
 type serverEvent types.OutboundEvent
@@ -266,6 +269,7 @@ func runCLI(args []string) int {
 	ta.BlurredStyle.Base = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.Prompt = promptStyle.Inline(true)
+	cursorBlinkCmd := ta.Focus()
 
 	// Determine effective working directory
 	effectiveCWD := cwd
@@ -294,6 +298,7 @@ func runCLI(args []string) int {
 		titleGenerated:  initialPrompt != "", // already named via Haiku if we had a prompt
 		prURL:           prURL,
 		taskTrackers:    make(map[string]*taskTracker),
+		cursorBlinkCmd:  cursorBlinkCmd,
 	}
 
 	// Add welcome message
@@ -354,7 +359,10 @@ func runCLI(args []string) int {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tick(), m.textArea.Focus()}
+	cmds := []tea.Cmd{tick()}
+	if m.cursorBlinkCmd != nil {
+		cmds = append(cmds, m.cursorBlinkCmd)
+	}
 	if m.initialPrompt != "" {
 		cmds = append(cmds, m.sendMessage(m.initialPrompt))
 	}
