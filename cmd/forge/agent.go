@@ -14,7 +14,7 @@ func runAgent(args []string) int {
 	port := fs.Int("port", 8080, "HTTP port to listen on (0 for random free port)")
 	cwd := fs.String("cwd", ".", "working directory for the agent")
 	sessionID := fs.String("session-id", "", "session ID (required)")
-	sessionsDir := fs.String("sessions-dir", "/tmp/forge/sessions", "directory for session JSONL files")
+	sessionsDir := fs.String("sessions-dir", defaultSessionsDir, "directory for session JSONL files")
 	mode := fs.String("mode", "", "agent mode: swe (default), spec, code, review")
 	specPath := fs.String("spec", "", "path to spec file (used by coder phase)")
 	_ = fs.Parse(args[1:])

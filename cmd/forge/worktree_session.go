@@ -8,9 +8,18 @@ import (
 	"time"
 )
 
-// forgeSession is the metadata file written to the worktree root, linking the
-// worktree back to its session for auto-resume.
-const forgeSessionFile = ".forge-session"
+const (
+	// forgeSession is the metadata file written to the worktree root, linking the
+	// worktree back to its session for auto-resume.
+	forgeSessionFile = ".forge-session"
+
+	// defaultSessionsDir is the default directory for session JSONL files.
+	// Must stay in sync with the agent's --sessions-dir default.
+	defaultSessionsDir = "/tmp/forge/sessions"
+
+	// sessionFileExt is the file extension for session JSONL files.
+	sessionFileExt = ".jsonl"
+)
 
 // SessionInfo describes a resumable session backed by a worktree.
 type SessionInfo struct {
@@ -42,4 +51,22 @@ func readSessionFile(worktreePath string) (SessionInfo, error) {
 	}
 	info.WorktreePath = worktreePath
 	return info, nil
+}
+
+// sessionsDir returns the sessions directory, honoring SESSIONS_DIR if set.
+func sessionsDir() string {
+	if v := os.Getenv("SESSIONS_DIR"); v != "" {
+		return v
+	}
+	return defaultSessionsDir
+}
+
+// sessionFilePath returns the JSONL file path for a session, or an error if the
+// sessionID contains path traversal components.
+func sessionFilePath(sessionID string) (string, error) {
+	// Reject path traversal: only allow the base name portion.
+	if filepath.Base(sessionID) != sessionID || sessionID == "." || sessionID == ".." {
+		return "", fmt.Errorf("invalid session ID: %q", sessionID)
+	}
+	return filepath.Join(sessionsDir(), sessionID+sessionFileExt), nil
 }

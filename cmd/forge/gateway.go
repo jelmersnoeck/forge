@@ -29,7 +29,7 @@ func runGateway(args []string) int {
 	port := envInt("GATEWAY_PORT", 3000)
 	host := envStr("GATEWAY_HOST", "0.0.0.0")
 	workspaceDir := envStr("WORKSPACE_DIR", "/tmp/forge/workspace")
-	sessionsDir := envStr("SESSIONS_DIR", "/tmp/forge/sessions")
+	sessionsDir := envStr("SESSIONS_DIR", defaultSessionsDir)
 	forgeBin := envStr("FORGE_BIN", "forge")
 
 	// Handle daemon mode by re-executing in background
