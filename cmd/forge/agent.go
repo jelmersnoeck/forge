@@ -33,12 +33,18 @@ func runAgent(args []string) int {
 		os.Exit(1)
 	}
 
+	// Default to SWE mode (spec → code → review) when no mode is specified.
+	agentMode := *mode
+	if agentMode == "" {
+		agentMode = "swe"
+	}
+
 	cfg := agent.Config{
 		Port:        *port,
 		CWD:         *cwd,
 		SessionID:   *sessionID,
 		SessionsDir: *sessionsDir,
-		Mode:        *mode,
+		Mode:        agentMode,
 		SpecPath:    *specPath,
 	}
 
