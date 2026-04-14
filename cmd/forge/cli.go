@@ -150,9 +150,9 @@ func runCLI(args []string) int {
 		os.Exit(1)
 	}
 
-	// Default mode: swe when --spec is provided, empty (legacy) otherwise.
+	// Default mode: always swe. The orchestrator runs spec → code → review.
 	effectiveMode := *mode
-	if effectiveMode == "" && *specPath != "" {
+	if effectiveMode == "" {
 		effectiveMode = "swe"
 	}
 

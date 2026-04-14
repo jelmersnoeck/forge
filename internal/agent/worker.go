@@ -30,7 +30,7 @@ type Worker struct {
 	sessionID   string
 	cwd         string
 	sessionsDir string
-	mode        string // "swe", "spec", "code", "review", or "" (legacy/default)
+	mode        string // "swe" (default), "spec", "code", "review"
 	specPath    string // spec file path for --spec flag
 }
 
