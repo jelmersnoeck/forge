@@ -17,8 +17,8 @@ import (
 	"github.com/jelmersnoeck/forge/internal/server/gateway"
 )
 
-func runServer(args []string) int {
-	fs := flag.NewFlagSet("forge server", flag.ExitOnError)
+func runGateway(args []string) int {
+	fs := flag.NewFlagSet("forge gateway", flag.ExitOnError)
 	daemon := fs.Bool("daemon", false, "run in background and write PID file")
 	pidFile := fs.String("pid-file", "", "path to PID file (default: $SESSIONS_DIR/forge.pid)")
 	logFile := fs.String("log-file", "", "path to log file (default: $SESSIONS_DIR/forge.log)")
@@ -62,8 +62,8 @@ func runServer(args []string) int {
 		defer func() { _ = os.Remove(*pidFile) }()
 	}
 
-	serverID := uuid.New().String()[:8]
-	be := backend.NewTmux(forgeBin, serverID, workspaceDir)
+	gatewayID := uuid.New().String()[:8]
+	be := backend.NewTmux(forgeBin, gatewayID, workspaceDir)
 
 	// Clean up agent sessions on shutdown.
 	sigCh := make(chan os.Signal, 1)
@@ -78,8 +78,8 @@ func runServer(args []string) int {
 		os.Exit(0)
 	}()
 
-	log.Println("forge server starting...")
-	log.Printf("  server id: %s", serverID)
+	log.Println("forge gateway starting...")
+	log.Printf("  gateway id: %s", gatewayID)
 	log.Printf("  workspace: %s", workspaceDir)
 	log.Printf("  sessions:  %s", sessionsDir)
 	log.Printf("  forge bin: %s", forgeBin)
@@ -153,7 +153,7 @@ func daemonize(pidFile, logFile string) {
 		log.Fatalf("failed to start daemon: %v", err)
 	}
 
-	fmt.Printf("forge server started in background (PID: %d)\n", cmd.Process.Pid)
+	fmt.Printf("forge gateway started in background (PID: %d)\n", cmd.Process.Pid)
 	fmt.Printf("  log file: %s\n", logFile)
 	fmt.Printf("  pid file: %s\n", pidFile)
 	fmt.Printf("\nTo stop:\n  kill $(cat %s)\n", pidFile)

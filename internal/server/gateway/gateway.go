@@ -1,4 +1,4 @@
-// Package gateway provides the HTTP API for the forge server.
+// Package gateway provides the HTTP API for the forge gateway.
 //
 //	POST   /sessions                     create session
 //	GET    /sessions/:sessionId          get session info

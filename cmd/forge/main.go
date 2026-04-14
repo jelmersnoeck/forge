@@ -4,7 +4,7 @@
 //
 //	forge              interactive CLI (default)
 //	forge agent        run agent server
-//	forge server       run gateway server
+//	forge gateway      run session gateway
 //	forge stats        show cost analytics
 //	forge mcp          manage MCP server connections
 package main
@@ -25,8 +25,11 @@ func main() {
 	switch cmd {
 	case "agent":
 		os.Exit(runAgent(os.Args[1:]))
+	case "gateway":
+		os.Exit(runGateway(os.Args[1:]))
 	case "server":
-		os.Exit(runServer(os.Args[1:]))
+		fmt.Fprintln(os.Stderr, "note: 'forge server' is deprecated, use 'forge gateway'")
+		os.Exit(runGateway(os.Args[1:]))
 	case "stats":
 		os.Exit(runStats(os.Args[1:]))
 	case "mcp":
@@ -53,14 +56,14 @@ func printHelp() {
 Usage:
   forge              interactive CLI (default)
   forge agent        run agent server
-  forge server       run gateway server  
+  forge gateway      run session gateway
   forge stats        show cost analytics
   forge mcp          manage MCP server connections
   forge config       manage persistent configuration
   forge help         show this help
 
 Flags (interactive mode):
-  --server URL             connect to remote forge server
+  --gateway URL            connect to remote forge gateway
   --resume SESSION_ID      resume a session
   --skip-worktree          skip git worktree creation
   --branch NAME            check out branch (reuses existing worktree if found)
@@ -71,7 +74,7 @@ Examples:
   forge --skip-worktree                        # run in current directory
   forge --branch jelmer/my-feature             # reuse or create worktree for branch
   forge --spec .forge/specs/my-feature.md      # implement a spec
-  forge --server http://localhost:3000         # connect to remote server
+  forge --gateway http://localhost:3000        # connect to remote gateway
   forge stats --month 2026-04                  # show costs for April 2026
   forge mcp add datadog --url https://mcp.datadoghq.com/mcp --auth oauth
   forge mcp list                               # list MCP servers
