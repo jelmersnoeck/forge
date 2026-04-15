@@ -160,6 +160,68 @@ func TestHub_ConcurrentPushPull(t *testing.T) {
 	}
 }
 
+func TestHub_DrainInterrupt(t *testing.T) {
+	tests := map[string]struct {
+		setup func(*Hub)
+		want  bool // true = channel was drained (had pending signal)
+	}{
+		"no pending signal": {
+			setup: func(h *Hub) {},
+			want:  false,
+		},
+		"stale signal drained": {
+			setup: func(h *Hub) {
+				h.TriggerInterrupt()
+			},
+			want: true,
+		},
+		"drain is idempotent": {
+			setup: func(h *Hub) {
+				h.TriggerInterrupt()
+				h.DrainInterrupt() // first drain clears it
+			},
+			want: false, // second drain finds nothing
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			hub := NewHub()
+			tc.setup(hub)
+
+			hub.DrainInterrupt()
+
+			// After drain, channel must be empty.
+			select {
+			case <-hub.InterruptChannel():
+				r.Fail("interrupt channel should be empty after drain")
+			default:
+				// good — nothing pending
+			}
+		})
+	}
+}
+
+func TestHub_DrainInterrupt_DoesNotBlockActiveTurn(t *testing.T) {
+	// Drain should not interfere with an interrupt arriving during
+	// an active turn (interrupt goroutine consumes it, not drain).
+	r := require.New(t)
+	hub := NewHub()
+
+	// Simulate: drain at turn start (nothing pending), then trigger
+	// interrupt mid-turn — it should still be receivable.
+	hub.DrainInterrupt()
+	hub.TriggerInterrupt()
+
+	select {
+	case <-hub.InterruptChannel():
+		// good — interrupt arrived normally
+	case <-time.After(100 * time.Millisecond):
+		r.Fail("interrupt should be receivable after drain when sent mid-turn")
+	}
+}
+
 func TestHub_PushMessage_ReturnsImmediateStatus(t *testing.T) {
 	tests := map[string]struct {
 		setup    func(*Hub) // Setup function to configure hub state

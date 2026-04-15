@@ -165,6 +165,16 @@ func (h *Hub) InterruptChannel() <-chan struct{} {
 	return h.interruptCh
 }
 
+// DrainInterrupt discards any pending interrupt signal. Called at the
+// start of each turn to prevent a stale Ctrl+C from the previous turn
+// from immediately cancelling the new one.
+func (h *Hub) DrainInterrupt() {
+	select {
+	case <-h.interruptCh:
+	default:
+	}
+}
+
 // TriggerReview signals the worker to start a code review.
 // baseBranch is the branch to diff against (empty = auto-detect).
 func (h *Hub) TriggerReview(baseBranch string) {
