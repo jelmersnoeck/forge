@@ -83,6 +83,7 @@ into the SWE pipeline when the user follows up with an implementation request.
   `"question"` or `"task"`. Allows the CLI to display what mode the agent is in.
 - New event: `classification_error` — emitted when classification fails (all
   models exhausted). Contains the error message. Intent defaults to `task`.
+  Displayed in the CLI as dimmed text.
 - The Q&A phase emits standard events (`thinking`, `text`, `tool_use`, `done`).
 - No new `phase_start`/`phase_complete` events for Q&A — it's not a "phase" in
   the SWE pipeline sense; it's a pre-pipeline interaction mode.
@@ -189,10 +190,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 - User sends an empty prompt — skip classification, let the existing loop
   handle it (it'll ask for input).
 - User sends a very long prompt (>4000 tokens) — classification should still
-  work; the prompt is truncated at a word boundary to the first ~1000 chars for
-  the classification call to stay within the ~200 input token budget. Word-boundary
-  truncation prevents semantic manipulation via mid-word cutting. The full prompt
-  goes to whichever phase runs.
+  work; the prompt is truncated at a rune-aware word boundary to the first ~1000
+  runes for the classification call to stay within the ~200 input token budget.
+  Rune-level truncation preserves multi-byte UTF-8 characters (CJK, emoji).
+  The full prompt goes to whichever phase runs.
 - Classification LLM returns unexpected JSON / garbage — parse error → default
   to `task`.
 - User explicitly sends "implement X" after several Q&A rounds — classified as
@@ -210,3 +211,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 - User starts with a question, gets answer, then sends another question, then
   finally sends a task — Q&A history accumulates across question rounds, SWE
   pipeline launches fresh with reference to prior discussion.
+- User sends a prompt containing multi-byte UTF-8 characters (CJK, emoji) that
+  exceeds the truncation limit — truncation operates on runes, not bytes, so
+  character boundaries are preserved and no corrupted output is produced.
+- Classification error with missing intent field in response — error message
+  distinguishes "missing intent field" from "unknown intent value" for
+  clearer debugging.
