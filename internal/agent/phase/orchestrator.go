@@ -1,10 +1,12 @@
 package phase
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -241,6 +243,11 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 		}
 
 		o.emitPhaseComplete(opts, "code", "fixes applied")
+	}
+
+	// Phase 4: Finalize — create PR if there are changes on a feature branch
+	if err := o.runFinalize(ctx, opts, specPath); err != nil {
+		log.Printf("[orchestrator:%s] finalize error (non-fatal): %v", opts.SessionID, err)
 	}
 
 	return nil
@@ -568,4 +575,106 @@ func RunReviewOnly(ctx context.Context, opts OrchestratorOpts) error {
 	}
 	_ = result
 	return nil
+}
+
+// runFinalize creates a draft PR for completed work.
+//
+// Preconditions checked before running:
+//   - Must be in a git repository
+//   - Must be on a feature branch (not main/master)
+//   - Must have changes relative to origin/<base>
+//
+// Failures are non-fatal — the caller logs and continues.
+func (o *Orchestrator) runFinalize(ctx context.Context, opts OrchestratorOpts, specPath string) error {
+	shouldFinalize, reason := shouldCreatePR(opts.CWD)
+	if !shouldFinalize {
+		log.Printf("[orchestrator:%s] skipping PR creation: %s", opts.SessionID, reason)
+		return nil
+	}
+
+	o.emitPhaseHandoff(opts, "review", "finalize")
+	o.emitPhaseStart(opts, "finalize")
+
+	prompt := buildFinalizePrompt(specPath)
+	if err := o.runCoderWithMessage(ctx, opts, prompt); err != nil {
+		o.emitPhaseComplete(opts, "finalize", "failed")
+		return fmt.Errorf("finalize phase: %w", err)
+	}
+
+	o.emitPhaseComplete(opts, "finalize", "PR created")
+	return nil
+}
+
+// shouldCreatePR checks if we're in a state where PR creation makes sense.
+// Returns (true, "") if yes, or (false, reason) if not.
+func shouldCreatePR(cwd string) (bool, string) {
+	// Must be a git repo.
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd.Dir = cwd
+	if err := cmd.Run(); err != nil {
+		return false, "not a git repository"
+	}
+
+	// Must be on a feature branch.
+	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCmd.Dir = cwd
+	var branchOut bytes.Buffer
+	branchCmd.Stdout = &branchOut
+	if err := branchCmd.Run(); err != nil {
+		return false, fmt.Sprintf("cannot determine branch: %v", err)
+	}
+	branch := strings.TrimSpace(branchOut.String())
+	if branch == "main" || branch == "master" {
+		return false, fmt.Sprintf("on %s branch", branch)
+	}
+
+	// Must have changes relative to base.
+	base := detectDefaultBranchSafe(cwd)
+	diffCmd := exec.Command("git", "diff", "--stat", "origin/"+base+"...HEAD")
+	diffCmd.Dir = cwd
+	var diffOut bytes.Buffer
+	diffCmd.Stdout = &diffOut
+	if err := diffCmd.Run(); err != nil {
+		// origin/<base> might not exist (no remote). Skip gracefully.
+		return false, fmt.Sprintf("cannot diff against origin/%s: %v", base, err)
+	}
+	if strings.TrimSpace(diffOut.String()) == "" {
+		return false, "no changes relative to base"
+	}
+
+	return true, ""
+}
+
+// detectDefaultBranchSafe returns the default branch name without failing.
+func detectDefaultBranchSafe(cwd string) string {
+	// Try common names.
+	for _, candidate := range []string{"main", "master"} {
+		cmd := exec.Command("git", "rev-parse", "--verify", "origin/"+candidate)
+		cmd.Dir = cwd
+		if err := cmd.Run(); err == nil {
+			return candidate
+		}
+	}
+	return "main"
+}
+
+// buildFinalizePrompt constructs the prompt for the finalize phase.
+func buildFinalizePrompt(specPath string) string {
+	var sb strings.Builder
+	sb.WriteString("The implementation and review are complete. Your final task is to create a draft PR.\n\n")
+	sb.WriteString("Steps:\n")
+	sb.WriteString("1. Commit any uncommitted changes with a meaningful message.\n")
+	sb.WriteString("2. Run `git diff origin/<base>...HEAD` to review the full diff.\n")
+	sb.WriteString("3. Run `git log origin/<base>..HEAD --oneline` to see all commits.\n")
+	sb.WriteString("4. Call PRCreate with a descriptive title and synthesized description.\n")
+	sb.WriteString("   - The title must capture the overall intent (imperative mood).\n")
+	sb.WriteString("   - The description must explain what changed, why, and notable details.\n")
+	sb.WriteString("   - Do NOT just list commit messages.\n")
+
+	if specPath != "" {
+		fmt.Fprintf(&sb, "\nThe spec for this work is at: %s\n", specPath)
+		sb.WriteString("Reference it when writing the PR description.\n")
+	}
+
+	return sb.String()
 }

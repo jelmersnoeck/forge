@@ -2,6 +2,7 @@ package phase
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -157,4 +158,146 @@ func TestQAPhaseDisallowedTools(t *testing.T) {
 		r.NotContains(qa.DisallowedTools, tool,
 			"QA phase should allow %s", tool)
 	}
+}
+
+func TestShouldCreatePR(t *testing.T) {
+	tests := map[string]struct {
+		setup      func(t *testing.T) string
+		want       bool
+		wantReason string
+	}{
+		"not a git repo": {
+			setup: func(t *testing.T) string {
+				return t.TempDir()
+			},
+			want:       false,
+			wantReason: "not a git repository",
+		},
+		"on main branch": {
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				run(t, dir, "git", "init", "-b", "main")
+				run(t, dir, "git", "commit", "--allow-empty", "-m", "init")
+				return dir
+			},
+			want:       false,
+			wantReason: "on main branch",
+		},
+		"on master branch": {
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				run(t, dir, "git", "init", "-b", "master")
+				run(t, dir, "git", "commit", "--allow-empty", "-m", "init")
+				return dir
+			},
+			want:       false,
+			wantReason: "on master branch",
+		},
+		"feature branch with changes": {
+			setup: func(t *testing.T) string {
+				remote, local := initGitRepoWithRemote(t, "main")
+				_ = remote
+				run(t, local, "git", "checkout", "-b", "jelmer/cool-feature")
+				writeTestFile(t, local, "new.txt", "Greendale rules")
+				run(t, local, "git", "add", ".")
+				run(t, local, "git", "commit", "-m", "add new file")
+				return local
+			},
+			want: true,
+		},
+		"feature branch no changes": {
+			setup: func(t *testing.T) string {
+				remote, local := initGitRepoWithRemote(t, "main")
+				_ = remote
+				run(t, local, "git", "checkout", "-b", "jelmer/empty-feature")
+				return local
+			},
+			want:       false,
+			wantReason: "no changes relative to base",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			dir := tc.setup(t)
+			got, reason := shouldCreatePR(dir)
+			r.Equal(tc.want, got)
+			if tc.wantReason != "" {
+				r.Contains(reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestBuildFinalizePrompt(t *testing.T) {
+	tests := map[string]struct {
+		specPath     string
+		wantContains []string
+	}{
+		"without spec": {
+			specPath: "",
+			wantContains: []string{
+				"create a draft PR",
+				"PRCreate",
+				"git diff",
+			},
+		},
+		"with spec": {
+			specPath: ".forge/specs/human-being-mascot.md",
+			wantContains: []string{
+				"create a draft PR",
+				"PRCreate",
+				"human-being-mascot.md",
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			prompt := buildFinalizePrompt(tc.specPath)
+			for _, want := range tc.wantContains {
+				r.Contains(prompt, want)
+			}
+		})
+	}
+}
+
+// initGitRepoWithRemote creates a bare remote and a local clone on the given branch.
+func initGitRepoWithRemote(t *testing.T, branch string) (remote, local string) {
+	t.Helper()
+
+	remote = filepath.Join(t.TempDir(), "remote.git")
+	run(t, "", "git", "init", "--bare", "-b", branch, remote)
+
+	local = filepath.Join(t.TempDir(), "local")
+	run(t, "", "git", "clone", remote, local)
+	run(t, local, "git", "checkout", "-b", branch)
+
+	writeTestFile(t, local, "README.md", "# Greendale Community College")
+	run(t, local, "git", "add", ".")
+	run(t, local, "git", "commit", "-m", "Initial commit: Troy and Abed in the morning")
+	run(t, local, "git", "push", "origin", branch)
+
+	return remote, local
+}
+
+// run executes a command in the given directory. Fails the test on error.
+func run(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, out)
+	}
+}
+
+// writeTestFile creates a file with the given content.
+func writeTestFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
 }
