@@ -33,10 +33,12 @@ into the SWE pipeline when the user follows up with an implementation request.
 - Classification is performed by the LLM via a lightweight, zero-tool call: a
   short system prompt + the user's message, asking the model to respond with
   a JSON object: `{"intent": "question"}` or `{"intent": "task"}`.
-- The classification call uses a small/fast model (e.g., `claude-haiku-4-20250414`)
-  to minimize latency and cost — same pattern as the existing session-naming call.
+- The classification call uses a prioritized list of small/fast models
+  (`claude-haiku-4-20250414` → `claude-haiku-4-5-20251001` → `claude-3-5-haiku-20241022`)
+  to minimize latency and cost, with automatic fallback if a model is unavailable.
 - If classification fails (network error, parse error, ambiguous), default to
-  `task` — this preserves current behavior and is the safer fallback.
+  `task` — this preserves current behavior and is the safer fallback. Classification
+  errors are surfaced to the caller and emitted as `classification_error` events.
 - Classification is **only** performed in `swe` mode (the default). Explicit
   `--mode spec`, `--mode code`, and `--mode review` bypass classification
   entirely — the user already declared intent.
@@ -79,6 +81,8 @@ into the SWE pipeline when the user follows up with an implementation request.
 ### Events
 - New event: `intent_classified` — emitted after classification with content
   `"question"` or `"task"`. Allows the CLI to display what mode the agent is in.
+- New event: `classification_error` — emitted when classification fails (all
+  models exhausted). Contains the error message. Intent defaults to `task`.
 - The Q&A phase emits standard events (`thinking`, `text`, `tool_use`, `done`).
 - No new `phase_start`/`phase_complete` events for Q&A — it's not a "phase" in
   the SWE pipeline sense; it's a pre-pipeline interaction mode.
@@ -91,7 +95,7 @@ into the SWE pipeline when the user follows up with an implementation request.
 
 ## Constraints
 - Classification must add <500ms of latency for typical prompts (Haiku is fast
-  enough for this).
+  enough for this). Per-attempt timeout is 2 seconds to allow for network jitter.
 - Classification must not consume more than ~200 input tokens + ~20 output tokens
   per call.
 - Do not modify the core `loop.Loop` implementation — the Q&A mode uses the
@@ -123,8 +127,10 @@ const (
 
 // ClassifyIntent uses a lightweight LLM call to determine whether the user's
 // prompt is an informational question or an actionable task request.
-// Returns IntentTask on any error (safe default).
-func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string) Intent
+// Returns (IntentTask, nil) for empty prompts.
+// Returns (IntentTask, err) on classification failure (safe default).
+// Tries each model in classificationModels before giving up.
+func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string) (Intent, error)
 ```
 
 ```go
@@ -169,9 +175,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 ```go
 // internal/agent/worker.go — updated to handle Q&A state
 
-// Worker tracks Q&A state:
+// Worker tracks Q&A state (in-memory, intentionally not persisted —
+// a worker restart means a new session):
 // - qaHistoryID string: preserved across Q&A rounds for Resume()
 // - qaActive bool: true while in Q&A mode (not yet transitioned to task)
+// State transitions are debug-logged for operator visibility.
 ```
 
 ## Edge Cases
@@ -181,9 +189,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 - User sends an empty prompt — skip classification, let the existing loop
   handle it (it'll ask for input).
 - User sends a very long prompt (>4000 tokens) — classification should still
-  work; the prompt is truncated to the first ~1000 chars for the classification
-  call to stay within the ~200 input token budget. The full prompt goes to
-  whichever phase runs.
+  work; the prompt is truncated at a word boundary to the first ~1000 chars for
+  the classification call to stay within the ~200 input token budget. Word-boundary
+  truncation prevents semantic manipulation via mid-word cutting. The full prompt
+  goes to whichever phase runs.
 - Classification LLM returns unexpected JSON / garbage — parse error → default
   to `task`.
 - User explicitly sends "implement X" after several Q&A rounds — classified as
@@ -195,7 +204,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
   (it uses its own model selection), which is acceptable — classification
   prompt is simple enough for any model.
 - `--mode swe` explicit — same as default, classification runs.
-- Network error during classification — default to `task`, log warning.
+- Network error during classification — default to `task`, log warning, emit
+  `classification_error` event for operator visibility. All models in the fallback
+  list are tried before declaring failure.
 - User starts with a question, gets answer, then sends another question, then
   finally sends a task — Q&A history accumulates across question rounds, SWE
   pipeline launches fresh with reference to prior discussion.
