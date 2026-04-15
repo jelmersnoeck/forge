@@ -1,6 +1,6 @@
 ---
 id: stale-interrupt-drain
-status: draft
+status: implemented
 ---
 # Drain stale interrupt signals before each turn
 
