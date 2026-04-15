@@ -160,6 +160,84 @@ func TestHub_ConcurrentPushPull(t *testing.T) {
 	}
 }
 
+func TestHub_DrainInterrupt(t *testing.T) {
+	tests := map[string]struct {
+		setup func(*Hub)
+		want  bool // true = channel was drained (had pending signal)
+	}{
+		"no pending signal": {
+			setup: func(h *Hub) {},
+			want:  false,
+		},
+		"stale signal drained": {
+			setup: func(h *Hub) {
+				h.TriggerInterrupt()
+			},
+			want: true,
+		},
+		"drain is idempotent": {
+			setup: func(h *Hub) {
+				h.TriggerInterrupt()
+				h.DrainInterrupt() // first drain clears it
+			},
+			want: false, // second drain finds nothing
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			hub := NewHub()
+			tc.setup(hub)
+
+			got := hub.DrainInterrupt()
+			r.Equal(tc.want, got, "DrainInterrupt return value")
+
+			// After drain, channel must be empty.
+			select {
+			case <-hub.InterruptChannel():
+				r.Fail("interrupt channel should be empty after drain")
+			default:
+				// good — nothing pending
+			}
+		})
+	}
+}
+
+func TestHub_DrainInterrupt_RepeatedCallsOnEmpty(t *testing.T) {
+	// Calling DrainInterrupt multiple times on an empty channel should
+	// be safe and always return false with no side effects.
+	r := require.New(t)
+	hub := NewHub()
+
+	for i := 0; i < 10; i++ {
+		r.False(hub.DrainInterrupt(), "drain #%d on empty channel should return false", i)
+	}
+
+	// Channel should still accept a new interrupt after repeated drains.
+	hub.TriggerInterrupt()
+	r.True(hub.DrainInterrupt(), "drain after trigger should return true")
+}
+
+func TestHub_DrainInterrupt_DoesNotBlockActiveTurn(t *testing.T) {
+	// Drain should not interfere with an interrupt arriving during
+	// an active turn (interrupt goroutine consumes it, not drain).
+	r := require.New(t)
+	hub := NewHub()
+
+	// Simulate: drain at turn start (nothing pending), then trigger
+	// interrupt mid-turn — it should still be receivable.
+	hub.DrainInterrupt()
+	hub.TriggerInterrupt()
+
+	select {
+	case <-hub.InterruptChannel():
+		// good — interrupt arrived normally
+	case <-time.After(100 * time.Millisecond):
+		r.Fail("interrupt should be receivable after drain when sent mid-turn")
+	}
+}
+
 func TestHub_PushMessage_ReturnsImmediateStatus(t *testing.T) {
 	tests := map[string]struct {
 		setup    func(*Hub) // Setup function to configure hub state

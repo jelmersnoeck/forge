@@ -156,6 +156,11 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		var runErr error
+		// Drain any stale interrupt from a previous turn's Ctrl+C
+		// that arrived after the turn finished.
+		if w.hub.DrainInterrupt() {
+			log.Printf("[agent:%s] drained stale interrupt before new turn", w.sessionID)
+		}
 		// Create a cancellable context for this turn so interrupts
 		// can abort the loop without killing the entire worker.
 		turnCtx, turnCancel := context.WithCancel(ctx)
