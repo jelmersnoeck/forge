@@ -93,7 +93,17 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 
 	// Classify intent (skip if spec is provided — that's unambiguously a task).
 	if specPath == "" {
-		intent := ClassifyIntent(ctx, opts.Provider, opts.InitialPrompt)
+		intent, err := ClassifyIntent(ctx, opts.Provider, opts.InitialPrompt)
+		if err != nil {
+			log.Printf("[orchestrator:%s] classification error (defaulting to task): %v", opts.SessionID, err)
+			opts.Emit(types.OutboundEvent{
+				ID:        uuid.New().String(),
+				SessionID: opts.SessionID,
+				Type:      "classification_error",
+				Content:   fmt.Sprintf("classification failed (defaulting to task): %v", err),
+				Timestamp: time.Now().UnixMilli(),
+			})
+		}
 
 		opts.Emit(types.OutboundEvent{
 			ID:        uuid.New().String(),
@@ -114,8 +124,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 
 	// Task path: augment prompt with Q&A context if transitioning from questions.
 	if opts.QAHistoryID != "" {
-		opts.InitialPrompt = "Based on our previous discussion, the user now wants to implement: " +
+		augmented := "Based on our previous discussion, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the conversation to inform the spec."
+		log.Printf("[orchestrator:%s] Q&A→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
+		opts.InitialPrompt = augmented
 		// Clear QAHistoryID so the spec-creator starts a fresh loop.
 		opts.QAHistoryID = ""
 	}

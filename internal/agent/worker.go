@@ -105,6 +105,8 @@ func (w *Worker) Run(ctx context.Context) {
 	orchestratorDone := false
 
 	// Q&A state: tracks history across question rounds for Resume().
+	// These are intentionally in-memory — a worker restart means a new session,
+	// so Q&A state doesn't need persistence beyond the process lifetime.
 	var qaHistoryID string
 	qaActive := false
 
@@ -177,10 +179,12 @@ func (w *Worker) Run(ctx context.Context) {
 				// Q&A mode — preserve history for follow-up, don't mark orchestrator done.
 				qaHistoryID = result.QAHistoryID
 				qaActive = true
+				log.Printf("[agent:%s] state: Q&A active, historyID=%s", w.sessionID, qaHistoryID)
 			default:
 				// Task completed — orchestrator is done, subsequent messages use plain loop.
 				orchestratorDone = true
 				qaActive = false
+				log.Printf("[agent:%s] state: orchestrator done, task completed", w.sessionID)
 			}
 
 		case qaActive && w.mode == "swe":
@@ -191,9 +195,11 @@ func (w *Worker) Run(ctx context.Context) {
 			switch result.Intent {
 			case phase.IntentQuestion:
 				qaHistoryID = result.QAHistoryID
+				log.Printf("[agent:%s] state: Q&A continued, historyID=%s", w.sessionID, qaHistoryID)
 			default:
 				orchestratorDone = true
 				qaActive = false
+				log.Printf("[agent:%s] state: Q&A→task transition complete", w.sessionID)
 			}
 
 		case useOrchestrator && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):

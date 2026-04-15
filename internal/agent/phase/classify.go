@@ -3,9 +3,11 @@ package phase
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -18,16 +20,33 @@ const (
 	IntentTask     Intent = "task"
 )
 
-// classificationModel is the lightweight model used for intent classification.
-// Same approach as session naming — cheap and fast.
-const classificationModel = "claude-haiku-4-20250414"
+// classificationModels is a prioritized list of lightweight models for
+// intent classification. Falls through to the next model when the provider
+// returns an error (e.g., model unavailable). Same pattern as session naming.
+var classificationModels = []string{
+	"claude-haiku-4-20250414",
+	"claude-haiku-4-5-20251001",
+	"claude-3-5-haiku-20241022",
+}
+
+// classificationTimeout is the per-attempt timeout for classification.
+// Kept tight: spec targets <500ms, but network jitter needs a buffer.
+const classificationTimeout = 2 * time.Second
 
 // classificationSystemPrompt is kept minimal to stay within ~200 input tokens.
-const classificationSystemPrompt = `Classify the user's message as either a question (informational, exploratory, "how does X work?") or a task (actionable request to build, fix, change, implement something).
+const classificationSystemPrompt = `Classify the user's message as either a question or a task.
 
-Respond with ONLY a JSON object: {"intent": "question"} or {"intent": "task"}
+question: informational, exploratory, asking how something works, requesting an explanation.
+  Examples: "how does the caching work?", "what files handle MCP?", "explain the session lifecycle"
 
-If ambiguous, prefer "task".`
+task: actionable request to build, fix, change, implement, refactor, or modify something.
+  Examples: "add a --verbose flag", "fix the nil pointer in worker.go", "implement retry logic"
+
+Ambiguous cases (could be either) default to task:
+  "the caching could be improved" → task
+  "this error handling seems wrong" → task
+
+Respond with ONLY a JSON object: {"intent": "question"} or {"intent": "task"}`
 
 // maxClassifyPromptLen caps the user prompt sent to the classifier.
 // ~1000 chars keeps us well within the ~200 input token budget.
@@ -35,24 +54,36 @@ const maxClassifyPromptLen = 1000
 
 // ClassifyIntent uses a lightweight LLM call to determine whether the user's
 // prompt is an informational question or an actionable task request.
-// Returns IntentTask on any error (safe default).
-func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string) Intent {
+// Returns (IntentTask, nil) for empty prompts.
+// Returns (IntentTask, err) on classification failure (safe default).
+// Tries each model in classificationModels before giving up.
+func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string) (Intent, error) {
 	if strings.TrimSpace(prompt) == "" {
-		return IntentTask
+		return IntentTask, nil
 	}
 
-	// Truncate long prompts to stay within token budget.
-	classifyPrompt := prompt
-	if len(classifyPrompt) > maxClassifyPromptLen {
-		classifyPrompt = classifyPrompt[:maxClassifyPromptLen] + "..."
+	classifyPrompt := truncateAtWordBoundary(prompt, maxClassifyPromptLen)
+
+	var lastErr error
+	for _, model := range classificationModels {
+		intent, err := classifyWithModel(ctx, provider, model, classifyPrompt)
+		if err == nil {
+			return intent, nil
+		}
+		lastErr = err
+		log.Printf("[classify] model %s failed: %v — trying next", model, err)
 	}
 
-	// Tight timeout — classification must be fast (<500ms target).
-	classifyCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	return IntentTask, fmt.Errorf("all classification models failed: %w", lastErr)
+}
+
+// classifyWithModel runs a single classification attempt against a specific model.
+func classifyWithModel(ctx context.Context, provider types.LLMProvider, model, prompt string) (Intent, error) {
+	classifyCtx, cancel := context.WithTimeout(ctx, classificationTimeout)
 	defer cancel()
 
 	req := types.ChatRequest{
-		Model: classificationModel,
+		Model: model,
 		System: []types.SystemBlock{
 			{Type: "text", Text: classificationSystemPrompt},
 		},
@@ -60,7 +91,7 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 			{
 				Role: "user",
 				Content: []types.ChatContentBlock{
-					{Type: "text", Text: classifyPrompt},
+					{Type: "text", Text: prompt},
 				},
 			},
 		},
@@ -70,8 +101,7 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 
 	deltaChan, err := provider.Chat(classifyCtx, req)
 	if err != nil {
-		log.Printf("[classify] provider error (defaulting to task): %v", err)
-		return IntentTask
+		return IntentTask, fmt.Errorf("provider.Chat: %w", err)
 	}
 
 	// Drain deltas and collect text.
@@ -81,34 +111,58 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 		case "text_delta":
 			text.WriteString(delta.Text)
 		case "error":
-			log.Printf("[classify] stream error (defaulting to task): %s", delta.Text)
-			return IntentTask
+			return IntentTask, fmt.Errorf("stream error: %s", delta.Text)
 		}
 	}
 
-	return parseIntent(text.String())
+	intent, err := parseIntent(text.String())
+	if err != nil {
+		return IntentTask, err
+	}
+	return intent, nil
+}
+
+// truncateAtWordBoundary truncates s to at most maxLen characters, cutting at
+// the last whitespace boundary to avoid splitting mid-word or mid-token.
+// This prevents truncation from altering semantic meaning by cutting in the
+// middle of a sentence fragment.
+func truncateAtWordBoundary(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+
+	// Walk backward from maxLen to find a whitespace boundary.
+	cut := maxLen
+	for cut > 0 && !unicode.IsSpace(rune(s[cut-1])) {
+		cut--
+	}
+
+	// If the entire prefix is a single massive word, hard-cut at maxLen.
+	if cut == 0 {
+		cut = maxLen
+	}
+
+	return strings.TrimRightFunc(s[:cut], unicode.IsSpace) + "..."
 }
 
 // parseIntent extracts the intent from the LLM's JSON response.
-// Returns IntentTask on any parse failure.
-func parseIntent(raw string) Intent {
+// Returns (IntentTask, err) on any parse failure.
+func parseIntent(raw string) (Intent, error) {
 	raw = strings.TrimSpace(raw)
 
 	var result struct {
 		Intent string `json:"intent"`
 	}
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		log.Printf("[classify] parse error (defaulting to task): %v — raw: %q", err, raw)
-		return IntentTask
+		return IntentTask, fmt.Errorf("parse error: %w — raw: %q", err, raw)
 	}
 
 	switch Intent(result.Intent) {
 	case IntentQuestion:
-		return IntentQuestion
+		return IntentQuestion, nil
 	case IntentTask:
-		return IntentTask
+		return IntentTask, nil
 	default:
-		log.Printf("[classify] unknown intent %q (defaulting to task)", result.Intent)
-		return IntentTask
+		return IntentTask, fmt.Errorf("unknown intent %q", result.Intent)
 	}
 }
