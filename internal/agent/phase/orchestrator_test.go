@@ -325,11 +325,11 @@ func TestValidatePRTitle(t *testing.T) {
 		title   string
 		wantErr bool
 	}{
-		"empty":              {title: "", wantErr: true},
-		"too short":          {title: "fix auth", wantErr: true},
-		"generic":            {title: "fix bug", wantErr: true},
-		"good":               {title: "Add OAuth2 authentication for Greendale API", wantErr: false},
-		"minimum length":     {title: "Fix user signup", wantErr: false},
+		"empty":          {title: "", wantErr: true},
+		"too short":      {title: "fix auth", wantErr: true},
+		"generic":        {title: "fix bug", wantErr: true},
+		"good":           {title: "Add OAuth2 authentication for Greendale API", wantErr: false},
+		"minimum length": {title: "Fix user signup", wantErr: false},
 	}
 
 	for name, tc := range tests {
@@ -350,9 +350,9 @@ func TestValidatePRDescription(t *testing.T) {
 		body    string
 		wantErr bool
 	}{
-		"empty":           {body: "", wantErr: true},
-		"too short":       {body: "Fixed the thing.", wantErr: true},
-		"good enough":     {body: "This PR adds the Greendale Human Being mascot to the interactive campus map, including SVG assets.", wantErr: false},
+		"empty":       {body: "", wantErr: true},
+		"too short":   {body: "Fixed the thing.", wantErr: true},
+		"good enough": {body: "This PR adds the Greendale Human Being mascot to the interactive campus map, including SVG assets.", wantErr: false},
 	}
 
 	for name, tc := range tests {
@@ -388,12 +388,19 @@ func initGitRepoWithRemote(t *testing.T, branch string) (remote, local string) {
 }
 
 // run executes a command in the given directory. Fails the test on error.
+// Sets git identity env vars so commits work in CI where no global config exists.
 func run(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Troy Barnes",
+		"GIT_AUTHOR_EMAIL=troy@greendale.edu",
+		"GIT_COMMITTER_NAME=Troy Barnes",
+		"GIT_COMMITTER_EMAIL=troy@greendale.edu",
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, out)
