@@ -48,6 +48,23 @@ func Coder() Phase {
 	}
 }
 
+// QA returns the Q&A phase configuration.
+// Read-only exploration — no file mutations, no agents, no PRs.
+func QA() Phase {
+	return Phase{
+		Name: "qa",
+		DisallowedTools: []string{
+			"Write", "Edit", "PRCreate",
+			"Agent", "AgentGet", "AgentList", "AgentStop",
+			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+			"QueueImmediate", "QueueOnComplete",
+			"UseMCPTool",
+			"Reflect",
+		},
+		MaxTurns: 200,
+	}
+}
+
 // Reviewer returns the reviewer phase configuration.
 func Reviewer() Phase {
 	return Phase{

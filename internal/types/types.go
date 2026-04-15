@@ -24,7 +24,7 @@ type InboundMessage struct {
 // Type is one of: "text", "tool_use", "done", "error", "interrupted", "thinking",
 // "compact", "retry", "usage", "queued_task_result", "queued_task_error",
 // "queue_immediate", "queue_on_complete", "pr_monitor", "pr_url",
-// "task_status".
+// "task_status", "intent_classified".
 type OutboundEvent struct {
 	ID        string      `json:"id"`
 	SessionID string      `json:"sessionId"`

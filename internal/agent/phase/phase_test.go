@@ -31,6 +31,19 @@ func TestPhaseDefinitions(t *testing.T) {
 			wantMaxTurns:   0,
 			wantAllAllowed: true,
 		},
+		"qa": {
+			phase:        QA(),
+			wantName:     "qa",
+			wantMaxTurns: 200,
+			wantDisallowed: []string{
+				"Write", "Edit", "PRCreate",
+				"Agent", "AgentGet", "AgentList", "AgentStop",
+				"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+				"QueueImmediate", "QueueOnComplete",
+				"UseMCPTool",
+				"Reflect",
+			},
+		},
 		"reviewer": {
 			phase:        Reviewer(),
 			wantName:     "review",
@@ -78,6 +91,10 @@ func TestPromptForPhase(t *testing.T) {
 		"review": {
 			phaseName:    "review",
 			wantContains: "code review coordinator",
+		},
+		"qa": {
+			phaseName:    "qa",
+			wantContains: "answering questions",
 		},
 		"unknown defaults to coder": {
 			phaseName:    "greendale",

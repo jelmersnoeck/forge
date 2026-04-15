@@ -104,6 +104,12 @@ func (w *Worker) Run(ctx context.Context) {
 	// After the orchestrator completes, subsequent messages use the plain loop.
 	orchestratorDone := false
 
+	// Q&A state: tracks history across question rounds for Resume().
+	// These are intentionally in-memory — a worker restart means a new session,
+	// so Q&A state doesn't need persistence beyond the process lifetime.
+	var qaHistoryID string
+	qaActive := false
+
 	var historyID string
 	for {
 		select {
@@ -164,9 +170,20 @@ func (w *Worker) Run(ctx context.Context) {
 		// Decide execution path: orchestrator, single phase, or plain loop.
 		useOrchestrator := !orchestratorDone && w.mode != ""
 		switch {
-		case useOrchestrator && w.mode == "swe":
-			runErr = w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
-			orchestratorDone = true
+		case (useOrchestrator || qaActive) && w.mode == "swe":
+			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID)
+			runErr = err
+
+			switch result.Intent {
+			case phase.IntentQuestion:
+				qaHistoryID = result.QAHistoryID
+				qaActive = true
+				log.Printf("[agent:%s] state: Q&A active, historyID=%s", w.sessionID, qaHistoryID)
+			default:
+				orchestratorDone = true
+				qaActive = false
+				log.Printf("[agent:%s] state: orchestrator done, task completed", w.sessionID)
+			}
 
 		case useOrchestrator && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):
 			runErr = w.runSinglePhase(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
@@ -222,7 +239,7 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// runOrchestrator runs the full SWE pipeline (spec → code → review).
+// runOrchestrator runs the SWE pipeline with intent classification.
 func (w *Worker) runOrchestrator(
 	ctx context.Context,
 	prov types.LLMProvider,
@@ -231,8 +248,10 @@ func (w *Worker) runOrchestrator(
 	store *session.Store,
 	model, prompt string,
 	emit func(types.OutboundEvent),
-) error {
+	qaHistoryID string,
+) (phase.OrchestratorResult, error) {
 	orch := phase.NewSWEOrchestrator()
+
 	opts := phase.OrchestratorOpts{
 		Provider:      prov,
 		Registry:      registry,
@@ -245,13 +264,14 @@ func (w *Worker) runOrchestrator(
 		AuditLogger:   &StdAuditLogger{},
 		InitialPrompt: prompt,
 		SpecPath:      w.specPath,
+		QAHistoryID:   qaHistoryID,
 	}
 
-	err := orch.Run(ctx, opts)
+	result, err := orch.Run(ctx, opts)
 
 	// Emit done so the CLI returns to prompt.
 	emit(types.OutboundEvent{Type: "done"})
-	return err
+	return result, err
 }
 
 // runSinglePhase runs a standalone phase (spec, code, or review).
