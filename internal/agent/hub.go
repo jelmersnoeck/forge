@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"log"
 	"sync"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -167,11 +168,15 @@ func (h *Hub) InterruptChannel() <-chan struct{} {
 
 // DrainInterrupt discards any pending interrupt signal. Called at the
 // start of each turn to prevent a stale Ctrl+C from the previous turn
-// from immediately cancelling the new one.
-func (h *Hub) DrainInterrupt() {
+// from immediately cancelling the new one. Returns true if a stale
+// signal was actually drained.
+func (h *Hub) DrainInterrupt() bool {
 	select {
 	case <-h.interruptCh:
+		log.Println("[hub] drained stale interrupt signal")
+		return true
 	default:
+		return false
 	}
 }
 

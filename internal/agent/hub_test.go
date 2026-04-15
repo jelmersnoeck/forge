@@ -190,7 +190,8 @@ func TestHub_DrainInterrupt(t *testing.T) {
 			hub := NewHub()
 			tc.setup(hub)
 
-			hub.DrainInterrupt()
+			got := hub.DrainInterrupt()
+			r.Equal(tc.want, got, "DrainInterrupt return value")
 
 			// After drain, channel must be empty.
 			select {
@@ -201,6 +202,21 @@ func TestHub_DrainInterrupt(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHub_DrainInterrupt_RepeatedCallsOnEmpty(t *testing.T) {
+	// Calling DrainInterrupt multiple times on an empty channel should
+	// be safe and always return false with no side effects.
+	r := require.New(t)
+	hub := NewHub()
+
+	for i := 0; i < 10; i++ {
+		r.False(hub.DrainInterrupt(), "drain #%d on empty channel should return false", i)
+	}
+
+	// Channel should still accept a new interrupt after repeated drains.
+	hub.TriggerInterrupt()
+	r.True(hub.DrainInterrupt(), "drain after trigger should return true")
 }
 
 func TestHub_DrainInterrupt_DoesNotBlockActiveTurn(t *testing.T) {
