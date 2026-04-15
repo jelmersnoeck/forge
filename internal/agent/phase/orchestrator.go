@@ -1,12 +1,10 @@
 package phase
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -577,31 +575,35 @@ func RunReviewOnly(ctx context.Context, opts OrchestratorOpts) error {
 	return nil
 }
 
-// runFinalize creates a draft PR for completed work.
+// runFinalize creates a draft PR for completed work deterministically.
 //
-// Preconditions checked before running:
-//   - Must be in a git repository
-//   - Must be on a feature branch (not main/master)
-//   - Must have changes relative to origin/<base>
+// No LLM loop — this is pure Go code that:
+//  1. Checks preconditions (feature branch, has changes)
+//  2. Fetches, rebases, pushes
+//  3. Uses a cheap LLM call (Haiku) to generate title/body
+//  4. Calls `gh pr create --draft`
 //
 // Failures are non-fatal — the caller logs and continues.
 func (o *Orchestrator) runFinalize(ctx context.Context, opts OrchestratorOpts, specPath string) error {
-	shouldFinalize, reason := shouldCreatePR(opts.CWD)
-	if !shouldFinalize {
-		log.Printf("[orchestrator:%s] skipping PR creation: %s", opts.SessionID, reason)
-		return nil
-	}
-
 	o.emitPhaseHandoff(opts, "review", "finalize")
 	o.emitPhaseStart(opts, "finalize")
 
-	prompt := buildFinalizePrompt(specPath)
-	if err := o.runCoderWithMessage(ctx, opts, prompt); err != nil {
-		o.emitPhaseComplete(opts, "finalize", "failed")
-		return fmt.Errorf("finalize phase: %w", err)
+	result := CreatePR(ctx, opts.Provider, opts.CWD, specPath)
+	if result.Error != nil {
+		o.emitPhaseComplete(opts, "finalize", fmt.Sprintf("skipped: %v", result.Error))
+		return result.Error
 	}
 
-	o.emitPhaseComplete(opts, "finalize", "PR created")
+	// Emit pr_url event so the CLI can display it.
+	opts.Emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: opts.SessionID,
+		Type:      "pr_url",
+		Content:   result.URL,
+		Timestamp: time.Now().UnixMilli(),
+	})
+
+	o.emitPhaseComplete(opts, "finalize", fmt.Sprintf("PR created: %s", result.URL))
 	return nil
 }
 
@@ -609,36 +611,26 @@ func (o *Orchestrator) runFinalize(ctx context.Context, opts OrchestratorOpts, s
 // Returns (true, "") if yes, or (false, reason) if not.
 func shouldCreatePR(cwd string) (bool, string) {
 	// Must be a git repo.
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
-	cmd.Dir = cwd
-	if err := cmd.Run(); err != nil {
+	if err := tools.RunGitCmd(cwd, "rev-parse", "--git-dir"); err != nil {
 		return false, "not a git repository"
 	}
 
 	// Must be on a feature branch.
-	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	branchCmd.Dir = cwd
-	var branchOut bytes.Buffer
-	branchCmd.Stdout = &branchOut
-	if err := branchCmd.Run(); err != nil {
+	branch, err := tools.GitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
 		return false, fmt.Sprintf("cannot determine branch: %v", err)
 	}
-	branch := strings.TrimSpace(branchOut.String())
 	if branch == "main" || branch == "master" {
 		return false, fmt.Sprintf("on %s branch", branch)
 	}
 
 	// Must have changes relative to base.
 	base := detectDefaultBranchSafe(cwd)
-	diffCmd := exec.Command("git", "diff", "--stat", "origin/"+base+"...HEAD")
-	diffCmd.Dir = cwd
-	var diffOut bytes.Buffer
-	diffCmd.Stdout = &diffOut
-	if err := diffCmd.Run(); err != nil {
-		// origin/<base> might not exist (no remote). Skip gracefully.
+	diffStat, err := tools.GitOutput(cwd, "diff", "--stat", "origin/"+base+"...HEAD")
+	if err != nil {
 		return false, fmt.Sprintf("cannot diff against origin/%s: %v", base, err)
 	}
-	if strings.TrimSpace(diffOut.String()) == "" {
+	if diffStat == "" {
 		return false, "no changes relative to base"
 	}
 
@@ -647,34 +639,10 @@ func shouldCreatePR(cwd string) (bool, string) {
 
 // detectDefaultBranchSafe returns the default branch name without failing.
 func detectDefaultBranchSafe(cwd string) string {
-	// Try common names.
 	for _, candidate := range []string{"main", "master"} {
-		cmd := exec.Command("git", "rev-parse", "--verify", "origin/"+candidate)
-		cmd.Dir = cwd
-		if err := cmd.Run(); err == nil {
+		if err := tools.RunGitCmd(cwd, "rev-parse", "--verify", "origin/"+candidate); err == nil {
 			return candidate
 		}
 	}
 	return "main"
-}
-
-// buildFinalizePrompt constructs the prompt for the finalize phase.
-func buildFinalizePrompt(specPath string) string {
-	var sb strings.Builder
-	sb.WriteString("The implementation and review are complete. Your final task is to create a draft PR.\n\n")
-	sb.WriteString("Steps:\n")
-	sb.WriteString("1. Commit any uncommitted changes with a meaningful message.\n")
-	sb.WriteString("2. Run `git diff origin/<base>...HEAD` to review the full diff.\n")
-	sb.WriteString("3. Run `git log origin/<base>..HEAD --oneline` to see all commits.\n")
-	sb.WriteString("4. Call PRCreate with a descriptive title and synthesized description.\n")
-	sb.WriteString("   - The title must capture the overall intent (imperative mood).\n")
-	sb.WriteString("   - The description must explain what changed, why, and notable details.\n")
-	sb.WriteString("   - Do NOT just list commit messages.\n")
-
-	if specPath != "" {
-		fmt.Fprintf(&sb, "\nThe spec for this work is at: %s\n", specPath)
-		sb.WriteString("Reference it when writing the PR description.\n")
-	}
-
-	return sb.String()
 }

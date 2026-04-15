@@ -28,9 +28,9 @@ func SpecCreator() Phase {
 	return Phase{
 		Name: "spec",
 		// Spec creator can read and explore, write specs, run read-only bash.
-		// No editing existing files, no PRs, no sub-agents.
+		// No editing existing files, no sub-agents.
 		DisallowedTools: []string{
-			"Edit", "PRCreate",
+			"Edit",
 			"Agent", "AgentGet", "AgentList", "AgentStop",
 			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 			"QueueImmediate", "QueueOnComplete",
@@ -49,12 +49,12 @@ func Coder() Phase {
 }
 
 // QA returns the Q&A phase configuration.
-// Read-only exploration — no file mutations, no agents, no PRs.
+// Read-only exploration — no file mutations, no agents.
 func QA() Phase {
 	return Phase{
 		Name: "qa",
 		DisallowedTools: []string{
-			"Write", "Edit", "PRCreate",
+			"Write", "Edit",
 			"Agent", "AgentGet", "AgentList", "AgentStop",
 			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 			"QueueImmediate", "QueueOnComplete",
@@ -70,7 +70,7 @@ func Reviewer() Phase {
 	return Phase{
 		Name: "review",
 		DisallowedTools: []string{
-			"Write", "Edit", "PRCreate",
+			"Write", "Edit",
 			"Agent", "AgentGet", "AgentList", "AgentStop",
 			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 			"QueueImmediate", "QueueOnComplete",

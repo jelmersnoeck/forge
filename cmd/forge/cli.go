@@ -100,7 +100,7 @@ type model struct {
 	initialPrompt string // auto-sent on startup (e.g. from --spec)
 
 	// PR tracking
-	prURL string // PR URL from pr_monitor or PRCreate
+	prURL string // PR URL from pr_monitor or orchestrator finalize
 
 	// Inline task progress — keyed by task/agent ID
 	taskTrackers     map[string]*taskTracker

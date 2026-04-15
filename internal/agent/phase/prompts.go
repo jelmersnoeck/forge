@@ -63,9 +63,6 @@ Follow this order strictly:
 4. **Test continuously** — run tests after each logical unit, not just at the end.
 5. **Lint and format** — run the project's linter/formatter. Fix warnings.
 6. **Reconcile the spec** — update to reflect what was built. Set status "implemented."
-7. **Create a PR** — commit all changes, review the full diff against the base
-   branch, then call PRCreate with a descriptive title and synthesized description.
-   This is mandatory — every completed implementation must have a draft PR.
 
 ## Standards
 

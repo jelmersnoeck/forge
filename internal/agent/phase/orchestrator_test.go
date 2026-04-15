@@ -139,7 +139,7 @@ func TestQAPhaseDisallowedTools(t *testing.T) {
 
 	// Verify all spec-mandated disallowed tools are present.
 	wantDisallowed := []string{
-		"Write", "Edit", "PRCreate",
+		"Write", "Edit",
 		"Agent", "AgentGet", "AgentList", "AgentStop",
 		"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 		"QueueImmediate", "QueueOnComplete",
@@ -230,36 +230,140 @@ func TestShouldCreatePR(t *testing.T) {
 	}
 }
 
-func TestBuildFinalizePrompt(t *testing.T) {
+func TestBranchToTitle(t *testing.T) {
 	tests := map[string]struct {
-		specPath     string
-		wantContains []string
+		branch string
+		want   string
 	}{
-		"without spec": {
-			specPath: "",
-			wantContains: []string{
-				"create a draft PR",
-				"PRCreate",
-				"git diff",
-			},
+		"feature branch": {
+			branch: "jelmer/add-paintball-tournament",
+			want:   "Add paintball tournament",
 		},
-		"with spec": {
-			specPath: ".forge/specs/human-being-mascot.md",
-			wantContains: []string{
-				"create a draft PR",
-				"PRCreate",
-				"human-being-mascot.md",
-			},
+		"simple branch": {
+			branch: "fix-scoring",
+			want:   "Fix scoring",
+		},
+		"underscores": {
+			branch: "jelmer/add_human_being_mascot",
+			want:   "Add human being mascot",
+		},
+		"empty after strip": {
+			branch: "jelmer/",
+			want:   "Update implementation",
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			prompt := buildFinalizePrompt(tc.specPath)
-			for _, want := range tc.wantContains {
-				r.Contains(prompt, want)
+			got := branchToTitle(tc.branch)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestFallbackPRContent(t *testing.T) {
+	r := require.New(t)
+
+	title, body := fallbackPRContent(
+		"jelmer/add-paintball",
+		"abc123 add tournament scaffold\ndef456 add scoring",
+		" 2 files changed, 42 insertions(+)",
+		"# Add paintball tournament\n\n## Description\nGreendale needs this.",
+	)
+
+	r.Equal("Add paintball", title)
+	r.Contains(body, "Add paintball tournament")
+	r.Contains(body, "2 files changed")
+	r.Contains(body, "add tournament scaffold")
+}
+
+func TestParsePRContent(t *testing.T) {
+	tests := map[string]struct {
+		raw       string
+		wantTitle string
+		wantBody  string
+		wantErr   bool
+	}{
+		"valid json": {
+			raw:       `{"title": "Add paintball scoring", "body": "This PR adds scoring for Greendale's annual paintball tournament."}`,
+			wantTitle: "Add paintball scoring",
+			wantBody:  "This PR adds scoring for Greendale's annual paintball tournament.",
+		},
+		"json in code fence": {
+			raw:       "```json\n{\"title\": \"Fix scoring\", \"body\": \"Fixes a bug in the scoring module.\"}\n```",
+			wantTitle: "Fix scoring",
+			wantBody:  "Fixes a bug in the scoring module.",
+		},
+		"empty title": {
+			raw:     `{"title": "", "body": "Something"}`,
+			wantErr: true,
+		},
+		"invalid json": {
+			raw:     "not json at all",
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			title, body, err := parsePRContent(tc.raw)
+			if tc.wantErr {
+				r.Error(err)
+				return
 			}
+			r.NoError(err)
+			r.Equal(tc.wantTitle, title)
+			r.Equal(tc.wantBody, body)
+		})
+	}
+}
+
+func TestValidatePRTitle(t *testing.T) {
+	tests := map[string]struct {
+		title   string
+		wantErr bool
+	}{
+		"empty":              {title: "", wantErr: true},
+		"too short":          {title: "fix auth", wantErr: true},
+		"generic":            {title: "fix bug", wantErr: true},
+		"good":               {title: "Add OAuth2 authentication for Greendale API", wantErr: false},
+		"minimum length":     {title: "Fix user signup", wantErr: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			err := validatePRTitle(tc.title)
+			if tc.wantErr {
+				r.Error(err)
+				return
+			}
+			r.NoError(err)
+		})
+	}
+}
+
+func TestValidatePRDescription(t *testing.T) {
+	tests := map[string]struct {
+		body    string
+		wantErr bool
+	}{
+		"empty":           {body: "", wantErr: true},
+		"too short":       {body: "Fixed the thing.", wantErr: true},
+		"good enough":     {body: "This PR adds the Greendale Human Being mascot to the interactive campus map, including SVG assets.", wantErr: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			err := validatePRDescription(tc.body)
+			if tc.wantErr {
+				r.Error(err)
+				return
+			}
+			r.NoError(err)
 		})
 	}
 }
