@@ -170,36 +170,19 @@ func (w *Worker) Run(ctx context.Context) {
 		// Decide execution path: orchestrator, single phase, or plain loop.
 		useOrchestrator := !orchestratorDone && w.mode != ""
 		switch {
-		case useOrchestrator && w.mode == "swe":
+		case (useOrchestrator || qaActive) && w.mode == "swe":
 			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID)
 			runErr = err
 
 			switch result.Intent {
 			case phase.IntentQuestion:
-				// Q&A mode — preserve history for follow-up, don't mark orchestrator done.
 				qaHistoryID = result.QAHistoryID
 				qaActive = true
 				log.Printf("[agent:%s] state: Q&A active, historyID=%s", w.sessionID, qaHistoryID)
 			default:
-				// Task completed — orchestrator is done, subsequent messages use plain loop.
 				orchestratorDone = true
 				qaActive = false
 				log.Printf("[agent:%s] state: orchestrator done, task completed", w.sessionID)
-			}
-
-		case qaActive && w.mode == "swe":
-			// Subsequent message in Q&A mode — classify again.
-			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID)
-			runErr = err
-
-			switch result.Intent {
-			case phase.IntentQuestion:
-				qaHistoryID = result.QAHistoryID
-				log.Printf("[agent:%s] state: Q&A continued, historyID=%s", w.sessionID, qaHistoryID)
-			default:
-				orchestratorDone = true
-				qaActive = false
-				log.Printf("[agent:%s] state: Q&A→task transition complete", w.sessionID)
 			}
 
 		case useOrchestrator && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):

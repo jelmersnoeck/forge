@@ -122,18 +122,18 @@ func classifyWithModel(ctx context.Context, provider types.LLMProvider, model, p
 	return intent, nil
 }
 
-// truncateAtWordBoundary truncates s to at most maxLen characters, cutting at
+// truncateAtWordBoundary truncates s to at most maxLen runes, cutting at
 // the last whitespace boundary to avoid splitting mid-word or mid-token.
-// This prevents truncation from altering semantic meaning by cutting in the
-// middle of a sentence fragment.
+// Uses rune-aware iteration so multi-byte UTF-8 (CJK, emoji) stays intact.
 func truncateAtWordBoundary(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 
 	// Walk backward from maxLen to find a whitespace boundary.
 	cut := maxLen
-	for cut > 0 && !unicode.IsSpace(rune(s[cut-1])) {
+	for cut > 0 && !unicode.IsSpace(runes[cut-1]) {
 		cut--
 	}
 
@@ -142,7 +142,7 @@ func truncateAtWordBoundary(s string, maxLen int) string {
 		cut = maxLen
 	}
 
-	return strings.TrimRightFunc(s[:cut], unicode.IsSpace) + "..."
+	return strings.TrimRightFunc(string(runes[:cut]), unicode.IsSpace) + "..."
 }
 
 // parseIntent extracts the intent from the LLM's JSON response.
@@ -162,6 +162,8 @@ func parseIntent(raw string) (Intent, error) {
 		return IntentQuestion, nil
 	case IntentTask:
 		return IntentTask, nil
+	case "":
+		return IntentTask, fmt.Errorf("missing intent field in response: %q", raw)
 	default:
 		return IntentTask, fmt.Errorf("unknown intent %q", result.Intent)
 	}

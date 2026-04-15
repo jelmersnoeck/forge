@@ -1,10 +1,38 @@
 package phase
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
+	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+// mockProvider implements types.LLMProvider for testing.
+type mockProvider struct {
+	// responses maps model name to the response behavior.
+	// nil value = return error, non-nil = send deltas then close.
+	responses map[string][]types.ChatDelta
+	// calls records which models were called, in order.
+	calls []string
+}
+
+func (m *mockProvider) Chat(_ context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.calls = append(m.calls, req.Model)
+
+	deltas, ok := m.responses[req.Model]
+	if !ok {
+		return nil, fmt.Errorf("model %q unavailable", req.Model)
+	}
+
+	ch := make(chan types.ChatDelta, len(deltas))
+	for _, d := range deltas {
+		ch <- d
+	}
+	close(ch)
+	return ch, nil
+}
 
 func TestParseIntent(t *testing.T) {
 	tests := map[string]struct {
@@ -84,6 +112,153 @@ func TestClassifyIntentWhitespacePrompt(t *testing.T) {
 	r.Equal(IntentTask, got)
 }
 
+func TestClassifyIntentSuccess(t *testing.T) {
+	tests := map[string]struct {
+		response string
+		want     Intent
+	}{
+		"question": {
+			response: `{"intent": "question"}`,
+			want:     IntentQuestion,
+		},
+		"task": {
+			response: `{"intent": "task"}`,
+			want:     IntentTask,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			prov := &mockProvider{
+				responses: map[string][]types.ChatDelta{
+					classificationModels[0]: {
+						{Type: "text_delta", Text: tc.response},
+					},
+				},
+			}
+
+			got, err := ClassifyIntent(t.Context(), prov, "how does the caching work?")
+			r.NoError(err)
+			r.Equal(tc.want, got)
+			r.Len(prov.calls, 1, "should only try first model on success")
+		})
+	}
+}
+
+func TestClassifyIntentModelFallback(t *testing.T) {
+	r := require.New(t)
+
+	// First two models fail, third succeeds.
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{
+			classificationModels[2]: {
+				{Type: "text_delta", Text: `{"intent": "question"}`},
+			},
+		},
+	}
+
+	got, err := ClassifyIntent(t.Context(), prov, "what files handle MCP?")
+	r.NoError(err)
+	r.Equal(IntentQuestion, got)
+	r.Len(prov.calls, 3, "should try all three models")
+}
+
+func TestClassifyIntentAllModelsFail(t *testing.T) {
+	r := require.New(t)
+
+	// No models available — all fail.
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{},
+	}
+
+	got, err := ClassifyIntent(t.Context(), prov, "add a verbose flag")
+	r.Equal(IntentTask, got, "should default to task on failure")
+	r.Error(err)
+	r.Contains(err.Error(), "all classification models failed")
+}
+
+func TestClassifyIntentStreamError(t *testing.T) {
+	r := require.New(t)
+
+	// Model returns an error delta in the stream.
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{
+			classificationModels[0]: {
+				{Type: "error", Text: "rate limited, Troy Barnes"},
+			},
+		},
+	}
+
+	got, err := ClassifyIntent(t.Context(), prov, "explain session lifecycle")
+	r.Equal(IntentTask, got)
+	r.Error(err)
+	r.Contains(err.Error(), "all classification models failed")
+}
+
+func TestClassifyIntentGarbageResponse(t *testing.T) {
+	r := require.New(t)
+
+	// Model returns valid stream but garbage content.
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{
+			classificationModels[0]: {
+				{Type: "text_delta", Text: "I don't understand, I'm the Human Being mascot"},
+			},
+		},
+	}
+
+	got, err := ClassifyIntent(t.Context(), prov, "how does routing work?")
+	r.Equal(IntentTask, got)
+	r.Error(err)
+}
+
+func TestClassifyIntentPromptTruncation(t *testing.T) {
+	r := require.New(t)
+
+	// Build a long prompt that exceeds maxClassifyPromptLen.
+	longPrompt := ""
+	for i := 0; i < 200; i++ {
+		longPrompt += "Greendale "
+	}
+
+	var capturedPrompt string
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{
+			classificationModels[0]: {
+				{Type: "text_delta", Text: `{"intent": "task"}`},
+			},
+		},
+	}
+
+	// Wrap to capture the prompt sent to the model.
+	origChat := prov.Chat
+	wrappedProv := &promptCapturingProvider{
+		inner:          prov,
+		capturedPrompt: &capturedPrompt,
+	}
+	_ = origChat
+
+	got, err := ClassifyIntent(t.Context(), wrappedProv, longPrompt)
+	r.NoError(err)
+	r.Equal(IntentTask, got)
+	// The prompt sent should be truncated.
+	r.LessOrEqual(len([]rune(capturedPrompt)), maxClassifyPromptLen+3) // +3 for "..."
+}
+
+// promptCapturingProvider wraps a provider and captures the user message.
+type promptCapturingProvider struct {
+	inner          *mockProvider
+	capturedPrompt *string
+}
+
+func (p *promptCapturingProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	if len(req.Messages) > 0 && len(req.Messages[0].Content) > 0 {
+		*p.capturedPrompt = req.Messages[0].Content[0].Text
+	}
+	return p.inner.Chat(ctx, req)
+}
+
 func TestTruncateAtWordBoundary(t *testing.T) {
 	tests := map[string]struct {
 		input  string
@@ -114,6 +289,16 @@ func TestTruncateAtWordBoundary(t *testing.T) {
 			input:  "Troy Barnes is a football star at Greendale Community College",
 			maxLen: 30,
 			want:   "Troy Barnes is a football...",
+		},
+		"multi-byte UTF-8 preserved": {
+			input:  "こんにちは世界 hello world",
+			maxLen: 8,
+			want:   "こんにちは世界...",
+		},
+		"emoji boundary respected": {
+			input:  "🎓🎓🎓🎓🎓 Greendale forever",
+			maxLen: 6,
+			want:   "🎓🎓🎓🎓🎓...",
 		},
 	}
 

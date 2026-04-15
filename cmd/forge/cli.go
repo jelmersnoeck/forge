@@ -1032,6 +1032,10 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		}
 		// "task" is silent — the phase_start events provide the display.
 
+	case "classification_error":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  "+event.Content))
+
 	case "review_start":
 		m.flushText()
 		m.output = append(m.output, headerStyle.Render("  [review] ")+event.Content)
