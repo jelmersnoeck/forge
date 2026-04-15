@@ -303,6 +303,7 @@ func runCLI(args []string) int {
 		worktreeBranch:  worktreeBranch,
 		cwd:             effectiveCWD,
 		initialPrompt:   initialPrompt,
+		working:         initialPrompt != "", // show spinner immediately for --spec
 		sessionTitle:    sessionID,
 		titleGenerated:  initialPrompt != "", // already named via Haiku if we had a prompt
 		prURL:           prURL,
@@ -387,7 +388,7 @@ func tick() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		if m.thinking || m.toolProgress != "" || len(m.taskTrackers) > 0 {
+		if m.working || len(m.taskTrackers) > 0 {
 			m.spinnerFrame++
 		}
 		return m, tick()
@@ -546,6 +547,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.output = append(m.output, "     "+line)
 					}
 				}
+				m.working = true
 				cmds := []tea.Cmd{m.sendMessage(text)}
 				// Generate session title from first user message
 				if !m.titleGenerated {
@@ -614,6 +616,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.output = append(m.output, "     "+line)
 				}
 			}
+			m.working = true
 			return m, m.sendMessage(text)
 		}
 
@@ -636,8 +639,8 @@ func (m model) getOutputHeight() int {
 		queueHeight = len(m.queue) + 2 // header + messages + separator
 	}
 	thinkingHeight := 0
-	if m.thinking || m.toolProgress != "" {
-		thinkingHeight = 1 // thinking/progress indicator
+	if m.toolProgress != "" || m.thinking || (m.working && m.textBuf == "") {
+		thinkingHeight = 1 // thinking/progress/working indicator
 	}
 	trackerHeight := m.taskTrackerHeight()
 	inputHeight := m.textArea.LineCount() + 2 // border top/bottom + content lines
@@ -693,12 +696,15 @@ func (m model) View() string {
 	}
 
 	// Build thinking/progress indicator
+	// Priority: toolProgress > thinking > working (when no text streaming)
 	var thinkingIndicator string
 	switch {
 	case m.toolProgress != "":
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " " + m.toolProgress)
 	case m.thinking:
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
+	case m.working && m.textBuf == "":
+		thinkingIndicator = thinkingStyle.Render(m.spinner() + " working...")
 	}
 
 	// Build queue display
