@@ -1,6 +1,6 @@
 ---
 id: intent-classification
-status: draft
+status: implemented
 ---
 # Classify user intent to route between Q&A and SWE pipeline
 
@@ -14,13 +14,16 @@ intent classification step that distinguishes "informational" prompts from
 into the SWE pipeline when the user follows up with an implementation request.
 
 ## Context
-- `internal/agent/worker.go` — `Run()` message loop, `runOrchestrator()`, `orchestratorDone` flag, `historyID` tracking
-- `internal/agent/phase/orchestrator.go` — `Orchestrator.Run()`, `OrchestratorOpts`, `RunSinglePhase()`
-- `internal/agent/phase/phase.go` — `Phase` struct, `SpecCreator()`, `Coder()`, `Reviewer()`
-- `internal/agent/phase/prompts.go` — `specCreatorPrompt`, `coderPrompt`, `PromptForPhase()`
-- `internal/runtime/loop/loop.go` — `Loop.Send()`, `Loop.Resume()`, `Loop.HistoryID()`
-- `internal/runtime/prompt/prompt.go` — `Assemble()`, `basePrompt`, `specPrompt`
-- `cmd/forge/cli.go` — `runCLI()`, `--mode` flag validation, `spawnLocalAgent()`
+- `internal/agent/worker.go` — `Run()` message loop, `runOrchestrator()`, `orchestratorDone` flag, `historyID` tracking, new `qaHistoryID`/`qaActive` state
+- `internal/agent/phase/orchestrator.go` — `Orchestrator.Run()` returns `OrchestratorResult`, `runQA()`, `runSWEPipeline()`, prompt augmentation for Q&A→task transition
+- `internal/agent/phase/phase.go` — `Phase` struct, `SpecCreator()`, `Coder()`, `QA()`, `Reviewer()`
+- `internal/agent/phase/prompts.go` — `specCreatorPrompt`, `coderPrompt`, `qaPrompt`, `PromptForPhase()`
+- `internal/agent/phase/classify.go` — `Intent`, `ClassifyIntent()`, `parseIntent()`
+- `internal/agent/phase/classify_test.go` — classification unit tests
+- `internal/runtime/loop/loop.go` — `Loop.Send()`, `Loop.Resume()`, `Loop.HistoryID()` (unchanged, used by Q&A)
+- `internal/runtime/prompt/prompt.go` — `Assemble()`, `basePrompt`, `specPrompt` (unchanged)
+- `internal/types/types.go` — `OutboundEvent` type docs updated with `intent_classified`
+- `cmd/forge/cli.go` — `handleEvent()` updated with `intent_classified` case
 
 ## Behavior
 
@@ -144,10 +147,11 @@ func PromptForPhase(name string) string // updated to handle "qa"
 // internal/agent/phase/orchestrator.go — updated Run signature stays the same,
 // but internal logic adds classification step before phase selection.
 
-// Orchestrator.Run now:
-// 1. Classifies intent (question vs task)
-// 2. If question → runs Q&A loop, returns (caller handles follow-ups)
-// 3. If task → runs SWE pipeline as before
+// OrchestratorOpts gains QAHistoryID field.
+type OrchestratorOpts struct {
+    // ... existing fields ...
+    QAHistoryID string // resumes existing Q&A conversation when set
+}
 
 // OrchestratorResult is the return value from Orchestrator.Run.
 type OrchestratorResult struct {
@@ -159,7 +163,6 @@ type OrchestratorResult struct {
 }
 
 // Run returns OrchestratorResult instead of error.
-// Error is embedded: OrchestratorResult has an Err field.
 func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error)
 ```
 
