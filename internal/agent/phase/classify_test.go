@@ -149,10 +149,15 @@ func TestClassifyIntentSuccess(t *testing.T) {
 func TestClassifyIntentModelFallback(t *testing.T) {
 	r := require.New(t)
 
+	// Temporarily add extra models to verify fallback behavior.
+	orig := classificationModels
+	classificationModels = []string{"fake-model-1", "fake-model-2", "claude-haiku-4-5-20251001"}
+	t.Cleanup(func() { classificationModels = orig })
+
 	// First two models fail, third succeeds.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[2]: {
+			"claude-haiku-4-5-20251001": {
 				{Type: "text_delta", Text: `{"intent": "question"}`},
 			},
 		},
