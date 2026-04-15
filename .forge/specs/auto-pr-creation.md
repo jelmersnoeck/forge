@@ -1,8 +1,12 @@
 ---
 id: auto-pr-creation
-status: implemented
+status: superseded
 ---
 # Automatically create PR at end of SWE pipeline
+
+Superseded by `deterministic-pr-creation`. The original approach used an LLM
+loop in the finalize step to call the PRCreate tool. The new approach uses
+deterministic Go code with a lightweight Haiku call for title/body generation.
 
 ## Description
 The SWE orchestrator completes spec → code → review cycles but never ensures a

@@ -1,6 +1,6 @@
 ---
 id: deterministic-pr-creation
-status: draft
+status: implemented
 ---
 # Move PR creation from LLM tool to deterministic orchestrator step
 
@@ -12,26 +12,25 @@ creative one. Move it to deterministic Go code in the orchestrator, using a
 lightweight LLM call only for generating the PR title and description.
 
 ## Context
-- `internal/agent/phase/orchestrator.go` — `runFinalize` currently spawns a full
-  coder loop just to call PRCreate; replace with deterministic code
-- `internal/agent/phase/prompts.go` — coder prompt step 7 tells LLM to create PR;
-  remove that instruction
-- `internal/tools/pr_create.go` — contains git helpers (`GitOutput`, `GitOutputFull`,
-  `DetectDefaultBranch`, etc.) and the tool handler; remove the tool, keep/export
-  the git helpers
-- `internal/tools/pr_create_test.go` — tool handler tests; replace with tests
-  for the new orchestrator-level PR creation
-- `internal/tools/registry.go` — `NewDefaultRegistry()` registers `PRCreateTool()`;
-  remove that registration
-- `internal/agent/phase/phase.go` — `PRCreate` appears in DisallowedTools for
-  spec-creator, QA, reviewer phases; clean up
-- `internal/agent/phase/phase_test.go` — tests reference `PRCreate` in
-  DisallowedTools; update
-- `internal/agent/phase/orchestrator_test.go` — tests for `buildFinalizePrompt`,
-  `shouldCreatePR`; update for new deterministic flow
-- `cmd/forge/cli.go` — tracks `prURL`; now receives it via `pr_url` event from
-  orchestrator instead of sniffing tool output
-- `internal/types/types.go` — `pr_url` event type already exists
+- `internal/agent/phase/orchestrator.go` — `runFinalize` replaced with
+  deterministic code that calls `CreatePR` from pr.go
+- `internal/agent/phase/pr.go` — NEW: deterministic PR creation (CreatePR,
+  generatePRContent, fallbackPRContent, ghCreatePR, validators)
+- `internal/agent/phase/prompts.go` — coder prompt step 7 (PR creation) removed
+- `internal/tools/pr_create.go` — DELETED: PRCreate tool and its handler
+- `internal/tools/pr_create_test.go` — DELETED: tool handler tests
+- `internal/tools/git.go` — NEW: extracted git helpers (GitOutput, GitOutputFull,
+  RunGitCmd, GHOutput, DetectDefaultBranch)
+- `internal/tools/git_test.go` — NEW: shared test helpers for git operations
+- `internal/tools/registry.go` — `NewDefaultRegistry()` no longer registers
+  PRCreateTool
+- `internal/agent/phase/phase.go` — `PRCreate` removed from DisallowedTools in
+  all phases
+- `internal/agent/phase/phase_test.go` — updated to reflect removed PRCreate
+- `internal/agent/phase/orchestrator_test.go` — replaced buildFinalizePrompt
+  tests with tests for branchToTitle, fallbackPRContent, parsePRContent,
+  validatePRTitle, validatePRDescription
+- `cmd/forge/cli.go` — comment updated (prURL source)
 
 ## Behavior
 - After the review cycle completes in `runSWEPipeline`, the orchestrator runs
@@ -70,29 +69,40 @@ lightweight LLM call only for generating the PR title and description.
 
 ## Interfaces
 ```go
-// internal/agent/phase/orchestrator.go
+// internal/agent/phase/pr.go
 
 // PRResult holds the output of deterministic PR creation.
 type PRResult struct {
-    URL      string // GitHub PR URL (empty on failure)
-    Title    string // generated title
-    Body     string // generated description
-    Error    error  // nil on success
+    URL   string // GitHub PR URL (empty on failure)
+    Title string // generated title
+    Body  string // generated description
+    Error error  // nil on success
 }
-
-// runFinalize replaces the LLM-based finalize step with deterministic code.
-// It: checks preconditions → fetch/rebase/push → LLM-generate title+body → gh pr create.
-func (o *Orchestrator) runFinalize(ctx context.Context, opts OrchestratorOpts, specPath string) error
-```
-
-```go
-// internal/agent/phase/pr.go (new file, extracted PR logic)
 
 // CreatePR performs the full PR creation workflow deterministically.
 func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult
 
 // generatePRContent uses a cheap LLM call to produce a title and description.
 func generatePRContent(ctx context.Context, prov types.LLMProvider, diff, commitLog, specContent string) (title, body string, err error)
+
+// branchToTitle converts a branch name to a PR title.
+func branchToTitle(branch string) string
+
+// fallbackPRContent generates deterministic title and body when LLM fails.
+func fallbackPRContent(branch, commitLog, diffStat, specContent string) (title, body string)
+
+// ghCreatePR calls gh pr create --draft and returns the PR URL.
+func ghCreatePR(ctx context.Context, cwd, title, body, baseBranch string) (string, error)
+```
+
+```go
+// internal/tools/git.go (extracted from pr_create.go)
+
+func DetectDefaultBranch(cwd string) string
+func RunGitCmd(cwd string, args ...string) error
+func GitOutput(cwd string, args ...string) (string, error)
+func GitOutputFull(cwd string, args ...string) (string, string, error)
+func GHOutput(cwd string, args ...string) (string, error)
 ```
 
 ## Edge Cases
