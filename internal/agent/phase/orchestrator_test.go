@@ -112,3 +112,49 @@ func TestEmitHelpers(t *testing.T) {
 	r.Contains(events[2], "phase_handoff:")
 	r.Contains(events[2], "spec → code")
 }
+
+func TestOrchestratorResult(t *testing.T) {
+	r := require.New(t)
+
+	// OrchestratorResult with question intent.
+	result := OrchestratorResult{
+		Intent:      IntentQuestion,
+		QAHistoryID: "greendale-history-101",
+	}
+	r.Equal(IntentQuestion, result.Intent)
+	r.Equal("greendale-history-101", result.QAHistoryID)
+
+	// OrchestratorResult with task intent — QAHistoryID should be empty.
+	taskResult := OrchestratorResult{
+		Intent: IntentTask,
+	}
+	r.Equal(IntentTask, taskResult.Intent)
+	r.Empty(taskResult.QAHistoryID)
+}
+
+func TestQAPhaseDisallowedTools(t *testing.T) {
+	r := require.New(t)
+	qa := QA()
+
+	// Verify all spec-mandated disallowed tools are present.
+	wantDisallowed := []string{
+		"Write", "Edit", "PRCreate",
+		"Agent", "AgentGet", "AgentList", "AgentStop",
+		"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+		"QueueImmediate", "QueueOnComplete",
+		"UseMCPTool",
+		"Reflect",
+	}
+
+	for _, tool := range wantDisallowed {
+		r.Contains(qa.DisallowedTools, tool,
+			"QA phase should disallow %s", tool)
+	}
+
+	// Read-only tools should NOT be disallowed.
+	readOnlyTools := []string{"Read", "Grep", "Glob", "Bash", "WebSearch"}
+	for _, tool := range readOnlyTools {
+		r.NotContains(qa.DisallowedTools, tool,
+			"QA phase should allow %s", tool)
+	}
+}

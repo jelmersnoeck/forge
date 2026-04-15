@@ -38,6 +38,18 @@ type OrchestratorOpts struct {
 	AuditLogger   types.AuditLogger
 	InitialPrompt string
 	SpecPath      string // if set, skip spec-creator phase
+
+	// QAHistoryID, when set, resumes an existing Q&A conversation.
+	QAHistoryID string
+}
+
+// OrchestratorResult is the return value from Orchestrator.Run.
+type OrchestratorResult struct {
+	// Intent is the classified intent for this run.
+	Intent Intent
+	// QAHistoryID is set when Intent == IntentQuestion.
+	// The caller uses this to resume the Q&A loop on follow-up.
+	QAHistoryID string
 }
 
 // NewSWEOrchestrator creates the default software-engineer orchestrator.
@@ -47,12 +59,22 @@ func NewSWEOrchestrator() *Orchestrator {
 	}
 }
 
-// Run executes the full software-engineer pipeline:
-// spec-creator → coder → reviewer (with feedback loop).
+// Run executes the SWE pipeline with intent classification.
+//
+// When no spec is provided, it first classifies the user's intent:
+//   - question → runs Q&A loop, returns result with QAHistoryID
+//   - task → runs full SWE pipeline (spec → code → review)
+//
+// When SpecPath is set, classification is skipped (intent is unambiguously task).
 //
 //	User prompt
 //	    │
 //	    ▼
+//	┌───────────────┐
+//	│  Classify      │──▶ question? → Q&A loop → return
+//	└───────┬───────┘
+//	        │ task
+//	        ▼
 //	┌─────────────┐
 //	│ Spec Creator │──▶ .forge/specs/<id>.md
 //	└──────┬──────┘
@@ -66,8 +88,79 @@ func NewSWEOrchestrator() *Orchestrator {
 //	┌─────────────┐     ┌──────────┐
 //	│   Reviewer   │──▶ │ findings │──▶ back to Coder (max 2×)
 //	└─────────────┘     └──────────┘
-func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) error {
+func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error) {
 	specPath := opts.SpecPath
+
+	// Classify intent (skip if spec is provided — that's unambiguously a task).
+	if specPath == "" {
+		intent := ClassifyIntent(ctx, opts.Provider, opts.InitialPrompt)
+
+		opts.Emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: opts.SessionID,
+			Type:      "intent_classified",
+			Content:   string(intent),
+			Timestamp: time.Now().UnixMilli(),
+		})
+
+		if intent == IntentQuestion {
+			historyID, err := o.runQA(ctx, opts)
+			return OrchestratorResult{
+				Intent:      IntentQuestion,
+				QAHistoryID: historyID,
+			}, err
+		}
+	}
+
+	// Task path: augment prompt with Q&A context if transitioning from questions.
+	if opts.QAHistoryID != "" {
+		opts.InitialPrompt = "Based on our previous discussion, the user now wants to implement: " +
+			opts.InitialPrompt + ". Use the context from the conversation to inform the spec."
+		// Clear QAHistoryID so the spec-creator starts a fresh loop.
+		opts.QAHistoryID = ""
+	}
+
+	// Run full SWE pipeline.
+	if err := o.runSWEPipeline(ctx, opts, specPath); err != nil {
+		return OrchestratorResult{Intent: IntentTask}, err
+	}
+	return OrchestratorResult{Intent: IntentTask}, nil
+}
+
+// runQA runs the Q&A conversation loop. Returns the history ID for resumption.
+func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string, error) {
+	qa := QA()
+	registry := opts.Registry.Filtered(qa.AllowedTools, qa.DisallowedTools)
+	bundle := injectPhasePrompt(opts.Bundle, qa.Name)
+
+	loopOpts := loop.Options{
+		Provider:     opts.Provider,
+		Tools:        registry,
+		Context:      bundle,
+		CWD:          opts.CWD,
+		SessionStore: opts.SessionStore,
+		SessionID:    opts.SessionID,
+		Model:        opts.Model,
+		MaxTurns:     qa.MaxTurns,
+		AuditLogger:  opts.AuditLogger,
+	}
+
+	l := loop.New(loopOpts)
+
+	// Resume existing Q&A conversation or start fresh.
+	var err error
+	switch opts.QAHistoryID {
+	case "":
+		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+	default:
+		err = l.Resume(ctx, opts.QAHistoryID, opts.InitialPrompt, opts.Emit)
+	}
+
+	return l.HistoryID(), err
+}
+
+// runSWEPipeline runs the full spec → code → review pipeline.
+func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) error {
 
 	// Phase 1: Spec Creator (skipped if spec already provided)
 	if specPath == "" {
