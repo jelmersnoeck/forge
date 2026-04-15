@@ -1,6 +1,6 @@
 ---
 id: auto-pr-creation
-status: draft
+status: implemented
 ---
 # Automatically create PR at end of SWE pipeline
 
