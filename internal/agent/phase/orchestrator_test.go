@@ -68,10 +68,6 @@ func TestFormatFindingsForCoder(t *testing.T) {
 			Description: "SQL injection in query builder",
 		},
 		{
-			Severity:    review.SeverityPraise,
-			Description: "Great error handling in Human Being mascot module",
-		},
-		{
 			Severity:    review.SeverityWarning,
 			Description: "Missing nil check on Señor Chang's credentials",
 		},
@@ -81,8 +77,6 @@ func TestFormatFindingsForCoder(t *testing.T) {
 	r.Contains(result, "SQL injection")
 	r.Contains(result, "internal/paintball/gun.go:42")
 	r.Contains(result, "Missing nil check")
-	// Praise should be excluded.
-	r.NotContains(result, "Great error handling")
 }
 
 func TestFormatFindingsForCoderEmpty(t *testing.T) {

@@ -351,7 +351,7 @@ func formatProviderSummary(providerName string, results []ReviewResult) string {
 				counts[f.Severity]++
 			}
 			var parts []string
-			for _, sev := range []Severity{SeverityCritical, SeverityWarning, SeveritySuggestion, SeverityPraise} {
+			for _, sev := range []Severity{SeverityCritical, SeverityWarning, SeveritySuggestion} {
 				if c := counts[sev]; c > 0 {
 					parts = append(parts, fmt.Sprintf("%d %s", c, sev))
 				}
@@ -362,29 +362,20 @@ func formatProviderSummary(providerName string, results []ReviewResult) string {
 	return sb.String()
 }
 
-// FormatFindingsMessage builds a human-readable message listing all actionable
-// findings (non-praise) grouped by reviewer+provider, suitable for sending to
-// the main agent loop for automatic remediation.
+// FormatFindingsMessage builds a human-readable message listing all findings
+// grouped by reviewer+provider, suitable for sending to the main agent loop
+// for automatic remediation.
 func FormatFindingsMessage(results []ReviewResult) string {
 	var sb strings.Builder
 	sb.WriteString("The code review found the following issues. Please fix them:\n")
 
 	for _, r := range results {
-		var actionable []Finding
-		for _, f := range r.Findings {
-			switch f.Severity {
-			case SeverityPraise:
-				continue
-			default:
-				actionable = append(actionable, f)
-			}
-		}
-		if len(actionable) == 0 {
+		if len(r.Findings) == 0 {
 			continue
 		}
 
 		fmt.Fprintf(&sb, "\n## %s (%s)\n", r.Reviewer, r.Provider)
-		for _, f := range actionable {
+		for _, f := range r.Findings {
 			loc := ""
 			if f.File != "" {
 				loc = f.File
@@ -399,14 +390,21 @@ func FormatFindingsMessage(results []ReviewResult) string {
 	return sb.String()
 }
 
-// HasActionableFindings returns true if any result contains non-praise findings.
+// HasActionableFindings returns true if any result contains findings.
 func HasActionableFindings(results []ReviewResult) bool {
 	for _, r := range results {
+		if len(r.Findings) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// HasCriticalFindings returns true if any result contains a critical finding.
+func HasCriticalFindings(results []ReviewResult) bool {
+	for _, r := range results {
 		for _, f := range r.Findings {
-			switch f.Severity {
-			case SeverityPraise:
-				continue
-			default:
+			if f.Severity == SeverityCritical {
 				return true
 			}
 		}
@@ -427,7 +425,7 @@ func formatSummary(results []ReviewResult) string {
 		}
 	}
 
-	total := counts[SeverityCritical] + counts[SeverityWarning] + counts[SeveritySuggestion] + counts[SeverityPraise]
+	total := counts[SeverityCritical] + counts[SeverityWarning] + counts[SeveritySuggestion]
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Review complete: %d findings", total)
@@ -439,9 +437,6 @@ func formatSummary(results []ReviewResult) string {
 	}
 	if counts[SeveritySuggestion] > 0 {
 		fmt.Fprintf(&sb, ", %d suggestions", counts[SeveritySuggestion])
-	}
-	if counts[SeverityPraise] > 0 {
-		fmt.Fprintf(&sb, ", %d praise", counts[SeverityPraise])
 	}
 	if errors > 0 {
 		fmt.Fprintf(&sb, " (%d reviewer errors)", errors)

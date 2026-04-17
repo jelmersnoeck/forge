@@ -329,13 +329,13 @@ func TestParseFindings(t *testing.T) {
 		"parseFindings multiple findings": {
 			input: `[
 				{"severity":"critical","file":"darkest_timeline.go","startLine":1,"description":"Evil Abed detected"},
-				{"severity":"praise","file":"inspector_spacetime.go","startLine":100,"description":"Excellent use of the Inspector Spacetime pattern"}
+				{"severity":"suggestion","file":"inspector_spacetime.go","startLine":100,"description":"Excellent use of the Inspector Spacetime pattern"}
 			]`,
 			check: func(t *testing.T, findings []Finding) {
 				r := require.New(t)
 				r.Len(findings, 2)
 				r.Equal(SeverityCritical, findings[0].Severity)
-				r.Equal(SeverityPraise, findings[1].Severity)
+				r.Equal(SeveritySuggestion, findings[1].Severity)
 			},
 		},
 	}
@@ -414,11 +414,11 @@ func TestFormatSummary(t *testing.T) {
 					Reviewer: "code-quality",
 					Provider: "anthropic",
 					Findings: []Finding{
-						{Severity: SeverityPraise, Description: "nice"},
+						{Severity: SeveritySuggestion, Description: "nice"},
 					},
 				},
 			},
-			want: []string{"3 findings", "1 critical", "1 warnings", "1 praise"},
+			want: []string{"3 findings", "1 critical", "1 warnings", "1 suggestions"},
 		},
 		"with errors": {
 			results: []ReviewResult{
@@ -703,7 +703,6 @@ func TestFormatFindingsMessage(t *testing.T) {
 			Provider: "anthropic",
 			Findings: []Finding{
 				{Severity: SeverityCritical, File: "study_room_f.go", StartLine: 1, Description: "Dean Pelton's security policy violated"},
-				{Severity: SeverityPraise, File: "paintball.go", StartLine: 100, Description: "Excellent use of Community references"},
 			},
 		},
 		{
@@ -716,9 +715,6 @@ func TestFormatFindingsMessage(t *testing.T) {
 		{
 			Reviewer: "maintainability",
 			Provider: "anthropic",
-			Findings: []Finding{
-				{Severity: SeverityPraise, Description: "Clean code, streets ahead"},
-			},
 		},
 	}
 
@@ -727,10 +723,9 @@ func TestFormatFindingsMessage(t *testing.T) {
 	r.Contains(msg, "security (anthropic)")
 	r.Contains(msg, "[critical] study_room_f.go:1")
 	r.Contains(msg, "Dean Pelton")
-	r.NotContains(msg, "Excellent use of Community references", "praise should be excluded")
 	r.Contains(msg, "code-quality (openai)")
 	r.Contains(msg, "[suggestion] chang.go:10")
-	r.NotContains(msg, "maintainability", "reviewer with only praise should not appear")
+	r.NotContains(msg, "maintainability", "reviewer with no findings should not appear")
 }
 
 func TestHasActionableFindings(t *testing.T) {
@@ -744,9 +739,9 @@ func TestHasActionableFindings(t *testing.T) {
 			},
 			want: true,
 		},
-		"only praise": {
+		"empty findings": {
 			results: []ReviewResult{
-				{Findings: []Finding{{Severity: SeverityPraise}}},
+				{Findings: []Finding{}},
 			},
 			want: false,
 		},
@@ -756,10 +751,9 @@ func TestHasActionableFindings(t *testing.T) {
 			},
 			want: false,
 		},
-		"mixed with praise": {
+		"has suggestion": {
 			results: []ReviewResult{
 				{Findings: []Finding{
-					{Severity: SeverityPraise},
 					{Severity: SeveritySuggestion},
 				}},
 			},
@@ -771,6 +765,60 @@ func TestHasActionableFindings(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 			r.Equal(tc.want, HasActionableFindings(tc.results))
+		})
+	}
+}
+
+func TestHasCriticalFindings(t *testing.T) {
+	tests := map[string]struct {
+		results []ReviewResult
+		want    bool
+	}{
+		"has critical": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeverityCritical}}},
+			},
+			want: true,
+		},
+		"only warnings": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeverityWarning}}},
+			},
+			want: false,
+		},
+		"no findings": {
+			results: []ReviewResult{
+				{Reviewer: "security"},
+			},
+			want: false,
+		},
+		"mixed with critical": {
+			results: []ReviewResult{
+				{Findings: []Finding{
+					{Severity: SeverityWarning},
+					{Severity: SeverityCritical},
+				}},
+			},
+			want: true,
+		},
+		"only suggestions": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeveritySuggestion}}},
+			},
+			want: false,
+		},
+		"error result no findings": {
+			results: []ReviewResult{
+				{Reviewer: "security", Error: "boom"},
+			},
+			want: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, HasCriticalFindings(tc.results))
 		})
 	}
 }
