@@ -148,9 +148,9 @@ func TestClassifyIntentSuccess(t *testing.T) {
 
 func TestClassifyIntentModelFallback(t *testing.T) {
 	r := require.New(t)
-	r.GreaterOrEqual(len(classificationModels), 3, "need at least 3 models for fallback test")
+	r.GreaterOrEqual(len(classificationModels), 2, "need at least 2 models for fallback test")
 
-	// Only the last model succeeds; first two are absent from mock → return error.
+	// Only the last model succeeds; all others are absent from mock → return error.
 	lastModel := classificationModels[len(classificationModels)-1]
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{

@@ -1,14 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
+	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSanitizeSlug(t *testing.T) {
-	r := require.New(t)
-
 	tests := map[string]struct {
 		input string
 		want  string
@@ -65,6 +66,7 @@ func TestSanitizeSlug(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
 			got := sanitizeSlug(tc.input)
 			r.Equal(tc.want, got)
 		})
@@ -86,20 +88,103 @@ func TestFallbackSessionName(t *testing.T) {
 	r.Greater(len(seen), 5, "expected variety in fallback names")
 }
 
+// sessionNameMockProvider implements types.LLMProvider for testing session naming.
+type sessionNameMockProvider struct {
+	response []types.ChatDelta
+	err      error
+	calls    int
+}
+
+func (m *sessionNameMockProvider) Chat(_ context.Context, _ types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.calls++
+	if m.err != nil {
+		return nil, m.err
+	}
+	ch := make(chan types.ChatDelta, len(m.response))
+	for _, d := range m.response {
+		ch <- d
+	}
+	close(ch)
+	return ch, nil
+}
+
 func TestGenerateSessionName_EmptyPrompt(t *testing.T) {
 	r := require.New(t)
 
 	// Empty prompt should use fallback (no API call)
-	name := generateSessionName("")
+	prov := &sessionNameMockProvider{}
+	name := generateSessionName(prov, "")
 	r.Regexp(`^[a-z]+-[a-z]+$`, name, "empty prompt should produce fallback name: %s", name)
+	r.Equal(0, prov.calls, "should not call provider for empty prompt")
 }
 
-func TestGenerateSessionName_NoAPIKey(t *testing.T) {
+func TestGenerateSessionName_NilProvider(t *testing.T) {
 	r := require.New(t)
 
-	// Save and clear API key
-	t.Setenv("ANTHROPIC_API_KEY", "")
+	name := generateSessionName(nil, "Fix the authentication timeout in the login flow")
+	r.Regexp(`^[a-z]+-[a-z]+$`, name, "nil provider should produce fallback name: %s", name)
+}
 
-	name := generateSessionName("Fix the authentication timeout in the login flow")
-	r.Regexp(`^[a-z]+-[a-z]+$`, name, "missing API key should produce fallback name: %s", name)
+func TestGenerateSessionName_ProviderSuccess(t *testing.T) {
+	r := require.New(t)
+
+	prov := &sessionNameMockProvider{
+		response: []types.ChatDelta{
+			{Type: "text_delta", Text: "fix-auth-timeout"},
+		},
+	}
+
+	name := generateSessionName(prov, "Fix the authentication timeout in the login flow")
+	r.Equal("fix-auth-timeout", name)
+	r.Equal(1, prov.calls)
+}
+
+func TestGenerateSessionName_ProviderReturnsGarbage(t *testing.T) {
+	r := require.New(t)
+
+	prov := &sessionNameMockProvider{
+		response: []types.ChatDelta{
+			{Type: "text_delta", Text: "!@#$%"},
+		},
+	}
+
+	name := generateSessionName(prov, "Do something at Greendale Community College")
+	r.Regexp(`^[a-z]+-[a-z]+$`, name, "garbage response should fallback: %s", name)
+}
+
+func TestGenerateSessionName_ProviderError(t *testing.T) {
+	r := require.New(t)
+
+	prov := &sessionNameMockProvider{
+		err: fmt.Errorf("Senor Chang says no"),
+	}
+
+	name := generateSessionName(prov, "Add retry logic to the MCP client")
+	r.Regexp(`^[a-z]+-[a-z]+$`, name, "provider error should fallback: %s", name)
+}
+
+func TestGenerateSessionName_StreamError(t *testing.T) {
+	r := require.New(t)
+
+	prov := &sessionNameMockProvider{
+		response: []types.ChatDelta{
+			{Type: "error", Text: "rate limited, Troy Barnes"},
+		},
+	}
+
+	name := generateSessionName(prov, "Refactor the session loop")
+	r.Regexp(`^[a-z]+-[a-z]+$`, name, "stream error should fallback: %s", name)
+}
+
+func TestGenerateSessionName_SanitizesResponse(t *testing.T) {
+	r := require.New(t)
+
+	prov := &sessionNameMockProvider{
+		response: []types.ChatDelta{
+			{Type: "text_delta", Text: "  Fix Auth Timeout!  "},
+		},
+	}
+
+	name := generateSessionName(prov, "Fix the auth timeout")
+	r.Equal("fix-auth-timeout", name)
 }

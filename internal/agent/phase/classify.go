@@ -24,7 +24,6 @@ const (
 // intent classification. Falls through to the next model when the provider
 // returns an error (e.g., model unavailable). Same pattern as session naming.
 var classificationModels = []string{
-	"claude-haiku-4-20250414",
 	"claude-haiku-4-5-20251001",
 	"claude-3-5-haiku-20241022",
 }

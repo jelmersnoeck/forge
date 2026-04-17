@@ -1262,7 +1262,7 @@ func (m model) sendMessage(text string) tea.Cmd {
 // branch and worktree names are not changed after creation.
 func (m model) generateTitle(prompt string) tea.Cmd {
 	return func() tea.Msg {
-		title := generateSessionName(prompt)
+		title := generateSessionName(newLightweightProvider(), prompt)
 		return sessionTitleMsg(title)
 	}
 }
@@ -1391,7 +1391,7 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	// Generate session ID with a readable name.
 	// If we have a prompt, ask Haiku for a slug (up to 3s).
 	// Otherwise, pick a random adjective-noun pair.
-	slug := generateSessionName(initialPrompt)
+	slug := generateSessionName(newLightweightProvider(), initialPrompt)
 	sessionID := time.Now().Format("20060102") + "-" + slug
 
 	// Check if we're in a git repo and should create a worktree
