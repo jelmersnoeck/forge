@@ -124,6 +124,42 @@ func TestParseSpec_allSections(t *testing.T) {
 	r.Contains(doc.EdgeCases, "Chang somehow gets root access")
 }
 
+func TestParseSpec_alternatives(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+
+	specWithAlts := `---
+id: blanket-fort
+status: draft
+---
+# Blanket fort architectural review
+
+## Description
+Troy and Abed need to decide on blanket fort construction strategy.
+
+## Alternatives
+- Use pillows instead (rejected — leads to pillow war with City College)
+- Outsource to Subway (rejected — corporate infiltration risk)
+- Let the Dean design it (rejected — too many dalmatian prints)
+`
+	path := filepath.Join(dir, "blanket-fort.md")
+	r.NoError(os.WriteFile(path, []byte(specWithAlts), 0o644))
+
+	doc, err := ParseSpec(path)
+	r.NoError(err)
+	r.Contains(doc.Alternatives, "pillows instead")
+	r.Contains(doc.Alternatives, "dalmatian prints")
+
+	// Verify specs without Alternatives still parse fine.
+	origPath := filepath.Join(dir, "paintball.md")
+	r.NoError(os.WriteFile(origPath, []byte(sampleSpec), 0o644))
+
+	origDoc, err := ParseSpec(origPath)
+	r.NoError(err)
+	r.Empty(origDoc.Alternatives)
+	r.Contains(origDoc.EdgeCases, "Chang somehow gets root access")
+}
+
 func TestParseSpec_missingFile(t *testing.T) {
 	r := require.New(t)
 	_, err := ParseSpec("/nonexistent/troy-barnes.md")

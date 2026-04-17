@@ -74,6 +74,7 @@ func parseSpecContent(content, path string) (types.SpecDocument, error) {
 	doc.Constraints = sections["constraints"]
 	doc.Interfaces = sections["interfaces"]
 	doc.EdgeCases = sections["edge cases"]
+	doc.Alternatives = sections["alternatives"]
 
 	return doc, nil
 }

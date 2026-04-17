@@ -161,6 +161,10 @@ func (w *Worker) Run(ctx context.Context) {
 		if w.hub.DrainInterrupt() {
 			log.Printf("[agent:%s] drained stale interrupt before new turn", w.sessionID)
 		}
+
+		// Extract pipeline hint from message metadata.
+		pipelineHint := extractPipelineHint(msg.Metadata)
+
 		// Create a cancellable context for this turn so interrupts
 		// can abort the loop without killing the entire worker.
 		turnCtx, turnCancel := context.WithCancel(ctx)
@@ -176,7 +180,7 @@ func (w *Worker) Run(ctx context.Context) {
 		useOrchestrator := !orchestratorDone && w.mode != ""
 		switch {
 		case (useOrchestrator || qaActive) && w.mode == "swe":
-			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID)
+			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID, pipelineHint)
 			runErr = err
 
 			switch result.Intent {
@@ -254,6 +258,7 @@ func (w *Worker) runOrchestrator(
 	model, prompt string,
 	emit func(types.OutboundEvent),
 	qaHistoryID string,
+	pipelineHint string,
 ) (phase.OrchestratorResult, error) {
 	orch := phase.NewSWEOrchestrator()
 
@@ -270,6 +275,7 @@ func (w *Worker) runOrchestrator(
 		InitialPrompt: prompt,
 		SpecPath:      w.specPath,
 		QAHistoryID:   qaHistoryID,
+		PipelineHint:  pipelineHint,
 	}
 
 	result, err := orch.Run(ctx, opts)
@@ -676,6 +682,25 @@ func providerFromName(name string) types.LLMProvider {
 	default:
 		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
 		return provider.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
+	}
+}
+
+// extractPipelineHint reads the pipeline_hint from message metadata.
+// Returns "auto" for missing, nil, or invalid values.
+func extractPipelineHint(metadata map[string]any) string {
+	if metadata == nil {
+		return "auto"
+	}
+	hint, ok := metadata["pipeline_hint"].(string)
+	if !ok || hint == "" {
+		return "auto"
+	}
+	switch hint {
+	case "ideate", "code", "auto":
+		return hint
+	default:
+		log.Printf("[worker] unknown pipeline_hint %q — defaulting to auto", hint)
+		return "auto"
 	}
 }
 

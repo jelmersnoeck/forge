@@ -24,7 +24,9 @@ type InboundMessage struct {
 // Type is one of: "text", "tool_use", "done", "error", "interrupted", "thinking",
 // "compact", "retry", "usage", "queued_task_result", "queued_task_error",
 // "queue_immediate", "queue_on_complete", "pr_monitor", "pr_url",
-// "task_status", "intent_classified".
+// "task_status", "intent_classified", "ideation_start", "ideation_candidate",
+// "clarification_start", "clarification_question", "planning_start",
+// "planning_selection", "staleness_warning", "staleness_error".
 type OutboundEvent struct {
 	ID        string      `json:"id"`
 	SessionID string      `json:"sessionId"`
@@ -263,7 +265,8 @@ type SpecDocument struct {
 	Behavior    string `json:"behavior"`    // desired behaviour and UX
 	Constraints string `json:"constraints"` // things to avoid
 	Interfaces  string `json:"interfaces"`  // types, signatures, schemas
-	EdgeCases   string `json:"edgeCases"`   // known edge cases
+	EdgeCases    string `json:"edgeCases"`    // known edge cases
+	Alternatives string `json:"alternatives"` // alternative approaches considered
 
 	Path string `json:"path"` // filesystem path
 }
