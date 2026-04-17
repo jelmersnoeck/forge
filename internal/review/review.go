@@ -8,7 +8,6 @@ const (
 	SeverityCritical   Severity = "critical"
 	SeverityWarning    Severity = "warning"
 	SeveritySuggestion Severity = "suggestion"
-	SeverityPraise     Severity = "praise"
 )
 
 // Finding is a single review observation tied to a file location.

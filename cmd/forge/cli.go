@@ -1797,9 +1797,6 @@ func formatReviewFinding(content string, width int) string {
 	case "suggestion":
 		severityStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 		severityIcon = " ~"
-	case "praise":
-		severityStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-		severityIcon = " +"
 	}
 
 	header := severityStyle.Render(severityIcon+" ["+finding.Severity+"]") + " " +

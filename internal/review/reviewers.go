@@ -2,7 +2,7 @@ package review
 
 const findingJSONFormat = `[
   {
-    "severity": "critical|warning|suggestion|praise",
+    "severity": "critical|warning|suggestion",
     "file": "path/to/file.go",
     "startLine": 42,
     "endLine": 44,
@@ -36,7 +36,6 @@ Severity guide:
 - critical: exploitable vulnerability, leaked secret, auth bypass
 - warning: potential vulnerability needing context, weak validation
 - suggestion: defense-in-depth improvement, hardening opportunity
-- praise: good security pattern worth highlighting
 
 Output your findings as a JSON array. Reference specific files and line numbers from the diff.
 If the diff has no security issues, output an empty array: []
@@ -71,7 +70,6 @@ Severity guide:
 - critical: definite bug, data corruption risk, crash path
 - warning: likely bug or fragile code that could break under stress
 - suggestion: improvement for robustness or testability
-- praise: excellent error handling, thorough edge case coverage
 
 Output your findings as a JSON array. Reference specific files and line numbers from the diff.
 If the diff has no quality issues, output an empty array: []
@@ -106,7 +104,6 @@ Severity guide:
 - critical: actively misleading code, major architectural problem
 - warning: significant readability/maintenance burden
 - suggestion: minor improvement for clarity or consistency
-- praise: clean abstraction, excellent naming, well-structured code
 
 Output your findings as a JSON array. Reference specific files and line numbers from the diff.
 If the diff has no maintainability issues, output an empty array: []
@@ -141,7 +138,6 @@ Severity guide:
 - critical: will cause operational blind spot in production, breaking change without migration
 - warning: missing observability that will hurt debugging
 - suggestion: nice-to-have operational improvement
-- praise: excellent error messages, good observability, clean config
 
 Output your findings as a JSON array. Reference specific files and line numbers from the diff.
 If the diff has no operational issues, output an empty array: []
@@ -174,7 +170,6 @@ Severity guide:
 - critical: implementation contradicts spec, missing required behavior
 - warning: partial implementation, spec edge case not handled
 - suggestion: spec could be clearer, or implementation goes beyond spec (may be fine)
-- praise: spec requirement cleanly implemented
 
 Output your findings as a JSON array. Reference specific files and line numbers from the diff.
 If the implementation fully matches the spec, output an empty array: []

@@ -52,9 +52,8 @@ Files and systems that change:
 - Results stream back as `review_finding` events
 - Per-provider summaries emitted as `review_provider_summary` events after all reviewers for that provider complete
 - Final `review_summary` event aggregates all findings by severity
-- After review completes, actionable findings (non-praise) are automatically sent to the main conversation loop for remediation
-- If only praise findings exist, review emits `done` without triggering remediation
-- Severity levels: `critical`, `warning`, `suggestion`, `praise`
+- After review completes, actionable findings are automatically sent to the main conversation loop for remediation
+- Severity levels: `critical`, `warning`, `suggestion`
 - Review can be re-run multiple times in the same session
 - Agent HTTP API: `POST /review` with optional `{"base": "main"}`
 - Gateway HTTP API: `POST /sessions/{id}/review` with optional `{"base": "main"}`
@@ -124,7 +123,6 @@ const (
     SeverityCritical   Severity = "critical"
     SeverityWarning    Severity = "warning"
     SeveritySuggestion Severity = "suggestion"
-    SeverityPraise     Severity = "praise"
 )
 
 type Finding struct {
@@ -199,5 +197,5 @@ func (h *Hub) ReviewChannel() <-chan string
 - Deleting back to empty after typing `/review` → suggestions cleared, dropdown hidden
 - Accepting a suggestion then continuing to type (e.g. `/review --base`) → dropdown hidden after accept since input no longer matches a pure command prefix
 - Up/Down arrow while dropdown is visible → cycles suggestions (does not scroll output)
-- All findings are praise → review emits done, no remediation message sent
+- All findings are praise → review emits done, no remediation message sent (NOTE: praise severity removed in review-loop-hardening; unrecognized severity findings are simply ignored)
 - Remediation message sent to main loop → agent implements fixes, emits its own done event

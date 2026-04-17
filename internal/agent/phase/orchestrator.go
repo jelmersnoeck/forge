@@ -18,7 +18,7 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
-const maxReviewCycles = 2
+const maxReviewCycles = 10
 
 // Orchestrator chains phases together into a complete workflow.
 type Orchestrator struct {
@@ -86,7 +86,7 @@ func NewSWEOrchestrator() *Orchestrator {
 //	       │
 //	       ▼
 //	┌─────────────┐     ┌──────────┐
-//	│   Reviewer   │──▶ │ findings │──▶ back to Coder (max 2×)
+//	│   Reviewer   │──▶ │ findings │──▶ back to Coder (max 10×, resets on criticals)
 //	└─────────────┘     └──────────┘
 func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error) {
 	specPath := opts.SpecPath
@@ -222,14 +222,21 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 
 		// Feed findings back to coder
 		if cycle+1 >= o.maxReviewCycles {
-			opts.Emit(types.OutboundEvent{
-				ID:        uuid.New().String(),
-				SessionID: opts.SessionID,
-				Type:      "warning",
-				Content:   fmt.Sprintf("Max review cycles (%d) reached — completing with remaining findings", o.maxReviewCycles),
-				Timestamp: time.Now().Unix(),
-			})
-			break
+			results := convertToResults(result.Findings)
+			if review.HasCriticalFindings(results) {
+				// Critical findings remain — reset counter for another pass.
+				cycle = -1 // will become 0 after loop increment
+				log.Printf("[orchestrator:%s] critical findings remain after %d cycles, resetting counter", opts.SessionID, o.maxReviewCycles)
+			} else {
+				opts.Emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: opts.SessionID,
+					Type:      "warning",
+					Content:   fmt.Sprintf("Max review cycles (%d) reached — completing with remaining findings", o.maxReviewCycles),
+					Timestamp: time.Now().Unix(),
+				})
+				break
+			}
 		}
 
 		o.emitPhaseHandoff(opts, "review", "code")
@@ -453,11 +460,6 @@ func formatFindingsForCoder(findings []review.Finding) string {
 	sb.WriteString("The code review found the following issues. Please fix them:\n")
 
 	for _, f := range findings {
-		switch f.Severity {
-		case review.SeverityPraise:
-			continue
-		}
-
 		loc := ""
 		if f.File != "" {
 			loc = f.File
