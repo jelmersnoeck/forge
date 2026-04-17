@@ -1,6 +1,6 @@
 ---
 id: ideation-planning-pipeline
-status: draft
+status: implemented
 ---
 # Multi-agent ideation and planning pipeline with debate pattern
 
@@ -19,28 +19,37 @@ automatic staleness checks before implementation begins.
 Files and systems affected:
 
 - `internal/types/types.go` — `InboundMessage.Metadata` already has
-  `map[string]any`; add well-known key `"pipeline_hint"` with values
-  `"ideate"`, `"code"`, `"auto"` (default)
-- `internal/agent/phase/phase.go` — add `Ideator()`, `Clarifier()`, `Planner()`
-  phase definitions; existing `SpecCreator()` retired in favor of the pipeline
-- `internal/agent/phase/prompts.go` — add `ideatorPrompt`, `clarifierPrompt`,
-  `plannerPrompt`; retire `specCreatorPrompt`
-- `internal/agent/phase/orchestrator.go` — `runSWEPipeline()` replaced by
-  `runIdeationPipeline()` → `runCoder()` → `runReviewer()` chain; new
-  `shouldIdeate()` function respects `pipeline_hint` from message metadata
+  `map[string]any`; well-known key `"pipeline_hint"` with values
+  `"ideate"`, `"code"`, `"auto"` (default). Added `Alternatives string`
+  to `SpecDocument`. Updated `OutboundEvent` type docs with new events.
+- `internal/agent/phase/phase.go` — added `Ideator()`, `Clarifier()`, `Planner()`
+  phase definitions; existing `SpecCreator()` preserved as fallback for
+  non-ideation path
+- `internal/agent/phase/prompts.go` — added `plannerPrompt` and TDD-enforcing
+  `coderPrompt` update; `PromptForPhase()` handles `"plan"`, `"ideate"`,
+  `"clarify"` names
+- `internal/agent/phase/orchestrator.go` — `runSWEPipeline()` now branches on
+  `shouldIdeate()`; added `PipelineHint` to `OrchestratorOpts`; integrated
+  `CheckStaleness()` before coder phase
 - `internal/agent/phase/debate.go` — NEW: multi-agent debate runner (ideate →
-  clarify → select)
-- `internal/agent/phase/debate_test.go` — NEW: debate tests
-- `internal/agent/phase/staleness.go` — NEW: git staleness check
-  (`checkStaleness()` verifies HEAD is fresh against remote before coding)
-- `internal/agent/phase/staleness_test.go` — NEW: staleness tests
-- `internal/agent/worker.go` — pass `InboundMessage.Metadata` through to
-  orchestrator for pipeline hint routing
-- `internal/agent/phase/classify.go` — `ClassifyIntent()` unchanged;
-  `shouldIdeate()` is a separate gate that runs after intent=task
-- `internal/review/reviewers.go` — no changes (review system stays as-is)
-- `.forge/specs/` — specs now include `## Alternatives` section with rejected
-  approaches and rationale
+  clarify → plan) with `RunDebate()`, candidate/clarified result types, JSON
+  parsing, context summary builder
+- `internal/agent/phase/debate_test.go` — NEW: 13 test cases covering parsing,
+  ideation, clarification, events, personalities, edge cases
+- `internal/agent/phase/staleness.go` — NEW: `CheckStaleness()` with git
+  fetch/rev-list/pull logic
+- `internal/agent/phase/staleness_test.go` — NEW: 4 test cases with real git repos
+- `internal/agent/phase/phase_test.go` — added test cases for Ideator, Clarifier,
+  Planner phases and their prompt mappings
+- `internal/agent/worker.go` — `extractPipelineHint()` reads from message
+  metadata; passes `PipelineHint` to orchestrator
+- `internal/agent/worker_test.go` — 9 test cases for `extractPipelineHint()`
+- `internal/spec/spec.go` — parses `## Alternatives` section into
+  `SpecDocument.Alternatives`
+- `internal/spec/spec_test.go` — test for Alternatives section parsing
+- `cmd/forge/cli.go` — CLI handlers for ideation/clarification/planning/
+  staleness event types
+- `.forge/specs/` — specs now support optional `## Alternatives` section
 
 ## Behavior
 
@@ -96,10 +105,9 @@ coordinated sub-agents:
 
 #### od-ideate (Ideation agents)
 
-- 3 agents run in parallel using the existing sub-agent infrastructure
-  (`task.Manager` + `AgentRunner`)
-- Each agent has a slightly different temperature/personality to encourage
-  diverse ideas:
+- 3 agents run in parallel using direct LLM calls (same pattern as the review
+  orchestrator — goroutines + WaitGroup, NOT the task.Manager sub-agent infra)
+- Each agent has a different personality to encourage diverse ideas:
   - Agent A: conservative — minimal changes, reuse existing patterns
   - Agent B: pragmatic — balanced approach, moderate refactoring ok
   - Agent C: ambitious — clean-slate thinking, architectural improvements
@@ -121,9 +129,8 @@ coordinated sub-agents:
     ]
   }
   ```
-- Tools: Read, Grep, Glob, Bash (read-only), WebSearch — same as current
-  spec-creator minus Write
-- Max turns: 100 per agent
+- Tools: none (direct LLM call with project context injected into prompt)
+- Max turns: n/a (single LLM call, not a conversation loop)
 - Model: same as session default (not Haiku — ideation needs reasoning power)
 
 #### od-clarifier (Clarification agent)
@@ -137,8 +144,8 @@ coordinated sub-agents:
      only in interactive mode; in webhook mode, the clarifier resolves
      ambiguity by choosing the safer interpretation)
   5. Produce a refined candidate list with normalized structure
-- Tools: Read, Grep, Glob (needs to verify file paths candidates reference)
-- Max turns: 50
+- Tools: none (direct LLM call with candidates injected)
+- Max turns: n/a (single LLM call)
 - Output: refined candidates JSON + optional questions list
 
 #### od-planner (Planning agent)
@@ -255,10 +262,12 @@ Sources that skip ideation (Linear webhook, PR monitor) set
 ## Constraints
 - Do not remove the existing `ClassifyIntent` — it still gates question vs
   task. The pipeline hint is a separate, downstream gate for task routing.
-- Do not modify `loop.Loop` — the debate agents use the existing sub-agent
-  infrastructure (same as reviewer agents use direct LLM calls).
+- Do not modify `loop.Loop` — the ideation and clarification agents use direct
+  LLM calls (same pattern as review agents); only the planner uses a loop.
 - The ideation agents must not write files — they produce structured JSON
-  output. Only the planner writes the spec.
+  output via direct LLM calls. Only the planner writes the spec.
+- The existing `SpecCreator()` phase is preserved as the fallback for
+  `pipeline_hint="code"` and `pipeline_hint="auto"` — it is NOT retired.
 - The debate pattern must be testable without live API keys — mock providers
   in tests (same pattern as review orchestrator tests).
 - The `## Alternatives` section is optional — specs without it are valid.
