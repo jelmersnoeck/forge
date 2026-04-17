@@ -148,11 +148,13 @@ func TestClassifyIntentSuccess(t *testing.T) {
 
 func TestClassifyIntentModelFallback(t *testing.T) {
 	r := require.New(t)
+	r.GreaterOrEqual(len(classificationModels), 3, "need at least 3 models for fallback test")
 
-	// First two models fail, third succeeds.
+	// Only the last model succeeds; first two are absent from mock → return error.
+	lastModel := classificationModels[len(classificationModels)-1]
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[2]: {
+			lastModel: {
 				{Type: "text_delta", Text: `{"intent": "question"}`},
 			},
 		},
@@ -161,7 +163,7 @@ func TestClassifyIntentModelFallback(t *testing.T) {
 	got, err := ClassifyIntent(t.Context(), prov, "what files handle MCP?")
 	r.NoError(err)
 	r.Equal(IntentQuestion, got)
-	r.Len(prov.calls, 3, "should try all three models")
+	r.Len(prov.calls, len(classificationModels), "should try all models before succeeding")
 }
 
 func TestClassifyIntentAllModelsFail(t *testing.T) {

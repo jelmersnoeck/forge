@@ -1,0 +1,369 @@
+package phase
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/jelmersnoeck/forge/internal/tools"
+	"github.com/jelmersnoeck/forge/internal/types"
+)
+
+// PRResult holds the output of deterministic PR creation.
+type PRResult struct {
+	URL   string // GitHub PR URL (empty on failure)
+	Title string // generated title
+	Body  string // generated description
+	Error error  // nil on success
+}
+
+// prGenerationTimeout is the per-attempt timeout for title/body generation.
+const prGenerationTimeout = 15 * time.Second
+
+// prGenerationSystemPrompt instructs the LLM to produce a JSON PR title+body.
+const prGenerationSystemPrompt = `You generate pull request titles and descriptions from git diffs and commit logs.
+
+Rules:
+- Title: imperative mood ("Add X", "Fix Y"), 15-80 chars, captures overall intent.
+- Description: 2-4 paragraphs explaining what changed, why, and notable details.
+  Do NOT just list commit messages as bullets — synthesize into prose.
+- If a spec is provided, reference its goals and how the implementation addresses them.
+
+Respond with ONLY a JSON object:
+{"title": "...", "body": "..."}`
+
+// maxDiffLen caps the diff sent to the LLM for PR generation.
+// ~8000 chars keeps us within a reasonable token budget for Haiku.
+const maxDiffLen = 8000
+
+// CreatePR performs the full deterministic PR creation workflow:
+//
+//	preconditions → fetch/rebase/push → LLM-generate title+body → gh pr create
+func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
+	// Check preconditions.
+	ok, reason := shouldCreatePR(cwd)
+	if !ok {
+		return PRResult{Error: fmt.Errorf("skipped: %s", reason)}
+	}
+
+	// Determine base branch.
+	base := detectDefaultBranchSafe(cwd)
+
+	// Fetch latest base branch.
+	if _, stderr, err := tools.GitOutputFull(cwd, "fetch", "origin", base); err != nil {
+		return PRResult{Error: fmt.Errorf("fetch origin/%s: %s", base, stderr)}
+	}
+
+	// Rebase onto latest base.
+	if _, stderr, err := tools.GitOutputFull(cwd, "rebase", "origin/"+base); err != nil {
+		_ = tools.RunGitCmd(cwd, "rebase", "--abort")
+		return PRResult{Error: fmt.Errorf("rebase onto origin/%s failed: %s", base, stderr)}
+	}
+
+	// Verify there are changes after rebase.
+	diffStat, _ := tools.GitOutput(cwd, "diff", "--stat", "origin/"+base+"...HEAD")
+	if diffStat == "" {
+		return PRResult{Error: fmt.Errorf("no changes after rebase")}
+	}
+
+	// Push with --force-with-lease.
+	if _, stderr, err := tools.GitOutputFull(cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
+		return PRResult{Error: fmt.Errorf("push failed: %s", stderr)}
+	}
+
+	// Gather context for title/body generation.
+	diff, _ := tools.GitOutput(cwd, "diff", "origin/"+base+"...HEAD")
+	commitLog, _ := tools.GitOutput(cwd, "log", "origin/"+base+"..HEAD", "--oneline")
+	branch, _ := tools.GitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+
+	var specContent string
+	if specPath != "" {
+		if data, err := os.ReadFile(specPath); err == nil {
+			specContent = string(data)
+		}
+	}
+
+	// Generate title and body via LLM.
+	title, body, err := generatePRContent(ctx, prov, diff, commitLog, specContent)
+	if err != nil {
+		log.Printf("[pr] LLM generation failed, using fallback: %v", err)
+		title, body = fallbackPRContent(branch, commitLog, diffStat, specContent)
+	}
+
+	// Validate and retry once if needed.
+	if err := validatePRTitle(title); err != nil {
+		log.Printf("[pr] generated title invalid (%v), retrying", err)
+		title2, body2, err2 := generatePRContent(ctx, prov, diff, commitLog, specContent)
+		if err2 == nil && validatePRTitle(title2) == nil {
+			title, body = title2, body2
+		} else {
+			title, body = fallbackPRContent(branch, commitLog, diffStat, specContent)
+		}
+	}
+	if err := validatePRDescription(body); err != nil {
+		log.Printf("[pr] generated description invalid (%v), using fallback", err)
+		_, body = fallbackPRContent(branch, commitLog, diffStat, specContent)
+	}
+
+	// Create the PR via gh.
+	prURL, err := ghCreatePR(ctx, cwd, title, body, "")
+	if err != nil {
+		return PRResult{Title: title, Body: body, Error: fmt.Errorf("gh pr create: %w", err)}
+	}
+
+	return PRResult{URL: prURL, Title: title, Body: body}
+}
+
+// generatePRContent uses a cheap LLM call to produce a PR title and description.
+func generatePRContent(ctx context.Context, prov types.LLMProvider, diff, commitLog, specContent string) (string, string, error) {
+	// Truncate diff to keep token count reasonable.
+	truncatedDiff := diff
+	if len(truncatedDiff) > maxDiffLen {
+		truncatedDiff = truncatedDiff[:maxDiffLen] + "\n... [truncated]"
+	}
+
+	var prompt strings.Builder
+	prompt.WriteString("Generate a PR title and description for these changes.\n\n")
+	prompt.WriteString("## Commit log\n```\n")
+	prompt.WriteString(commitLog)
+	prompt.WriteString("\n```\n\n")
+	prompt.WriteString("## Diff\n```\n")
+	prompt.WriteString(truncatedDiff)
+	prompt.WriteString("\n```\n")
+
+	if specContent != "" {
+		prompt.WriteString("\n## Spec\n```\n")
+		prompt.WriteString(specContent)
+		prompt.WriteString("\n```\n")
+	}
+
+	var lastErr error
+	for _, model := range classificationModels {
+		title, body, err := generateWithModel(ctx, prov, model, prompt.String())
+		if err == nil {
+			return title, body, nil
+		}
+		lastErr = err
+		log.Printf("[pr] model %s failed: %v — trying next", model, err)
+	}
+
+	return "", "", fmt.Errorf("all models failed: %w", lastErr)
+}
+
+// generateWithModel runs a single PR generation attempt against a specific model.
+func generateWithModel(ctx context.Context, prov types.LLMProvider, model, prompt string) (string, string, error) {
+	genCtx, cancel := context.WithTimeout(ctx, prGenerationTimeout)
+	defer cancel()
+
+	req := types.ChatRequest{
+		Model: model,
+		System: []types.SystemBlock{
+			{Type: "text", Text: prGenerationSystemPrompt},
+		},
+		Messages: []types.ChatMessage{
+			{
+				Role: "user",
+				Content: []types.ChatContentBlock{
+					{Type: "text", Text: prompt},
+				},
+			},
+		},
+		MaxTokens: 1024,
+		Stream:    true,
+	}
+
+	deltaChan, err := prov.Chat(genCtx, req)
+	if err != nil {
+		return "", "", fmt.Errorf("provider.Chat: %w", err)
+	}
+
+	var text strings.Builder
+	for delta := range deltaChan {
+		switch delta.Type {
+		case "text_delta":
+			text.WriteString(delta.Text)
+		case "error":
+			return "", "", fmt.Errorf("stream error: %s", delta.Text)
+		}
+	}
+
+	return parsePRContent(text.String())
+}
+
+// parsePRContent extracts title and body from the LLM's JSON response.
+func parsePRContent(raw string) (string, string, error) {
+	raw = strings.TrimSpace(raw)
+
+	// Strip markdown code fences if present.
+	if strings.HasPrefix(raw, "```") {
+		lines := strings.Split(raw, "\n")
+		if len(lines) >= 3 {
+			raw = strings.Join(lines[1:len(lines)-1], "\n")
+			raw = strings.TrimSpace(raw)
+		}
+	}
+
+	var result struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return "", "", fmt.Errorf("parse error: %w — raw: %q", err, truncateForLog(raw, 200))
+	}
+
+	if result.Title == "" {
+		return "", "", fmt.Errorf("empty title in response")
+	}
+	if result.Body == "" {
+		return "", "", fmt.Errorf("empty body in response")
+	}
+
+	return result.Title, result.Body, nil
+}
+
+// fallbackPRContent generates a deterministic title and body when LLM fails.
+func fallbackPRContent(branch, commitLog, diffStat, specContent string) (string, string) {
+	// Title from branch name: "jelmer/add-paintball" → "Add paintball"
+	title := branchToTitle(branch)
+
+	var body strings.Builder
+	if specContent != "" {
+		// Extract first heading from spec.
+		for _, line := range strings.Split(specContent, "\n") {
+			if strings.HasPrefix(line, "# ") {
+				body.WriteString(strings.TrimPrefix(line, "# "))
+				body.WriteString("\n\n")
+				break
+			}
+		}
+	}
+
+	body.WriteString("## Changes\n\n")
+	body.WriteString("```\n")
+	body.WriteString(diffStat)
+	body.WriteString("\n```\n\n")
+
+	if commitLog != "" {
+		body.WriteString("## Commits\n\n")
+		for _, line := range strings.Split(commitLog, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				body.WriteString("- " + line + "\n")
+			}
+		}
+	}
+
+	return title, body.String()
+}
+
+// branchToTitle converts a branch name to a PR title.
+// "jelmer/add-cool-feature" → "Add cool feature"
+func branchToTitle(branch string) string {
+	// Strip prefix up to last /.
+	if idx := strings.LastIndex(branch, "/"); idx >= 0 {
+		branch = branch[idx+1:]
+	}
+
+	// Replace hyphens and underscores with spaces.
+	branch = strings.NewReplacer("-", " ", "_", " ").Replace(branch)
+	branch = strings.TrimSpace(branch)
+
+	if branch == "" {
+		return "Update implementation"
+	}
+
+	// Capitalize first letter.
+	runes := []rune(branch)
+	if len(runes) > 0 && runes[0] >= 'a' && runes[0] <= 'z' {
+		runes[0] = runes[0] - 32
+	}
+
+	return string(runes)
+}
+
+// ghCreatePR calls `gh pr create --draft` and returns the PR URL.
+func ghCreatePR(ctx context.Context, cwd, title, body, baseBranch string) (string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", fmt.Errorf("gh CLI not installed (https://cli.github.com/)")
+	}
+
+	args := []string{"pr", "create",
+		"--draft",
+		"--title", title,
+		"--body", body,
+	}
+	if baseBranch != "" {
+		args = append(args, "--base", baseBranch)
+	}
+
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = cwd
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return "", fmt.Errorf("%s", errMsg)
+	}
+
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// validatePRTitle checks that a title meets quality standards.
+func validatePRTitle(title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("title is required")
+	}
+
+	if len(title) < 15 {
+		return fmt.Errorf("title too short (%d chars)", len(title))
+	}
+
+	lower := strings.ToLower(title)
+	for _, generic := range genericTitles {
+		if lower == generic {
+			return fmt.Errorf("title too generic: %q", title)
+		}
+	}
+
+	return nil
+}
+
+// validatePRDescription checks that a description meets quality standards.
+func validatePRDescription(body string) error {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return fmt.Errorf("description is required")
+	}
+	if len(body) < 50 {
+		return fmt.Errorf("description too short (%d chars)", len(body))
+	}
+	return nil
+}
+
+// genericTitles are low-effort PR titles that get rejected.
+var genericTitles = []string{
+	"fix", "fix bug", "update", "update code", "changes",
+	"wip", "stuff", "misc", "pr", "pull request",
+	"refactor", "cleanup", "clean up", "minor changes",
+	"quick fix", "hotfix", "patch", "test", "tests",
+}
+
+// truncateForLog truncates a string for log output.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}

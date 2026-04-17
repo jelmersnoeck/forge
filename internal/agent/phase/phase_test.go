@@ -21,7 +21,7 @@ func TestPhaseDefinitions(t *testing.T) {
 			wantName:     "spec",
 			wantMaxTurns: 200,
 			wantDisallowed: []string{
-				"Edit", "PRCreate",
+				"Edit",
 				"Agent", "AgentGet", "AgentList", "AgentStop",
 			},
 		},
@@ -36,7 +36,7 @@ func TestPhaseDefinitions(t *testing.T) {
 			wantName:     "qa",
 			wantMaxTurns: 200,
 			wantDisallowed: []string{
-				"Write", "Edit", "PRCreate",
+				"Write", "Edit",
 				"Agent", "AgentGet", "AgentList", "AgentStop",
 				"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 				"QueueImmediate", "QueueOnComplete",
@@ -49,7 +49,7 @@ func TestPhaseDefinitions(t *testing.T) {
 			wantName:     "review",
 			wantMaxTurns: 100,
 			wantDisallowed: []string{
-				"Write", "Edit", "PRCreate",
+				"Write", "Edit",
 			},
 		},
 	}

@@ -243,6 +243,11 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 		o.emitPhaseComplete(opts, "code", "fixes applied")
 	}
 
+	// Phase 4: Finalize — create PR if there are changes on a feature branch
+	if err := o.runFinalize(ctx, opts, specPath); err != nil {
+		log.Printf("[orchestrator:%s] finalize error (non-fatal): %v", opts.SessionID, err)
+	}
+
 	return nil
 }
 
@@ -568,4 +573,76 @@ func RunReviewOnly(ctx context.Context, opts OrchestratorOpts) error {
 	}
 	_ = result
 	return nil
+}
+
+// runFinalize creates a draft PR for completed work deterministically.
+//
+// No LLM loop — this is pure Go code that:
+//  1. Checks preconditions (feature branch, has changes)
+//  2. Fetches, rebases, pushes
+//  3. Uses a cheap LLM call (Haiku) to generate title/body
+//  4. Calls `gh pr create --draft`
+//
+// Failures are non-fatal — the caller logs and continues.
+func (o *Orchestrator) runFinalize(ctx context.Context, opts OrchestratorOpts, specPath string) error {
+	o.emitPhaseHandoff(opts, "review", "finalize")
+	o.emitPhaseStart(opts, "finalize")
+
+	result := CreatePR(ctx, opts.Provider, opts.CWD, specPath)
+	if result.Error != nil {
+		o.emitPhaseComplete(opts, "finalize", fmt.Sprintf("skipped: %v", result.Error))
+		return result.Error
+	}
+
+	// Emit pr_url event so the CLI can display it.
+	opts.Emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: opts.SessionID,
+		Type:      "pr_url",
+		Content:   result.URL,
+		Timestamp: time.Now().UnixMilli(),
+	})
+
+	o.emitPhaseComplete(opts, "finalize", fmt.Sprintf("PR created: %s", result.URL))
+	return nil
+}
+
+// shouldCreatePR checks if we're in a state where PR creation makes sense.
+// Returns (true, "") if yes, or (false, reason) if not.
+func shouldCreatePR(cwd string) (bool, string) {
+	// Must be a git repo.
+	if err := tools.RunGitCmd(cwd, "rev-parse", "--git-dir"); err != nil {
+		return false, "not a git repository"
+	}
+
+	// Must be on a feature branch.
+	branch, err := tools.GitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return false, fmt.Sprintf("cannot determine branch: %v", err)
+	}
+	if branch == "main" || branch == "master" {
+		return false, fmt.Sprintf("on %s branch", branch)
+	}
+
+	// Must have changes relative to base.
+	base := detectDefaultBranchSafe(cwd)
+	diffStat, err := tools.GitOutput(cwd, "diff", "--stat", "origin/"+base+"...HEAD")
+	if err != nil {
+		return false, fmt.Sprintf("cannot diff against origin/%s: %v", base, err)
+	}
+	if diffStat == "" {
+		return false, "no changes relative to base"
+	}
+
+	return true, ""
+}
+
+// detectDefaultBranchSafe returns the default branch name without failing.
+func detectDefaultBranchSafe(cwd string) string {
+	for _, candidate := range []string{"main", "master"} {
+		if err := tools.RunGitCmd(cwd, "rev-parse", "--verify", "origin/"+candidate); err == nil {
+			return candidate
+		}
+	}
+	return "main"
 }

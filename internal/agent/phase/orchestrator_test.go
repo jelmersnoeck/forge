@@ -2,6 +2,7 @@ package phase
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -138,7 +139,7 @@ func TestQAPhaseDisallowedTools(t *testing.T) {
 
 	// Verify all spec-mandated disallowed tools are present.
 	wantDisallowed := []string{
-		"Write", "Edit", "PRCreate",
+		"Write", "Edit",
 		"Agent", "AgentGet", "AgentList", "AgentStop",
 		"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 		"QueueImmediate", "QueueOnComplete",
@@ -157,4 +158,257 @@ func TestQAPhaseDisallowedTools(t *testing.T) {
 		r.NotContains(qa.DisallowedTools, tool,
 			"QA phase should allow %s", tool)
 	}
+}
+
+func TestShouldCreatePR(t *testing.T) {
+	tests := map[string]struct {
+		setup      func(t *testing.T) string
+		want       bool
+		wantReason string
+	}{
+		"not a git repo": {
+			setup: func(t *testing.T) string {
+				return t.TempDir()
+			},
+			want:       false,
+			wantReason: "not a git repository",
+		},
+		"on main branch": {
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				run(t, dir, "git", "init", "-b", "main")
+				run(t, dir, "git", "commit", "--allow-empty", "-m", "init")
+				return dir
+			},
+			want:       false,
+			wantReason: "on main branch",
+		},
+		"on master branch": {
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				run(t, dir, "git", "init", "-b", "master")
+				run(t, dir, "git", "commit", "--allow-empty", "-m", "init")
+				return dir
+			},
+			want:       false,
+			wantReason: "on master branch",
+		},
+		"feature branch with changes": {
+			setup: func(t *testing.T) string {
+				remote, local := initGitRepoWithRemote(t, "main")
+				_ = remote
+				run(t, local, "git", "checkout", "-b", "jelmer/cool-feature")
+				writeTestFile(t, local, "new.txt", "Greendale rules")
+				run(t, local, "git", "add", ".")
+				run(t, local, "git", "commit", "-m", "add new file")
+				return local
+			},
+			want: true,
+		},
+		"feature branch no changes": {
+			setup: func(t *testing.T) string {
+				remote, local := initGitRepoWithRemote(t, "main")
+				_ = remote
+				run(t, local, "git", "checkout", "-b", "jelmer/empty-feature")
+				return local
+			},
+			want:       false,
+			wantReason: "no changes relative to base",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			dir := tc.setup(t)
+			got, reason := shouldCreatePR(dir)
+			r.Equal(tc.want, got)
+			if tc.wantReason != "" {
+				r.Contains(reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestBranchToTitle(t *testing.T) {
+	tests := map[string]struct {
+		branch string
+		want   string
+	}{
+		"feature branch": {
+			branch: "jelmer/add-paintball-tournament",
+			want:   "Add paintball tournament",
+		},
+		"simple branch": {
+			branch: "fix-scoring",
+			want:   "Fix scoring",
+		},
+		"underscores": {
+			branch: "jelmer/add_human_being_mascot",
+			want:   "Add human being mascot",
+		},
+		"empty after strip": {
+			branch: "jelmer/",
+			want:   "Update implementation",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := branchToTitle(tc.branch)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestFallbackPRContent(t *testing.T) {
+	r := require.New(t)
+
+	title, body := fallbackPRContent(
+		"jelmer/add-paintball",
+		"abc123 add tournament scaffold\ndef456 add scoring",
+		" 2 files changed, 42 insertions(+)",
+		"# Add paintball tournament\n\n## Description\nGreendale needs this.",
+	)
+
+	r.Equal("Add paintball", title)
+	r.Contains(body, "Add paintball tournament")
+	r.Contains(body, "2 files changed")
+	r.Contains(body, "add tournament scaffold")
+}
+
+func TestParsePRContent(t *testing.T) {
+	tests := map[string]struct {
+		raw       string
+		wantTitle string
+		wantBody  string
+		wantErr   bool
+	}{
+		"valid json": {
+			raw:       `{"title": "Add paintball scoring", "body": "This PR adds scoring for Greendale's annual paintball tournament."}`,
+			wantTitle: "Add paintball scoring",
+			wantBody:  "This PR adds scoring for Greendale's annual paintball tournament.",
+		},
+		"json in code fence": {
+			raw:       "```json\n{\"title\": \"Fix scoring\", \"body\": \"Fixes a bug in the scoring module.\"}\n```",
+			wantTitle: "Fix scoring",
+			wantBody:  "Fixes a bug in the scoring module.",
+		},
+		"empty title": {
+			raw:     `{"title": "", "body": "Something"}`,
+			wantErr: true,
+		},
+		"invalid json": {
+			raw:     "not json at all",
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			title, body, err := parsePRContent(tc.raw)
+			if tc.wantErr {
+				r.Error(err)
+				return
+			}
+			r.NoError(err)
+			r.Equal(tc.wantTitle, title)
+			r.Equal(tc.wantBody, body)
+		})
+	}
+}
+
+func TestValidatePRTitle(t *testing.T) {
+	tests := map[string]struct {
+		title   string
+		wantErr bool
+	}{
+		"empty":          {title: "", wantErr: true},
+		"too short":      {title: "fix auth", wantErr: true},
+		"generic":        {title: "fix bug", wantErr: true},
+		"good":           {title: "Add OAuth2 authentication for Greendale API", wantErr: false},
+		"minimum length": {title: "Fix user signup", wantErr: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			err := validatePRTitle(tc.title)
+			if tc.wantErr {
+				r.Error(err)
+				return
+			}
+			r.NoError(err)
+		})
+	}
+}
+
+func TestValidatePRDescription(t *testing.T) {
+	tests := map[string]struct {
+		body    string
+		wantErr bool
+	}{
+		"empty":       {body: "", wantErr: true},
+		"too short":   {body: "Fixed the thing.", wantErr: true},
+		"good enough": {body: "This PR adds the Greendale Human Being mascot to the interactive campus map, including SVG assets.", wantErr: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			err := validatePRDescription(tc.body)
+			if tc.wantErr {
+				r.Error(err)
+				return
+			}
+			r.NoError(err)
+		})
+	}
+}
+
+// initGitRepoWithRemote creates a bare remote and a local clone on the given branch.
+func initGitRepoWithRemote(t *testing.T, branch string) (remote, local string) {
+	t.Helper()
+
+	remote = filepath.Join(t.TempDir(), "remote.git")
+	run(t, "", "git", "init", "--bare", "-b", branch, remote)
+
+	local = filepath.Join(t.TempDir(), "local")
+	run(t, "", "git", "clone", remote, local)
+	run(t, local, "git", "checkout", "-b", branch)
+
+	writeTestFile(t, local, "README.md", "# Greendale Community College")
+	run(t, local, "git", "add", ".")
+	run(t, local, "git", "commit", "-m", "Initial commit: Troy and Abed in the morning")
+	run(t, local, "git", "push", "origin", branch)
+
+	return remote, local
+}
+
+// run executes a command in the given directory. Fails the test on error.
+// Sets git identity env vars so commits work in CI where no global config exists.
+func run(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Troy Barnes",
+		"GIT_AUTHOR_EMAIL=troy@greendale.edu",
+		"GIT_COMMITTER_NAME=Troy Barnes",
+		"GIT_COMMITTER_EMAIL=troy@greendale.edu",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, out)
+	}
+}
+
+// writeTestFile creates a file with the given content.
+func writeTestFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
 }
