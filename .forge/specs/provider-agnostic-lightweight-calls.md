@@ -1,6 +1,6 @@
 ---
 id: provider-agnostic-lightweight-calls
-status: draft
+status: implemented
 ---
 # Make intent classification and session naming provider-agnostic
 
@@ -56,12 +56,11 @@ Files for reference:
 3. When provider is nil or the call fails, falls back to `fallbackSessionName()`
    (random adjective-noun pair), same as today.
 4. The Anthropic SDK import is removed from `session_name.go`.
-5. The caller (`spawnLocalAgent` in `cli.go`) passes the result of
-   `selectProvider()` — but since `selectProvider` is in the `agent` package,
-   the CLI should use a similar provider selection or call a shared helper.
-   Alternatively, `generateSessionName` constructs a provider internally using
-   the same env-var logic (check ANTHROPIC_API_KEY, then OPENAI_API_KEY, then
-   claude CLI), keeping the function self-contained.
+5. The caller (`spawnLocalAgent` in `cli.go`) and `generateTitle` both call
+   `newLightweightProvider()` — a helper in `session_name.go` that auto-detects
+   a provider via env vars (ANTHROPIC_API_KEY → Anthropic, OPENAI_API_KEY → OpenAI,
+   `claude` on PATH → CLI, else nil). This avoids importing the `agent` package's
+   `selectProvider()` into the CLI.
 6. The 3-second timeout is preserved.
 7. Model selection: send empty model string, letting the provider use its default.
    For a naming call, any model works — we don't need to specify Haiku.
@@ -100,9 +99,12 @@ func generateSessionName(provider types.LLMProvider, prompt string) string
 ```
 
 ```go
-// cli.go call site — provider passed to generateSessionName
+// cli.go call sites — provider passed to generateSessionName
 // Before: slug := generateSessionName(initialPrompt)
-// After:  slug := generateSessionName(prov, initialPrompt)
+// After:  slug := generateSessionName(newLightweightProvider(), initialPrompt)
+
+// session_name.go — newLightweightProvider auto-detects from env vars
+func newLightweightProvider() types.LLMProvider
 ```
 
 ## Edge Cases
