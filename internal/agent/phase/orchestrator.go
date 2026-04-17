@@ -41,6 +41,11 @@ type OrchestratorOpts struct {
 
 	// QAHistoryID, when set, resumes an existing Q&A conversation.
 	QAHistoryID string
+
+	// PipelineHint controls whether to run the ideation pipeline.
+	// Values: "ideate" (always ideate), "code" (skip to coding),
+	// "auto" or "" (use complexity gate to decide).
+	PipelineHint string
 }
 
 // OrchestratorResult is the return value from Orchestrator.Run.
@@ -174,23 +179,82 @@ func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string
 // runSWEPipeline runs the full spec → code → review pipeline.
 func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) error {
 
-	// Phase 1: Spec Creator (skipped if spec already provided)
+	// Phase 1: Spec Creation (skipped if spec already provided)
 	if specPath == "" {
-		o.emitPhaseStart(opts, "spec")
+		useIdeation := shouldIdeate(opts.PipelineHint)
 
-		result, err := o.runSpecCreator(ctx, opts)
-		if err != nil {
-			return fmt.Errorf("spec-creator phase: %w", err)
+		switch useIdeation {
+		case true:
+			// Full ideation pipeline: ideate → clarify → plan
+			o.emitPhaseStart(opts, "ideate")
+
+			result, err := RunDebate(ctx, DebateOpts{
+				Provider:     opts.Provider,
+				Registry:     opts.Registry,
+				Bundle:       opts.Bundle,
+				CWD:          opts.CWD,
+				SessionStore: opts.SessionStore,
+				SessionID:    opts.SessionID,
+				Model:        opts.Model,
+				Emit:         opts.Emit,
+				AuditLogger:  opts.AuditLogger,
+				Prompt:       opts.InitialPrompt,
+			})
+			if err != nil {
+				return fmt.Errorf("ideation pipeline: %w", err)
+			}
+
+			specPath = result.SpecPath
+			if specPath == "" {
+				specPath = findLatestSpec(opts.CWD)
+			}
+
+			o.emitPhaseComplete(opts, "ideate", fmt.Sprintf("spec: %s", specPath))
+
+		default:
+			// Single-agent spec creator (original behavior)
+			o.emitPhaseStart(opts, "spec")
+
+			result, err := o.runSpecCreator(ctx, opts)
+			if err != nil {
+				return fmt.Errorf("spec-creator phase: %w", err)
+			}
+
+			specPath = result.SpecPath
+			if specPath == "" {
+				specPath = findLatestSpec(opts.CWD)
+			}
+
+			o.emitPhaseComplete(opts, "spec", fmt.Sprintf("spec: %s", specPath))
 		}
+	}
 
-		specPath = result.SpecPath
-		if specPath == "" {
-			// Spec creator didn't produce a spec — find the most recently
-			// modified spec in the specs directory as a fallback.
-			specPath = findLatestSpec(opts.CWD)
+	// Staleness check before coding
+	staleness := CheckStaleness(opts.CWD)
+	if staleness.Stale {
+		switch {
+		case staleness.Error != nil:
+			opts.Emit(types.OutboundEvent{
+				ID:        uuid.New().String(),
+				SessionID: opts.SessionID,
+				Type:      "staleness_error",
+				Content:   staleness.Error.Error(),
+				Timestamp: time.Now().UnixMilli(),
+			})
+			// If it's a pull failure (not just uncommitted changes warning),
+			// halt before coding.
+			if staleness.Behind > 0 && !staleness.Pulled {
+				return fmt.Errorf("branch is stale and auto-pull failed: %w", staleness.Error)
+			}
+		case staleness.Pulled:
+			opts.Emit(types.OutboundEvent{
+				ID:        uuid.New().String(),
+				SessionID: opts.SessionID,
+				Type:      "staleness_warning",
+				Content:   fmt.Sprintf("Branch was %d commits behind — auto-pulled with rebase", staleness.Behind),
+				Timestamp: time.Now().UnixMilli(),
+			})
 		}
-
-		o.emitPhaseComplete(opts, "spec", fmt.Sprintf("spec: %s", specPath))
 	}
 
 	// Phase 2: Coder
@@ -647,4 +711,23 @@ func detectDefaultBranchSafe(cwd string) string {
 		}
 	}
 	return "main"
+}
+
+// shouldIdeate determines whether to run the ideation pipeline.
+//
+//	"ideate" → always ideate
+//	"code"   → never ideate
+//	"auto"/""→ use complexity gate (for now: default to single-agent spec creator)
+func shouldIdeate(hint string) bool {
+	switch hint {
+	case "ideate":
+		return true
+	case "code":
+		return false
+	default:
+		// "auto" or empty: complexity gate decides.
+		// For now, default to false (single-agent spec creator) until
+		// the complexity gate is implemented in a separate spec.
+		return false
+	}
 }

@@ -52,6 +52,32 @@ func TestPhaseDefinitions(t *testing.T) {
 				"Write", "Edit",
 			},
 		},
+		"ideator": {
+			phase:        Ideator(),
+			wantName:     "ideate",
+			wantMaxTurns: 100,
+			wantDisallowed: []string{
+				"Write", "Edit", "PRCreate",
+				"Agent", "AgentGet", "AgentList", "AgentStop",
+			},
+		},
+		"clarifier": {
+			phase:        Clarifier(),
+			wantName:     "clarify",
+			wantMaxTurns: 50,
+			wantDisallowed: []string{
+				"Write", "Edit", "PRCreate",
+			},
+		},
+		"planner": {
+			phase:        Planner(),
+			wantName:     "plan",
+			wantMaxTurns: 150,
+			wantDisallowed: []string{
+				"Edit", "PRCreate",
+				"Agent", "AgentGet", "AgentList", "AgentStop",
+			},
+		},
 	}
 
 	for name, tc := range tests {
@@ -95,6 +121,18 @@ func TestPromptForPhase(t *testing.T) {
 		"qa": {
 			phaseName:    "qa",
 			wantContains: "answering questions",
+		},
+		"plan": {
+			phaseName:    "plan",
+			wantContains: "senior software architect",
+		},
+		"ideate returns empty": {
+			phaseName: "ideate",
+			wantEmpty: true,
+		},
+		"clarify returns empty": {
+			phaseName: "clarify",
+			wantEmpty: true,
 		},
 		"unknown defaults to coder": {
 			phaseName:    "greendale",

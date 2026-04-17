@@ -65,6 +65,56 @@ func QA() Phase {
 	}
 }
 
+// Ideator returns the ideation agent phase configuration.
+// Read-only exploration — produces JSON candidates, no file writes.
+func Ideator() Phase {
+	return Phase{
+		Name: "ideate",
+		DisallowedTools: []string{
+			"Write", "Edit", "PRCreate",
+			"Agent", "AgentGet", "AgentList", "AgentStop",
+			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+			"QueueImmediate", "QueueOnComplete",
+			"UseMCPTool",
+			"Reflect",
+		},
+		MaxTurns: 100,
+	}
+}
+
+// Clarifier returns the clarification agent phase configuration.
+// Read-only — verifies file paths, no writes.
+func Clarifier() Phase {
+	return Phase{
+		Name: "clarify",
+		DisallowedTools: []string{
+			"Write", "Edit", "PRCreate",
+			"Agent", "AgentGet", "AgentList", "AgentStop",
+			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+			"QueueImmediate", "QueueOnComplete",
+			"UseMCPTool",
+			"Reflect",
+		},
+		MaxTurns: 50,
+	}
+}
+
+// Planner returns the planning agent phase configuration.
+// Can read and write specs, run read-only bash.
+func Planner() Phase {
+	return Phase{
+		Name: "plan",
+		DisallowedTools: []string{
+			"Edit", "PRCreate",
+			"Agent", "AgentGet", "AgentList", "AgentStop",
+			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+			"QueueImmediate", "QueueOnComplete",
+			"UseMCPTool",
+		},
+		MaxTurns: 150,
+	}
+}
+
 // Reviewer returns the reviewer phase configuration.
 func Reviewer() Phase {
 	return Phase{

@@ -1042,6 +1042,37 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		m.flushText()
 		m.output = append(m.output, dimStyle.Render("  "+event.Content))
 
+	case "ideation_start":
+		m.flushText()
+		m.output = append(m.output, headerStyle.Render("  [ideation] ")+event.Content)
+
+	case "ideation_candidate":
+		// Quiet — candidates are internal to the pipeline
+
+	case "clarification_start":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [clarify] ")+event.Content)
+
+	case "clarification_question":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [question] ")+event.Content)
+
+	case "planning_start":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [planning] ")+event.Content)
+
+	case "planning_selection":
+		m.flushText()
+		m.output = append(m.output, headerStyle.Render("  [plan] ")+event.Content)
+
+	case "staleness_warning":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [staleness] ")+event.Content)
+
+	case "staleness_error":
+		m.flushText()
+		m.output = append(m.output, errorStyle.Render("  [staleness] ")+event.Content)
+
 	case "review_start":
 		m.flushText()
 		m.output = append(m.output, headerStyle.Render("  [review] ")+event.Content)
