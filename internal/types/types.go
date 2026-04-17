@@ -259,12 +259,12 @@ type SpecDocument struct {
 	Status string `json:"status" yaml:"status"` // draft, active, implemented, deprecated
 
 	// Spec content sections (parsed from markdown)
-	Header      string `json:"header"`      // summary, max 15 words
-	Description string `json:"description"` // short description
-	Context     string `json:"context"`     // files/systems/interfaces to change
-	Behavior    string `json:"behavior"`    // desired behaviour and UX
-	Constraints string `json:"constraints"` // things to avoid
-	Interfaces  string `json:"interfaces"`  // types, signatures, schemas
+	Header       string `json:"header"`       // summary, max 15 words
+	Description  string `json:"description"`  // short description
+	Context      string `json:"context"`      // files/systems/interfaces to change
+	Behavior     string `json:"behavior"`     // desired behaviour and UX
+	Constraints  string `json:"constraints"`  // things to avoid
+	Interfaces   string `json:"interfaces"`   // types, signatures, schemas
 	EdgeCases    string `json:"edgeCases"`    // known edge cases
 	Alternatives string `json:"alternatives"` // alternative approaches considered
 
