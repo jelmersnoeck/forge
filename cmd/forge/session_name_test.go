@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -187,4 +188,71 @@ func TestGenerateSessionName_SanitizesResponse(t *testing.T) {
 
 	name := generateSessionName(prov, "Fix the auth timeout")
 	r.Equal("fix-auth-timeout", name)
+}
+
+func TestDrainTextDeltas(t *testing.T) {
+	tests := map[string]struct {
+		deltas  []types.ChatDelta
+		want    string
+		wantErr bool
+	}{
+		"single delta": {
+			deltas: []types.ChatDelta{
+				{Type: "text_delta", Text: "hello"},
+			},
+			want: "hello",
+		},
+		"multiple deltas": {
+			deltas: []types.ChatDelta{
+				{Type: "text_delta", Text: "fix-"},
+				{Type: "text_delta", Text: "auth-"},
+				{Type: "text_delta", Text: "timeout"},
+			},
+			want: "fix-auth-timeout",
+		},
+		"error delta": {
+			deltas: []types.ChatDelta{
+				{Type: "text_delta", Text: "partial"},
+				{Type: "error", Text: "Dean Pelton broke it"},
+			},
+			wantErr: true,
+		},
+		"empty channel": {
+			deltas: []types.ChatDelta{},
+			want:   "",
+		},
+		"oversized response truncated": {
+			deltas: []types.ChatDelta{
+				{Type: "text_delta", Text: strings.Repeat("a", 600)},
+			},
+			want: strings.Repeat("a", maxStreamTextLen),
+		},
+		"multiple deltas exceeding max": {
+			deltas: []types.ChatDelta{
+				{Type: "text_delta", Text: strings.Repeat("b", 400)},
+				{Type: "text_delta", Text: strings.Repeat("c", 400)},
+			},
+			want: strings.Repeat("b", 400) + strings.Repeat("c", maxStreamTextLen-400),
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			ch := make(chan types.ChatDelta, len(tc.deltas))
+			for _, d := range tc.deltas {
+				ch <- d
+			}
+			close(ch)
+
+			got, err := drainTextDeltas(ch)
+			if tc.wantErr {
+				r.Error(err)
+				return
+			}
+			r.NoError(err)
+			r.Equal(tc.want, got)
+		})
+	}
 }

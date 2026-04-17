@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -14,17 +16,30 @@ import (
 )
 
 // newLightweightProvider creates a provider for cheap LLM calls (session naming)
-// using env-var auto-detection. Returns nil when no provider is available.
+// using env-var auto-detection with a fixed priority order:
+// Anthropic > OpenAI > Claude CLI. Returns nil when no provider is available.
+//
+// Intentionally does not cache: this runs once at session start, so the env
+// lookups are negligible and caching would complicate test isolation.
 func newLightweightProvider() types.LLMProvider {
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		log.Printf("[session-name] using Anthropic provider")
 		return provider.NewAnthropic(key)
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		log.Printf("[session-name] using OpenAI provider")
 		return provider.NewOpenAI(key)
 	}
-	if _, err := exec.LookPath("claude"); err == nil {
-		return provider.NewClaudeCLI()
+	if path, err := exec.LookPath("claude"); err == nil {
+		// LookPath already checks executability on Unix (os.Stat + mode bits),
+		// but verify we can stat the resolved path to catch broken symlinks.
+		if _, statErr := os.Stat(path); statErr == nil {
+			log.Printf("[session-name] using Claude CLI provider (%s)", path)
+			return provider.NewClaudeCLI()
+		}
+		log.Printf("[session-name] claude found at %s but not accessible: %v", path, err)
 	}
+	log.Printf("[session-name] no LLM provider available — will use random names")
 	return nil
 }
 
@@ -33,8 +48,34 @@ const sessionNameTimeout = 3 * time.Second
 
 // sessionNamePromptPrefix is prepended to the user's prompt for slug generation.
 const sessionNamePromptPrefix = "Generate a 2-4 word kebab-case slug summarizing this task. " +
-	"Reply with ONLY the slug, nothing else. Examples: fix-auth-timeout, " +
-	"add-mcp-support, refactor-session-loop\n\n"
+	"Reply with ONLY the slug, nothing else. " +
+	"Examples: fix-auth-timeout, add-mcp-support, refactor-session-loop\n\n"
+
+// maxStreamTextLen caps accumulated text from the LLM stream to prevent
+// memory issues with malformed responses (expected: <50 bytes for a slug).
+const maxStreamTextLen = 512
+
+// drainTextDeltas collects text from a ChatDelta stream, returning the
+// accumulated text and any stream error. Caps accumulated text at maxStreamTextLen.
+func drainTextDeltas(deltaChan <-chan types.ChatDelta) (string, error) {
+	var text strings.Builder
+	for delta := range deltaChan {
+		switch delta.Type {
+		case "text_delta":
+			if text.Len()+len(delta.Text) > maxStreamTextLen {
+				remaining := maxStreamTextLen - text.Len()
+				if remaining > 0 {
+					text.WriteString(delta.Text[:remaining])
+				}
+			} else {
+				text.WriteString(delta.Text)
+			}
+		case "error":
+			return "", fmt.Errorf("stream error: %s", delta.Text)
+		}
+	}
+	return text.String(), nil
+}
 
 // generateSessionName uses an LLM provider to create a kebab-case slug
 // summarizing the prompt. Falls back to a random adjective-noun pair when
@@ -69,21 +110,19 @@ func generateSessionName(provider types.LLMProvider, prompt string) string {
 
 	deltaChan, err := provider.Chat(ctx, req)
 	if err != nil {
+		log.Printf("[session-name] provider.Chat failed: %v — falling back to random name", err)
 		return fallbackSessionName()
 	}
 
-	var text strings.Builder
-	for delta := range deltaChan {
-		switch delta.Type {
-		case "text_delta":
-			text.WriteString(delta.Text)
-		case "error":
-			return fallbackSessionName()
-		}
+	text, err := drainTextDeltas(deltaChan)
+	if err != nil {
+		log.Printf("[session-name] %v — falling back to random name", err)
+		return fallbackSessionName()
 	}
 
-	slug := sanitizeSlug(text.String())
+	slug := sanitizeSlug(text)
 	if slug == "" {
+		log.Printf("[session-name] LLM returned empty/unparseable response — falling back to random name")
 		return fallbackSessionName()
 	}
 	return slug
