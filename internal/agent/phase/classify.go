@@ -20,11 +20,17 @@ const (
 	IntentTask     Intent = "task"
 )
 
-// classificationModels is a prioritized list of lightweight models for
-// intent classification. Falls through to the next model when the provider
-// returns an error (e.g., model unavailable). Same pattern as session naming.
+// classificationModels is a prioritized list of lightweight (cheap/fast) models
+// for intent classification. The provider falls through to the next model when
+// an error occurs (e.g., model deprecated, region unavailable).
+//
+// Priority order rationale:
+//   - claude-haiku-4-5: newest Haiku, best quality/speed tradeoff
+//   - claude-3-5-haiku: stable fallback if the newer model isn't available yet
+//
+// These are real Anthropic model IDs. If a model is retired, the API returns an
+// error and we fall through — no silent misrouting.
 var classificationModels = []string{
-	"claude-haiku-4-20250414",
 	"claude-haiku-4-5-20251001",
 	"claude-3-5-haiku-20241022",
 }
