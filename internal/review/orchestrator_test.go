@@ -465,6 +465,7 @@ func TestBuildUserMessage(t *testing.T) {
 	msg := buildUserMessage(rev, req)
 	r.Contains(msg, "diff --git")
 	r.NotContains(msg, "paintball-rules")
+	r.NotContains(msg, "incremental diff", "non-incremental request should not have incremental instruction")
 
 	// Spec-validation reviewer should include specs.
 	specRev := SpecValidationReviewer{}
@@ -472,6 +473,16 @@ func TestBuildUserMessage(t *testing.T) {
 	r.Contains(msg, "diff --git")
 	r.Contains(msg, "paintball-rules")
 	r.Contains(msg, "Paintball Rules")
+
+	// Incremental request should inject instruction.
+	incReq := ReviewRequest{
+		Diff:        "diff --git a/bar.go b/bar.go\n+func Bar() {}",
+		Incremental: true,
+	}
+	msg = buildUserMessage(rev, incReq)
+	r.Contains(msg, "incremental diff")
+	r.Contains(msg, "Flag only issues visible in this diff")
+	r.Contains(msg, "diff --git")
 }
 
 func TestCollectResponse(t *testing.T) {
@@ -765,6 +776,138 @@ func TestHasActionableFindings(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 			r.Equal(tc.want, HasActionableFindings(tc.results))
+		})
+	}
+}
+
+func TestHasHighSeverityFindings(t *testing.T) {
+	tests := map[string]struct {
+		results []ReviewResult
+		want    bool
+	}{
+		"has critical": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeverityCritical}}},
+			},
+			want: true,
+		},
+		"has warning": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeverityWarning}}},
+			},
+			want: true,
+		},
+		"only suggestions": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: SeveritySuggestion}}},
+			},
+			want: false,
+		},
+		"unknown severity": {
+			results: []ReviewResult{
+				{Findings: []Finding{{Severity: "info"}}},
+			},
+			want: false,
+		},
+		"mixed with critical": {
+			results: []ReviewResult{
+				{Findings: []Finding{
+					{Severity: SeveritySuggestion},
+					{Severity: SeverityCritical},
+				}},
+			},
+			want: true,
+		},
+		"empty findings": {
+			results: []ReviewResult{
+				{Findings: []Finding{}},
+			},
+			want: false,
+		},
+		"no findings": {
+			results: []ReviewResult{
+				{Reviewer: "security"},
+			},
+			want: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, HasHighSeverityFindings(tc.results))
+		})
+	}
+}
+
+func TestFilterHighSeverity(t *testing.T) {
+	tests := map[string]struct {
+		results     []ReviewResult
+		wantLen     int
+		wantFinding int // total findings across results
+	}{
+		"keeps critical and warning": {
+			results: []ReviewResult{
+				{
+					Reviewer: "security",
+					Provider: "anthropic",
+					Findings: []Finding{
+						{Severity: SeverityCritical, Description: "Dean Pelton's security breach"},
+						{Severity: SeverityWarning, Description: "Troy's weak password"},
+						{Severity: SeveritySuggestion, Description: "Abed's style nit"},
+					},
+				},
+			},
+			wantLen:     1,
+			wantFinding: 2,
+		},
+		"filters out unknown severity": {
+			results: []ReviewResult{
+				{
+					Reviewer: "code-quality",
+					Findings: []Finding{
+						{Severity: "info", Description: "Informational"},
+						{Severity: "medium", Description: "Medium priority"},
+						{Severity: SeverityWarning, Description: "Actual warning"},
+					},
+				},
+			},
+			wantLen:     1,
+			wantFinding: 1,
+		},
+		"all suggestions filtered out": {
+			results: []ReviewResult{
+				{
+					Reviewer: "maintainability",
+					Findings: []Finding{
+						{Severity: SeveritySuggestion, Description: "nice to have"},
+					},
+				},
+			},
+			wantLen:     1,
+			wantFinding: 0,
+		},
+		"empty results pass through": {
+			results:     []ReviewResult{},
+			wantLen:     0,
+			wantFinding: 0,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := FilterHighSeverity(tc.results)
+			r.Len(got, tc.wantLen)
+			total := 0
+			for _, res := range got {
+				total += len(res.Findings)
+				for _, f := range res.Findings {
+					r.True(f.Severity == SeverityCritical || f.Severity == SeverityWarning,
+						"unexpected severity %s in filtered results", f.Severity)
+				}
+			}
+			r.Equal(tc.wantFinding, total)
 		})
 	}
 }

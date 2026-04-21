@@ -18,11 +18,12 @@ const agentTimeout = 5 * time.Minute
 
 // ReviewRequest carries everything a review run needs.
 type ReviewRequest struct {
-	Diff       string
-	Specs      []types.SpecEntry
-	Context    types.ContextBundle
-	BaseBranch string
-	CWD        string
+	Diff        string
+	Specs       []types.SpecEntry
+	Context     types.ContextBundle
+	BaseBranch  string
+	CWD         string
+	Incremental bool // true when reviewing an incremental diff (cycle 1+)
 }
 
 // Orchestrator runs reviewer×provider combinations concurrently.
@@ -199,8 +200,15 @@ func (o *Orchestrator) runSingle(
 }
 
 // buildUserMessage constructs the user prompt with the diff and optional specs.
+// When the request is incremental, an instruction is injected telling the
+// reviewer to only flag issues visible in this diff.
 func buildUserMessage(rev Reviewer, req ReviewRequest) string {
 	var sb strings.Builder
+
+	if req.Incremental {
+		sb.WriteString("You are reviewing an **incremental diff** — only changes since the last review cycle. Flag only issues visible in this diff. Do not speculate about issues in code you cannot see.\n\n")
+	}
+
 	sb.WriteString("Please review the following git diff:\n\n```diff\n")
 	sb.WriteString(req.Diff)
 	sb.WriteString("\n```\n")
@@ -398,6 +406,40 @@ func HasActionableFindings(results []ReviewResult) bool {
 		}
 	}
 	return false
+}
+
+// HasHighSeverityFindings returns true if any result contains a critical or warning finding.
+func HasHighSeverityFindings(results []ReviewResult) bool {
+	for _, r := range results {
+		for _, f := range r.Findings {
+			switch f.Severity {
+			case SeverityCritical, SeverityWarning:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// FilterHighSeverity returns only critical and warning findings from results.
+// Each ReviewResult is preserved but with its findings list filtered.
+func FilterHighSeverity(results []ReviewResult) []ReviewResult {
+	out := make([]ReviewResult, 0, len(results))
+	for _, r := range results {
+		filtered := ReviewResult{
+			Reviewer: r.Reviewer,
+			Provider: r.Provider,
+			Error:    r.Error,
+		}
+		for _, f := range r.Findings {
+			switch f.Severity {
+			case SeverityCritical, SeverityWarning:
+				filtered.Findings = append(filtered.Findings, f)
+			}
+		}
+		out = append(out, filtered)
+	}
+	return out
 }
 
 // HasCriticalFindings returns true if any result contains a critical finding.

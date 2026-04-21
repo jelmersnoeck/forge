@@ -71,18 +71,42 @@ func TestFormatFindingsForCoder(t *testing.T) {
 			Severity:    review.SeverityWarning,
 			Description: "Missing nil check on Señor Chang's credentials",
 		},
+		{
+			Severity:    review.SeveritySuggestion,
+			File:        "internal/paintball/arena.go",
+			StartLine:   10,
+			Description: "Consider extracting into a helper — streets ahead",
+		},
 	}
 
 	result := formatFindingsForCoder(findings)
 	r.Contains(result, "SQL injection")
 	r.Contains(result, "internal/paintball/gun.go:42")
 	r.Contains(result, "Missing nil check")
+	r.NotContains(result, "streets ahead", "suggestions should be filtered out")
+	r.NotContains(result, "arena.go", "suggestion file should not appear")
+	r.Contains(result, "Fix ONLY the issues listed below")
+}
+
+func TestFormatFindingsForCoderOnlySuggestions(t *testing.T) {
+	r := require.New(t)
+
+	findings := []review.Finding{
+		{
+			Severity:    review.SeveritySuggestion,
+			Description: "Abed recommends a blanket fort module",
+		},
+	}
+
+	result := formatFindingsForCoder(findings)
+	r.Contains(result, "Fix ONLY")
+	r.NotContains(result, "blanket fort")
 }
 
 func TestFormatFindingsForCoderEmpty(t *testing.T) {
 	r := require.New(t)
 	result := formatFindingsForCoder(nil)
-	r.Contains(result, "code review found the following issues")
+	r.Contains(result, "Fix ONLY the issues listed below")
 }
 
 func TestEmitHelpers(t *testing.T) {

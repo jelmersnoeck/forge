@@ -81,6 +81,28 @@ func gitDiff(cwd, diffSpec string) (string, error) {
 	return string(out), nil
 }
 
+// GetHeadSHA returns the current HEAD commit SHA.
+func GetHeadSHA(cwd string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// GetIncrementalDiff returns the diff between a previous SHA and HEAD.
+// Used for review cycles after the first. Uses two-dot diff (prevSHA..HEAD)
+// to get exactly what changed between the two points.
+func GetIncrementalDiff(cwd, prevSHA string) (string, error) {
+	diff, err := gitDiff(cwd, prevSHA+"..HEAD")
+	if err != nil {
+		return "", err
+	}
+	return truncateDiff(diff), nil
+}
+
 // truncateDiff keeps head and tail of a diff if it exceeds maxDiffBytes.
 //
 //	┌──────────── head (60%) ────────────┐

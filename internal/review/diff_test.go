@@ -417,6 +417,147 @@ func TestGetDiff(t *testing.T) {
 	}
 }
 
+func TestGetHeadSHA(t *testing.T) {
+	tests := map[string]struct {
+		setup   func(t *testing.T) string
+		wantErr bool
+	}{
+		"valid repo returns 40-char SHA": {
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+				return dir
+			},
+		},
+		"not a git repo": {
+			setup: func(t *testing.T) string {
+				return t.TempDir()
+			},
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			dir := tc.setup(t)
+			sha, err := GetHeadSHA(dir)
+			switch {
+			case tc.wantErr:
+				r.Error(err)
+			default:
+				r.NoError(err)
+				r.Len(sha, 40, "SHA should be 40 hex chars")
+			}
+		})
+	}
+}
+
+func TestGetIncrementalDiff(t *testing.T) {
+	tests := map[string]struct {
+		setup   func(t *testing.T) (dir, prevSHA string)
+		wantErr bool
+		check   func(t *testing.T, diff string)
+	}{
+		"shows only new changes": {
+			setup: func(t *testing.T) (string, string) {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+
+				// First commit on feature branch.
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "chang.go"), []byte("package greendale\n"), 0o644))
+				gitRun(t, dir, "add", "chang.go")
+				gitRunEnv(t, dir, []string{"GIT_AUTHOR_DATE=2024-01-02T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-02T00:00:00Z"},
+					"commit", "-m", "Senor Chang's first commit")
+
+				// Capture SHA after first commit.
+				sha, err := GetHeadSHA(dir)
+				require.NoError(t, err)
+
+				// Second commit.
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "troy.go"), []byte("package greendale\n"), 0o644))
+				gitRun(t, dir, "add", "troy.go")
+				gitRunEnv(t, dir, []string{"GIT_AUTHOR_DATE=2024-01-03T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-03T00:00:00Z"},
+					"commit", "-m", "Troy Barnes joins the study group")
+
+				return dir, sha
+			},
+			check: func(t *testing.T, diff string) {
+				r := require.New(t)
+				r.Contains(diff, "troy.go", "new file should appear in incremental diff")
+				r.NotContains(diff, "chang.go", "old file should NOT appear in incremental diff")
+			},
+		},
+		"no new commits returns empty diff": {
+			setup: func(t *testing.T) (string, string) {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+
+				sha, err := GetHeadSHA(dir)
+				require.NoError(t, err)
+
+				return dir, sha
+			},
+			check: func(t *testing.T, diff string) {
+				r := require.New(t)
+				r.Empty(strings.TrimSpace(diff))
+			},
+		},
+		"amended commit still works": {
+			setup: func(t *testing.T) (string, string) {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+
+				// Commit a file.
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "abed.go"), []byte("package greendale\n"), 0o644))
+				gitRun(t, dir, "add", "abed.go")
+				gitRunEnv(t, dir, []string{"GIT_AUTHOR_DATE=2024-01-02T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-02T00:00:00Z"},
+					"commit", "-m", "Cool. Cool cool cool.")
+
+				sha, err := GetHeadSHA(dir)
+				require.NoError(t, err)
+
+				// Amend the commit with a new file.
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "troy.go"), []byte("package greendale\n"), 0o644))
+				gitRun(t, dir, "add", "troy.go")
+				gitRunEnv(t, dir, []string{"GIT_AUTHOR_DATE=2024-01-02T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-02T00:00:00Z"},
+					"commit", "--amend", "-m", "Troy and Abed in the morning")
+
+				return dir, sha
+			},
+			check: func(t *testing.T, diff string) {
+				r := require.New(t)
+				r.Contains(diff, "troy.go", "newly added file should appear")
+			},
+		},
+		"invalid prevSHA returns error": {
+			setup: func(t *testing.T) (string, string) {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+				return dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+			},
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			dir, prevSHA := tc.setup(t)
+			diff, err := GetIncrementalDiff(dir, prevSHA)
+			switch {
+			case tc.wantErr:
+				r.Error(err)
+			default:
+				r.NoError(err)
+				if tc.check != nil {
+					tc.check(t, diff)
+				}
+			}
+		})
+	}
+}
+
 // gitRun runs a git command in dir and fails the test on error.
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
