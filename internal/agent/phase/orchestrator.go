@@ -18,7 +18,7 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
-const maxReviewCycles = 10
+const maxReviewCycles = 5
 
 // Orchestrator chains phases together into a complete workflow.
 type Orchestrator struct {
@@ -91,7 +91,7 @@ func NewSWEOrchestrator() *Orchestrator {
 //	       │
 //	       ▼
 //	┌─────────────┐     ┌──────────┐
-//	│   Reviewer   │──▶ │ findings │──▶ back to Coder (max 10×, resets on criticals)
+//	│   Reviewer   │──▶ │ findings │──▶ back to Coder (max 5×, resets on criticals)
 //	└─────────────┘     └──────────┘
 func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error) {
 	specPath := opts.SpecPath
@@ -268,11 +268,67 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 	o.emitPhaseComplete(opts, "code", "implementation complete")
 
 	// Phase 3: Review → Fix loop
+	var prevReviewSHA string
 	for cycle := 0; cycle < o.maxReviewCycles; cycle++ {
 		o.emitPhaseHandoff(opts, "code", "review")
 		o.emitPhaseStart(opts, "review")
 
-		result, err := o.runReviewer(ctx, opts, specPath)
+		// Determine the diff for this review cycle.
+		var diff string
+		incremental := false
+		if cycle == 0 {
+			// First cycle: full branch diff.
+			d, err := review.GetDiff(opts.CWD, "")
+			if err != nil {
+				log.Printf("[orchestrator:%s] get diff error: %v", opts.SessionID, err)
+				break
+			}
+			diff = d
+		} else {
+			// Subsequent cycles: incremental diff since last review.
+			currentSHA, err := review.GetHeadSHA(opts.CWD)
+			if err != nil {
+				log.Printf("[orchestrator:%s] get HEAD SHA error: %v", opts.SessionID, err)
+				break
+			}
+			if currentSHA == prevReviewSHA {
+				opts.Emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: opts.SessionID,
+					Type:      "review_summary",
+					Content:   "No new changes to review — coder made no commits.",
+					Timestamp: time.Now().Unix(),
+				})
+				break
+			}
+			d, err := review.GetIncrementalDiff(opts.CWD, prevReviewSHA)
+			if err != nil {
+				log.Printf("[orchestrator:%s] incremental diff error: %v", opts.SessionID, err)
+				break
+			}
+			if strings.TrimSpace(d) == "" {
+				opts.Emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: opts.SessionID,
+					Type:      "review_summary",
+					Content:   "No new changes to review.",
+					Timestamp: time.Now().Unix(),
+				})
+				break
+			}
+			diff = d
+			incremental = true
+		}
+
+		// Capture HEAD before running the review.
+		sha, err := review.GetHeadSHA(opts.CWD)
+		if err != nil {
+			log.Printf("[orchestrator:%s] get HEAD SHA error: %v", opts.SessionID, err)
+			break
+		}
+		prevReviewSHA = sha
+
+		result, err := o.runReviewerWithDiff(ctx, opts, specPath, diff, incremental)
 		if err != nil {
 			log.Printf("[orchestrator:%s] reviewer error (continuing): %v", opts.SessionID, err)
 			break
@@ -280,13 +336,13 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 
 		o.emitPhaseComplete(opts, "review", fmt.Sprintf("%d findings", len(result.Findings)))
 
-		if !review.HasActionableFindings(convertToResults(result.Findings)) {
+		results := convertToResults(result.Findings)
+		if !review.HasHighSeverityFindings(results) {
 			break
 		}
 
 		// Feed findings back to coder
 		if cycle+1 >= o.maxReviewCycles {
-			results := convertToResults(result.Findings)
 			if review.HasCriticalFindings(results) {
 				// Critical findings remain — reset counter for another pass.
 				cycle = -1 // will become 0 after loop increment
@@ -416,6 +472,15 @@ func (o *Orchestrator) runCoderWithMessage(ctx context.Context, opts Orchestrato
 }
 
 func (o *Orchestrator) runReviewer(ctx context.Context, opts OrchestratorOpts, specPath string) (Result, error) {
+	// Full branch diff for manual /review — not incremental.
+	diff, err := review.GetDiff(opts.CWD, "")
+	if err != nil {
+		return Result{Phase: "review"}, fmt.Errorf("get diff: %w", err)
+	}
+	return o.runReviewerWithDiff(ctx, opts, specPath, diff, false)
+}
+
+func (o *Orchestrator) runReviewerWithDiff(ctx context.Context, opts OrchestratorOpts, specPath string, diff string, incremental bool) (Result, error) {
 	result := Result{Phase: "review"}
 
 	// Collect available providers.
@@ -438,11 +503,6 @@ func (o *Orchestrator) runReviewer(ctx context.Context, opts OrchestratorOpts, s
 		return result, nil
 	}
 
-	// Get git diff.
-	diff, err := review.GetDiff(opts.CWD, "")
-	if err != nil {
-		return result, fmt.Errorf("get diff: %w", err)
-	}
 	if diff == "" {
 		opts.Emit(types.OutboundEvent{
 			ID:        uuid.New().String(),
@@ -475,11 +535,12 @@ func (o *Orchestrator) runReviewer(ctx context.Context, opts OrchestratorOpts, s
 
 	orch := review.NewOrchestrator(providers, reviewers)
 	req := review.ReviewRequest{
-		Diff:       diff,
-		Specs:      opts.Bundle.Specs,
-		Context:    opts.Bundle,
-		BaseBranch: "",
-		CWD:        opts.CWD,
+		Diff:        diff,
+		Specs:       opts.Bundle.Specs,
+		Context:     opts.Bundle,
+		BaseBranch:  "",
+		CWD:         opts.CWD,
+		Incremental: incremental,
 	}
 
 	results := orch.Run(ctx, req, opts.Emit)
@@ -519,11 +580,19 @@ func buildCoderPrompt(specPath string) string {
 }
 
 // formatFindingsForCoder converts review findings into a prompt for the coder.
+// Only critical and warning findings are included — suggestions are excluded
+// to avoid scope creep in the fix cycle.
 func formatFindingsForCoder(findings []review.Finding) string {
 	var sb strings.Builder
-	sb.WriteString("The code review found the following issues. Please fix them:\n")
+	sb.WriteString("Fix ONLY the issues listed below. Do not refactor unrelated code or address issues not in this list.\n")
 
 	for _, f := range findings {
+		switch f.Severity {
+		case review.SeverityCritical, review.SeverityWarning:
+			// include
+		default:
+			continue
+		}
 		loc := ""
 		if f.File != "" {
 			loc = f.File
