@@ -2,14 +2,25 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"os/exec"
 	"strings"
+	"sync"
+)
+
+var (
+	ghOnce      sync.Once
+	ghAvailable bool
 )
 
 // GHAvailable reports whether the gh CLI is on PATH.
+// Result is cached after the first call.
 func GHAvailable() bool {
-	_, err := exec.LookPath("gh")
-	return err == nil
+	ghOnce.Do(func() {
+		_, err := exec.LookPath("gh")
+		ghAvailable = err == nil
+	})
+	return ghAvailable
 }
 
 // DetectDefaultBranch figures out the repo's default branch.
@@ -69,4 +80,64 @@ func GHOutput(cwd string, args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// GitOutputCtx runs a git command with context and returns trimmed stdout.
+func GitOutputCtx(ctx context.Context, cwd string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = cwd
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// GitOutputFullCtx runs a git command with context and returns stdout, stderr, and error.
+func GitOutputFullCtx(ctx context.Context, cwd string, args ...string) (string, string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = cwd
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
+}
+
+// GHOutputCtx runs a gh command with context and returns trimmed stdout.
+func GHOutputCtx(ctx context.Context, cwd string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = cwd
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// ValidateBranchName checks that a git branch name is safe to use in commands.
+// Rejects names containing shell metacharacters or suspicious patterns.
+func ValidateBranchName(branch string) bool {
+	if branch == "" {
+		return false
+	}
+	// Reject any branch name containing characters that could be
+	// used for argument injection or shell metacharacters.
+	for _, c := range branch {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '/' || c == '-' || c == '_' || c == '.':
+		default:
+			return false
+		}
+	}
+	// Reject names starting with '-' (argument injection).
+	if strings.HasPrefix(branch, "-") {
+		return false
+	}
+	return true
 }

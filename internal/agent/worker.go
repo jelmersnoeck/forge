@@ -129,7 +129,7 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		var emit func(types.OutboundEvent)
-		turnToolsUsed := false
+		turnToolsUsed := false // reset each turn; tracks whether any tool_use event fired
 		emit = func(event types.OutboundEvent) {
 			if event.ID == "" {
 				event.ID = uuid.New().String()
@@ -441,6 +441,13 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 // logged, pr_url not emitted, session continues.
 func (w *Worker) ensurePR(ctx context.Context, prov types.LLMProvider, specPath string, emit func(types.OutboundEvent)) {
 	if !w.ghAvailable {
+		return
+	}
+
+	// If the parent context is already cancelled (e.g., shutdown in progress),
+	// skip PR operations entirely instead of creating a confusing timeout error.
+	if ctx.Err() != nil {
+		log.Printf("[agent:%s] ensurePR: parent context cancelled (%v), skipping", w.sessionID, ctx.Err())
 		return
 	}
 

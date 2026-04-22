@@ -10,7 +10,7 @@ import (
 
 func TestExistingPRURL_NotGitRepo(t *testing.T) {
 	r := require.New(t)
-	url := existingPRURL(t.TempDir())
+	url := existingPRURL(context.Background(), t.TempDir())
 	r.Empty(url, "should return empty for non-git repo")
 }
 
@@ -26,7 +26,7 @@ func TestExistingPRURL_NoGH(t *testing.T) {
 	run(t, local, "git", "add", ".")
 	run(t, local, "git", "commit", "-m", "add paintball arena")
 
-	url := existingPRURL(local)
+	url := existingPRURL(context.Background(), local)
 	r.Empty(url, "should return empty when gh is not installed")
 }
 
@@ -93,6 +93,6 @@ func TestEnsurePR_ExistingPRDetection(t *testing.T) {
 	run(t, local, "git", "commit", "-m", "add existing feature")
 
 	// existingPRURL should return "" since there's no GH remote
-	url := existingPRURL(local)
+	url := existingPRURL(context.Background(), local)
 	r.Empty(url, "no PR exists for this local-only repo")
 }

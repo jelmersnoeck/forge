@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -48,6 +49,11 @@ const maxDiffLen = 8000
 //
 // Deprecated: Use EnsurePR instead, which handles both creation and update.
 func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
+	return createNewPR(ctx, prov, cwd, specPath)
+}
+
+// createNewPR is the internal implementation for creating a new PR.
+func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
 	// Check preconditions.
 	ok, reason := shouldCreatePR(cwd)
 	if !ok {
@@ -58,31 +64,31 @@ func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string)
 	base := detectDefaultBranchSafe(cwd)
 
 	// Fetch latest base branch.
-	if _, stderr, err := tools.GitOutputFull(cwd, "fetch", "origin", base); err != nil {
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "fetch", "origin", base); err != nil {
 		return PRResult{Error: fmt.Errorf("fetch origin/%s: %s", base, stderr)}
 	}
 
 	// Rebase onto latest base.
-	if _, stderr, err := tools.GitOutputFull(cwd, "rebase", "origin/"+base); err != nil {
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "rebase", "origin/"+base); err != nil {
 		_ = tools.RunGitCmd(cwd, "rebase", "--abort")
 		return PRResult{Error: fmt.Errorf("rebase onto origin/%s failed: %s", base, stderr)}
 	}
 
 	// Verify there are changes after rebase.
-	diffStat, _ := tools.GitOutput(cwd, "diff", "--stat", "origin/"+base+"...HEAD")
+	diffStat, _ := tools.GitOutputCtx(ctx, cwd, "diff", "--stat", "origin/"+base+"...HEAD")
 	if diffStat == "" {
 		return PRResult{Error: fmt.Errorf("no changes after rebase")}
 	}
 
 	// Push with --force-with-lease.
-	if _, stderr, err := tools.GitOutputFull(cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
 		return PRResult{Error: fmt.Errorf("push failed: %s", stderr)}
 	}
 
 	// Gather context for title/body generation.
-	diff, _ := tools.GitOutput(cwd, "diff", "origin/"+base+"...HEAD")
-	commitLog, _ := tools.GitOutput(cwd, "log", "origin/"+base+"..HEAD", "--oneline")
-	branch, _ := tools.GitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	diff, _ := tools.GitOutputCtx(ctx, cwd, "diff", "origin/"+base+"...HEAD")
+	commitLog, _ := tools.GitOutputCtx(ctx, cwd, "log", "origin/"+base+"..HEAD", "--oneline")
+	branch, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "--abbrev-ref", "HEAD")
 
 	var specContent string
 	if specPath != "" {
@@ -388,7 +394,7 @@ func truncateForLog(s string, maxLen int) string {
 //	 no PR    has PR
 //	   │         │
 //	   ▼         ▼
-//	 CreatePR  push --force-with-lease
+//	 createNewPR  push --force-with-lease
 //	   │         │
 //	   ▼         ▼
 //	 PRResult  PRResult{URL: existing}
@@ -405,12 +411,12 @@ func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string)
 	}
 
 	// Check for existing PR.
-	existing := existingPRURL(cwd)
+	existing := existingPRURL(ctx, cwd)
 
 	switch existing {
 	case "":
 		// No existing PR — create one via the full workflow.
-		return CreatePR(ctx, prov, cwd, specPath)
+		return createNewPR(ctx, prov, cwd, specPath)
 
 	default:
 		// PR exists — push any new commits and return existing URL.
@@ -418,40 +424,107 @@ func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string)
 	}
 }
 
+// PROperationError describes a specific git/gh operation failure during
+// ensureExistingPR, providing actionable context for debugging.
+type PROperationError struct {
+	Operation string // e.g., "fetch", "rebase", "push"
+	Stderr    string // raw stderr from the command
+	Err       error  // underlying error
+}
+
+func (e *PROperationError) Error() string {
+	if e.Stderr != "" {
+		return fmt.Sprintf("%s failed: %s (%v)", e.Operation, e.Stderr, e.Err)
+	}
+	return fmt.Sprintf("%s failed: %v", e.Operation, e.Err)
+}
+
+func (e *PROperationError) Unwrap() error { return e.Err }
+
 // ensureExistingPR pushes new commits to an existing PR.
-// Skips push if there's nothing new to push.
+// Skips push if there's nothing new to push. Returns structured errors
+// for operation failures to aid production debugging.
 func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
+	// Verify we're in a git repository.
+	if err := tools.RunGitCmd(cwd, "rev-parse", "--git-dir"); err != nil {
+		return PRResult{Error: fmt.Errorf("not a git repository: %w", err)}
+	}
+
 	base := detectDefaultBranchSafe(cwd)
 
-	// Fetch + rebase (best-effort — if it fails, still return existing URL).
-	if _, _, err := tools.GitOutputFull(cwd, "fetch", "origin", base); err != nil {
-		log.Printf("[pr] fetch failed (continuing with push): %v", err)
-	} else if _, stderr, err := tools.GitOutputFull(cwd, "rebase", "origin/"+base); err != nil {
-		log.Printf("[pr] rebase failed (aborting rebase, continuing): %s", stderr)
+	// Fetch + rebase (best-effort — if it fails, still try to push with existing state).
+	var opErrors []*PROperationError
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "fetch", "origin", base); err != nil {
+		opErr := &PROperationError{Operation: "fetch origin/" + base, Stderr: stderr, Err: err}
+		opErrors = append(opErrors, opErr)
+		log.Printf("[pr] %v", opErr)
+	} else if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "rebase", "origin/"+base); err != nil {
+		opErr := &PROperationError{Operation: "rebase origin/" + base, Stderr: stderr, Err: err}
+		opErrors = append(opErrors, opErr)
+		log.Printf("[pr] %v", opErr)
 		_ = tools.RunGitCmd(cwd, "rebase", "--abort")
 	}
 
 	// Check if we have unpushed commits.
-	branch, _ := tools.GitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
-	localSHA, _ := tools.GitOutput(cwd, "rev-parse", "HEAD")
-	remoteSHA, _ := tools.GitOutput(cwd, "rev-parse", "origin/"+branch)
+	branch, err := tools.GitOutputCtx(ctx, cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return PRResult{URL: prURL, Error: fmt.Errorf("cannot determine branch: %w", err)}
+	}
 
+	if !tools.ValidateBranchName(branch) {
+		return PRResult{URL: prURL, Error: fmt.Errorf("invalid branch name %q", branch)}
+	}
+
+	localSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "HEAD")
+	remoteSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "origin/"+branch)
+
+	// Only push if local and remote differ AND there are actual commits to push.
 	if localSHA != "" && localSHA != remoteSHA {
-		if _, stderr, err := tools.GitOutputFull(cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
-			log.Printf("[pr] push failed: %s", stderr)
-			// Still return existing URL — the PR exists even if push failed.
+		unpushed, _ := tools.GitOutputCtx(ctx, cwd, "rev-list", "--count", "origin/"+branch+"..HEAD")
+		if unpushed != "" && unpushed != "0" {
+			if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
+				opErr := &PROperationError{
+					Operation: "push --force-with-lease",
+					Stderr:    stderr,
+					Err:       err,
+				}
+				opErrors = append(opErrors, opErr)
+				log.Printf("[pr] %v (check auth, permissions, network)", opErr)
+			}
 		}
+	}
+
+	// If all operations failed, return the combined error for visibility.
+	if len(opErrors) > 0 {
+		var msgs []string
+		for _, e := range opErrors {
+			msgs = append(msgs, e.Error())
+		}
+		log.Printf("[pr] ensureExistingPR completed with %d operation error(s): %s",
+			len(opErrors), strings.Join(msgs, "; "))
 	}
 
 	return PRResult{URL: prURL}
 }
 
 // existingPRURL checks if a PR already exists for the current branch.
-// Returns the PR URL or "" if none exists.
-func existingPRURL(cwd string) string {
-	out, err := tools.GHOutput(cwd, "pr", "view", "--json", "url", "--jq", ".url")
+// Returns the PR URL or "" if none exists. Respects context cancellation.
+func existingPRURL(ctx context.Context, cwd string) string {
+	// Try with --jq first (modern gh), fall back to raw JSON parse.
+	out, err := tools.GHOutputCtx(ctx, cwd, "pr", "view", "--json", "url", "--jq", ".url")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(out)
+	result := strings.TrimSpace(out)
+
+	// Validate the output looks like a URL to avoid injection.
+	if result == "" {
+		return ""
+	}
+	parsed, err := url.Parse(result)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		log.Printf("[pr] existingPRURL got invalid URL %q, ignoring", result)
+		return ""
+	}
+	return result
 }
