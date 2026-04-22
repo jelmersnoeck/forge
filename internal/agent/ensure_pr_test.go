@@ -110,8 +110,12 @@ func TestEnsurePR_SkippedWhenParentContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before calling
 
+	start := time.Now()
 	w.ensurePR(ctx, nil, "", emit)
+	elapsed := time.Since(start)
 
-	// No events — should bail immediately on cancelled context.
+	// Should bail immediately on cancelled context — no pr_url, no long wait.
 	r.Empty(events, "should not emit any events when parent context is cancelled")
+	// Verify it bailed fast rather than timing out after 30s.
+	r.Less(elapsed, 2*time.Second, "should skip immediately, not wait for timeout")
 }

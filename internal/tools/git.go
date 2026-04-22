@@ -139,5 +139,19 @@ func ValidateBranchName(branch string) bool {
 	if strings.HasPrefix(branch, "-") {
 		return false
 	}
+
+	// Reject path traversal patterns and git-forbidden sequences.
+	// Git itself forbids ".." in refs, and leading dots hide files.
+	for _, segment := range strings.Split(branch, "/") {
+		switch {
+		case segment == "..":
+			return false
+		case strings.HasPrefix(segment, "."):
+			return false
+		case strings.HasSuffix(segment, ".."):
+			return false
+		}
+	}
+
 	return true
 }

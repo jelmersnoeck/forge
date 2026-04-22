@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,10 +19,11 @@ import (
 
 // PRResult holds the output of deterministic PR creation.
 type PRResult struct {
-	URL   string // GitHub PR URL (empty on failure)
-	Title string // generated title
-	Body  string // generated description
-	Error error  // nil on success
+	URL             string              // GitHub PR URL (empty on failure)
+	Title           string              // generated title
+	Body            string              // generated description
+	Error           error               // nil on success
+	OperationErrors []*PROperationError // non-fatal operation failures during ensure
 }
 
 // prGenerationTimeout is the per-attempt timeout for title/body generation.
@@ -368,6 +370,31 @@ var genericTitles = []string{
 	"quick fix", "hotfix", "patch", "test", "tests",
 }
 
+// prURLPattern matches common pull request / merge request URL paths:
+//   - GitHub:         /owner/repo/pull/N
+//   - GitLab:         /org/repo/-/merge_requests/N
+//   - Bitbucket:      /org/repo/pull-requests/N
+//   - Azure DevOps:   /org/project/_git/repo/pullrequest/N
+var prURLPattern = regexp.MustCompile(`(?i)/(pull|merge_requests|pull-requests|pullrequest)/\d+`)
+
+// isValidPRURL checks that a string is an HTTP(S) URL pointing to a
+// pull request or merge request on a known forge.
+func isValidPRURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return false
+	}
+	if parsed.Host == "" {
+		return false
+	}
+	return prURLPattern.MatchString(parsed.Path)
+}
+
 // truncateForLog truncates a string for log output.
 func truncateForLog(s string, maxLen int) string {
 	if len(s) <= maxLen {
@@ -434,12 +461,35 @@ type PROperationError struct {
 
 func (e *PROperationError) Error() string {
 	if e.Stderr != "" {
-		return fmt.Sprintf("%s failed: %s (%v)", e.Operation, e.Stderr, e.Err)
+		return fmt.Sprintf("%s failed: %s (%v)", e.Operation, sanitizeStderr(e.Stderr), e.Err)
 	}
 	return fmt.Sprintf("%s failed: %v", e.Operation, e.Err)
 }
 
 func (e *PROperationError) Unwrap() error { return e.Err }
+
+// sensitivePatterns matches tokens, passwords, and credentials in stderr output.
+var sensitivePatterns = []string{
+	// GitHub OAuth/PAT tokens
+	`gho_[A-Za-z0-9_]+`,
+	`ghp_[A-Za-z0-9_]+`,
+	`ghs_[A-Za-z0-9_]+`,
+	`github_pat_[A-Za-z0-9_]+`,
+	// Generic bearer tokens
+	`Bearer [A-Za-z0-9._\-]+`,
+	// Basic auth in URLs: https://user:password@host
+	`://[^@/\s]+:[^@/\s]+@`,
+}
+
+// sanitizeStderr strips credentials, tokens, and auth info from stderr output.
+func sanitizeStderr(stderr string) string {
+	result := stderr
+	for _, pattern := range sensitivePatterns {
+		re := regexp.MustCompile(pattern)
+		result = re.ReplaceAllString(result, "[REDACTED]")
+	}
+	return result
+}
 
 // ensureExistingPR pushes new commits to an existing PR.
 // Skips push if there's nothing new to push. Returns structured errors
@@ -475,22 +525,16 @@ func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
 		return PRResult{URL: prURL, Error: fmt.Errorf("invalid branch name %q", branch)}
 	}
 
-	localSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "HEAD")
-	remoteSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "origin/"+branch)
-
-	// Only push if local and remote differ AND there are actual commits to push.
-	if localSHA != "" && localSHA != remoteSHA {
-		unpushed, _ := tools.GitOutputCtx(ctx, cwd, "rev-list", "--count", "origin/"+branch+"..HEAD")
-		if unpushed != "" && unpushed != "0" {
-			if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
-				opErr := &PROperationError{
-					Operation: "push --force-with-lease",
-					Stderr:    stderr,
-					Err:       err,
-				}
-				opErrors = append(opErrors, opErr)
-				log.Printf("[pr] %v (check auth, permissions, network)", opErr)
+	// Push if there are unpushed commits.
+	if hasUnpushedCommits(ctx, cwd, branch) {
+		if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
+			opErr := &PROperationError{
+				Operation: "push --force-with-lease",
+				Stderr:    stderr,
+				Err:       err,
 			}
+			opErrors = append(opErrors, opErr)
+			log.Printf("[pr] %v (check auth, permissions, network)", opErr)
 		}
 	}
 
@@ -504,7 +548,23 @@ func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
 			len(opErrors), strings.Join(msgs, "; "))
 	}
 
-	return PRResult{URL: prURL}
+	return PRResult{URL: prURL, OperationErrors: opErrors}
+}
+
+// hasUnpushedCommits reports whether the local branch has commits not yet
+// pushed to origin. Returns false if local/remote SHAs match or if
+// rev-list reports zero unpushed commits.
+func hasUnpushedCommits(ctx context.Context, cwd, branch string) bool {
+	localSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "HEAD")
+	if localSHA == "" {
+		return false
+	}
+	remoteSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "origin/"+branch)
+	if localSHA == remoteSHA {
+		return false
+	}
+	count, _ := tools.GitOutputCtx(ctx, cwd, "rev-list", "--count", "origin/"+branch+"..HEAD")
+	return count != "" && count != "0"
 }
 
 // existingPRURL checks if a PR already exists for the current branch.
@@ -517,13 +577,12 @@ func existingPRURL(ctx context.Context, cwd string) string {
 	}
 	result := strings.TrimSpace(out)
 
-	// Validate the output looks like a URL to avoid injection.
+	// Validate the output looks like a PR/MR URL.
 	if result == "" {
 		return ""
 	}
-	parsed, err := url.Parse(result)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		log.Printf("[pr] existingPRURL got invalid URL %q, ignoring", result)
+	if !isValidPRURL(result) {
+		log.Printf("[pr] existingPRURL got non-PR URL %q, ignoring", result)
 		return ""
 	}
 	return result

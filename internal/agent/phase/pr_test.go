@@ -2,6 +2,7 @@ package phase
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/tools"
@@ -82,6 +83,85 @@ func TestPROperationError(t *testing.T) {
 			r := require.New(t)
 			r.Equal(tc.want, tc.err.Error())
 			r.ErrorIs(tc.err, tc.err.Err)
+		})
+	}
+}
+
+func TestPROperationError_SanitizesStderr(t *testing.T) {
+	tests := map[string]struct {
+		stderr     string
+		wantAbsent string
+	}{
+		"strips auth tokens": {
+			stderr:     "remote: Invalid username or password.\nfatal: Authentication failed for 'https://oauth2:gho_s3cr3tT0k3n@github.com/owner/repo.git/'",
+			wantAbsent: "gho_s3cr3tT0k3n",
+		},
+		"strips bearer tokens": {
+			stderr:     "fatal: unable to access 'https://github.com/': The requested URL returned error: 403\nAuthorization: Bearer ghp_abc123secret456",
+			wantAbsent: "ghp_abc123secret456",
+		},
+		"strips basic auth in URL": {
+			stderr:     "fatal: Authentication failed for 'https://user:password123@github.com/repo.git/'",
+			wantAbsent: "password123",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			opErr := &PROperationError{
+				Operation: "push",
+				Stderr:    tc.stderr,
+				Err:       fmt.Errorf("exit status 128"),
+			}
+			msg := opErr.Error()
+			r.NotContains(msg, tc.wantAbsent)
+		})
+	}
+}
+
+func TestEnsureExistingPR_ReturnsOperationErrors(t *testing.T) {
+	r := require.New(t)
+
+	// ensureExistingPR on a real git repo with no remote will fail fetch.
+	// The operation errors should be accessible in the result.
+	dir := t.TempDir()
+	run(t, dir, "git", "init", "-b", "main")
+	writeTestFile(t, dir, "README.md", "# Greendale Community College")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "initial commit")
+
+	// Create a branch so it's not on main.
+	run(t, dir, "git", "checkout", "-b", "jelmer/test-feature")
+
+	result := ensureExistingPR(context.Background(), dir, "https://github.com/test/repo/pull/1")
+	// Should still return the PR URL even with operation errors.
+	r.Equal("https://github.com/test/repo/pull/1", result.URL)
+	// Should have operation errors attached.
+	r.NotEmpty(result.OperationErrors, "should capture fetch/rebase failures")
+}
+
+func TestValidatePRURL(t *testing.T) {
+	tests := map[string]struct {
+		url  string
+		want bool
+	}{
+		"github PR":         {url: "https://github.com/owner/repo/pull/42", want: true},
+		"github enterprise": {url: "https://github.example.com/org/repo/pull/1", want: true},
+		"gitlab MR":         {url: "https://gitlab.com/org/repo/-/merge_requests/5", want: true},
+		"random URL":        {url: "https://example.com/hello", want: false},
+		"not https":         {url: "http://github.com/owner/repo/pull/1", want: true},
+		"ftp scheme":        {url: "ftp://github.com/owner/repo/pull/1", want: false},
+		"empty":             {url: "", want: false},
+		"not a URL":         {url: "not-a-url", want: false},
+		"bitbucket PR":      {url: "https://bitbucket.org/org/repo/pull-requests/3", want: true},
+		"azure devops PR":   {url: "https://dev.azure.com/org/project/_git/repo/pullrequest/1", want: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, isValidPRURL(tc.url))
 		})
 	}
 }

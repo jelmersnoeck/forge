@@ -75,6 +75,7 @@ func TestValidateBranchName(t *testing.T) {
 		"simple feature":      {branch: "jelmer/add-feature", want: true},
 		"dots allowed":        {branch: "release/1.0.0", want: true},
 		"underscores allowed": {branch: "fix_bug_123", want: true},
+		"dot in middle":       {branch: "v1.2.3-rc.1", want: true},
 		"empty":               {branch: "", want: false},
 		"starts with dash":    {branch: "-malicious", want: false},
 		"shell metachar $":    {branch: "branch$(whoami)", want: false},
@@ -83,6 +84,12 @@ func TestValidateBranchName(t *testing.T) {
 		"space":               {branch: "branch name", want: false},
 		"pipe":                {branch: "branch|cat", want: false},
 		"ampersand":           {branch: "branch&echo", want: false},
+		"path traversal":      {branch: "../../../etc/passwd", want: false},
+		"hidden traversal":    {branch: "feature/../../../etc", want: false},
+		"double dot segment":  {branch: "foo/..bar", want: false},
+		"trailing double dot": {branch: "branch..", want: false},
+		"just double dot":     {branch: "..", want: false},
+		"starts with dot":     {branch: ".hidden", want: false},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
