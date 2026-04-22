@@ -73,14 +73,29 @@ lightweight LLM call only for generating the PR title and description.
 
 // PRResult holds the output of deterministic PR creation.
 type PRResult struct {
-    URL   string // GitHub PR URL (empty on failure)
-    Title string // generated title
-    Body  string // generated description
-    Error error  // nil on success
+    URL             string              // GitHub PR URL (empty on failure)
+    Title           string              // generated title
+    Body            string              // generated description
+    Error           error               // nil on success
+    OperationErrors []*PROperationError // non-fatal operation failures during ensure
+}
+
+// PROperationError describes a specific git/gh operation failure during
+// ensureExistingPR, providing actionable context for debugging.
+// Stderr is sanitized to strip credentials/tokens before inclusion in Error().
+type PROperationError struct {
+    Operation string // e.g., "fetch", "rebase", "push"
+    Stderr    string // raw stderr from the command
+    Err       error  // underlying error
 }
 
 // CreatePR performs the full PR creation workflow deterministically.
+// Deprecated: Use EnsurePR instead, which handles both creation and update.
 func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult
+
+// EnsurePR creates a new PR or updates an existing one.
+// Returns the PR URL on success. Errors are logged, not propagated.
+func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult
 
 // generatePRContent uses a cheap LLM call to produce a title and description.
 func generatePRContent(ctx context.Context, prov types.LLMProvider, diff, commitLog, specContent string) (title, body string, err error)
@@ -93,6 +108,14 @@ func fallbackPRContent(branch, commitLog, diffStat, specContent string) (title, 
 
 // ghCreatePR calls gh pr create --draft and returns the PR URL.
 func ghCreatePR(ctx context.Context, cwd, title, body, baseBranch string) (string, error)
+
+// hasUnpushedCommits reports whether the local branch has commits not yet
+// pushed to origin.
+func hasUnpushedCommits(ctx context.Context, cwd, branch string) bool
+
+// isValidPRURL checks that a string is an HTTP(S) URL pointing to a
+// pull request or merge request on a known forge (GitHub, GitLab, Bitbucket, Azure DevOps).
+func isValidPRURL(raw string) bool
 ```
 
 ```go
@@ -103,6 +126,11 @@ func RunGitCmd(cwd string, args ...string) error
 func GitOutput(cwd string, args ...string) (string, error)
 func GitOutputFull(cwd string, args ...string) (string, string, error)
 func GHOutput(cwd string, args ...string) (string, error)
+
+// ValidateBranchName checks that a git branch name is safe to use in commands.
+// Rejects shell metacharacters, argument injection (-prefix), path traversal
+// (.. components), and git-forbidden patterns (dot-prefixed components).
+func ValidateBranchName(branch string) bool
 ```
 
 ## Edge Cases
@@ -115,7 +143,16 @@ func GHOutput(cwd string, args ...string) (string, error)
 - LLM call fails entirely (API error, timeout): use deterministic fallback
   title/description from spec summary + commit log.
 - Spec content unreadable: generate PR content from diff + commit log only.
-- PR already exists for branch: `gh pr create` fails, logged, pipeline continues.
+- PR already exists for branch: EnsurePR detects it via `gh pr view`, pushes
+  any new commits, and returns the existing URL. Operation errors are captured
+  in PRResult.OperationErrors for debugging.
 - No ANTHROPIC_API_KEY for Haiku call: use the existing provider from opts
   (it already has auth); fall back to deterministic content if provider fails.
 - Context cancelled mid-finalize: standard cancellation — abort and return.
+  ensurePR in the worker detects pre-cancelled context and skips immediately.
+- Path traversal in branch names: ValidateBranchName rejects `..` components,
+  dot-prefixed segments, and trailing `..` patterns matching git's ref-format rules.
+- Sensitive stderr: PROperationError.Error() sanitizes stderr to strip GitHub
+  tokens (gho_, ghp_, ghs_, github_pat_), bearer tokens, and basic auth in URLs.
+- Non-PR URLs from gh output: existingPRURL validates the URL matches known
+  PR/MR path patterns (GitHub /pull/N, GitLab /merge_requests/N, etc.).
