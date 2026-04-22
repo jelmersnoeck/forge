@@ -1,6 +1,6 @@
 ---
 id: docs-auto-update-builtin
-status: draft
+status: implemented
 ---
 # Bake documentation auto-update into agent core behavior
 
@@ -14,7 +14,8 @@ making it a universal behavior across all sessions regardless of repository.
 - `internal/agent/phase/prompts.go` — phase-specific prompts (`coderPrompt`)
 - `internal/agent/phase/prompts.go:PromptForPhase()` — dispatch function
 - `internal/runtime/prompt/prompt_test.go` — tests for prompt assembly
-- `.forge/rules/docs-auto-update.md` — current forge-specific rule (to be deleted)
+- `internal/agent/phase/phase_test.go` — tests for phase prompts (new tests added)
+- `.forge/rules/docs-auto-update.md` — former forge-specific rule (deleted)
 
 ## Behavior
 1. The coder phase prompt (`coderPrompt` in `internal/agent/phase/prompts.go`)
