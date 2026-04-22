@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/tools"
@@ -370,12 +371,36 @@ var genericTitles = []string{
 	"quick fix", "hotfix", "patch", "test", "tests",
 }
 
-// prURLPattern matches common pull request / merge request URL paths:
-//   - GitHub:         /owner/repo/pull/N
-//   - GitLab:         /org/repo/-/merge_requests/N
-//   - Bitbucket:      /org/repo/pull-requests/N
-//   - Azure DevOps:   /org/project/_git/repo/pullrequest/N
-var prURLPattern = regexp.MustCompile(`(?i)/(pull|merge_requests|pull-requests|pullrequest)/\d+`)
+// --- PR operation metrics (atomic counters for production observability) ---
+
+// prPushFailures tracks how often git push --force-with-lease fails.
+var prPushFailures int64
+
+// prInvalidURLResponses tracks how often gh pr view returns non-PR URLs.
+var prInvalidURLResponses int64
+
+// prURLPathSegments maps forge name to URL path segment used in PR/MR URLs.
+//
+//   - GitHub:       /owner/repo/pull/N
+//   - GitLab:       /org/repo/-/merge_requests/N
+//   - Bitbucket:    /org/repo/pull-requests/N
+//   - Azure DevOps: /org/project/_git/repo/pullrequest/N
+var prURLPathSegments = map[string]string{
+	"github":       "pull",
+	"gitlab":       "merge_requests",
+	"bitbucket":    "pull-requests",
+	"azure_devops": "pullrequest",
+}
+
+// prURLPattern matches common pull request / merge request URL paths.
+// Built from prURLPathSegments at init time.
+var prURLPattern = func() *regexp.Regexp {
+	segments := make([]string, 0, len(prURLPathSegments))
+	for _, seg := range prURLPathSegments {
+		segments = append(segments, regexp.QuoteMeta(seg))
+	}
+	return regexp.MustCompile(`(?i)/(` + strings.Join(segments, "|") + `)/\d+`)
+}()
 
 // isValidPRURL checks that a string is an HTTP(S) URL pointing to a
 // pull request or merge request on a known forge.
@@ -481,11 +506,21 @@ var sensitivePatterns = []string{
 	`://[^@/\s]+:[^@/\s]+@`,
 }
 
-// sanitizeStderr strips credentials, tokens, and auth info from stderr output.
+// compiledSensitivePatterns holds pre-compiled regexes for credential redaction.
+// Built once at package init from sensitivePatterns.
+var compiledSensitivePatterns = func() []*regexp.Regexp {
+	compiled := make([]*regexp.Regexp, len(sensitivePatterns))
+	for i, p := range sensitivePatterns {
+		compiled[i] = regexp.MustCompile(p)
+	}
+	return compiled
+}()
+
+// sanitizeStderr strips credentials, tokens, and auth info from stderr output
+// using pre-compiled regex patterns.
 func sanitizeStderr(stderr string) string {
 	result := stderr
-	for _, pattern := range sensitivePatterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range compiledSensitivePatterns {
 		result = re.ReplaceAllString(result, "[REDACTED]")
 	}
 	return result
@@ -526,15 +561,23 @@ func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
 	}
 
 	// Push if there are unpushed commits.
-	if hasUnpushedCommits(ctx, cwd, branch) {
+	has, unpushErr := hasUnpushedCommits(ctx, cwd, branch)
+	if unpushErr != nil {
+		opErr := &PROperationError{Operation: "check unpushed commits", Err: unpushErr}
+		opErrors = append(opErrors, opErr)
+		log.Printf("[pr] %v", opErr)
+	}
+	if has {
 		if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
+			atomic.AddInt64(&prPushFailures, 1)
 			opErr := &PROperationError{
 				Operation: "push --force-with-lease",
 				Stderr:    stderr,
 				Err:       err,
 			}
 			opErrors = append(opErrors, opErr)
-			log.Printf("[pr] %v (check auth, permissions, network)", opErr)
+			log.Printf("[pr] push_failure_count=%d %v (check auth, permissions, network)",
+				atomic.LoadInt64(&prPushFailures), opErr)
 		}
 	}
 
@@ -552,19 +595,29 @@ func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
 }
 
 // hasUnpushedCommits reports whether the local branch has commits not yet
-// pushed to origin. Returns false if local/remote SHAs match or if
-// rev-list reports zero unpushed commits.
-func hasUnpushedCommits(ctx context.Context, cwd, branch string) bool {
-	localSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "HEAD")
+// pushed to origin. Returns an error if git commands fail (e.g., no remote).
+func hasUnpushedCommits(ctx context.Context, cwd, branch string) (bool, error) {
+	localSHA, err := tools.GitOutputCtx(ctx, cwd, "rev-parse", "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("rev-parse HEAD: %w", err)
+	}
 	if localSHA == "" {
-		return false
+		return false, fmt.Errorf("rev-parse HEAD returned empty")
 	}
-	remoteSHA, _ := tools.GitOutputCtx(ctx, cwd, "rev-parse", "origin/"+branch)
+
+	remoteSHA, err := tools.GitOutputCtx(ctx, cwd, "rev-parse", "origin/"+branch)
+	if err != nil {
+		return false, fmt.Errorf("rev-parse origin/%s: %w", branch, err)
+	}
 	if localSHA == remoteSHA {
-		return false
+		return false, nil
 	}
-	count, _ := tools.GitOutputCtx(ctx, cwd, "rev-list", "--count", "origin/"+branch+"..HEAD")
-	return count != "" && count != "0"
+
+	count, err := tools.GitOutputCtx(ctx, cwd, "rev-list", "--count", "origin/"+branch+"..HEAD")
+	if err != nil {
+		return false, fmt.Errorf("rev-list --count: %w", err)
+	}
+	return count != "" && count != "0", nil
 }
 
 // existingPRURL checks if a PR already exists for the current branch.
@@ -582,7 +635,9 @@ func existingPRURL(ctx context.Context, cwd string) string {
 		return ""
 	}
 	if !isValidPRURL(result) {
-		log.Printf("[pr] existingPRURL got non-PR URL %q, ignoring", result)
+		atomic.AddInt64(&prInvalidURLResponses, 1)
+		log.Printf("[pr] invalid_url_response_count=%d existingPRURL got non-PR URL %q, ignoring",
+			atomic.LoadInt64(&prInvalidURLResponses), result)
 		return ""
 	}
 	return result
