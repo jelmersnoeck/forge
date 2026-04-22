@@ -20,6 +20,11 @@ import (
 
 const maxReviewCycles = 5
 
+// maxFinalizeRecoveries limits retry attempts for finalize.
+// On failure, the error is sent to a coder loop to fix git state,
+// then finalize is retried. Only 1 recovery attempt is allowed.
+const maxFinalizeRecoveries = 1
+
 // Orchestrator chains phases together into a complete workflow.
 type Orchestrator struct {
 	maxReviewCycles int
@@ -372,7 +377,8 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 
 	// Phase 4: Finalize — create PR if there are changes on a feature branch
 	if err := o.runFinalize(ctx, opts, specPath); err != nil {
-		log.Printf("[orchestrator:%s] finalize error (non-fatal): %v", opts.SessionID, err)
+		log.Printf("[orchestrator:%s] finalize error: %v — attempting recovery", opts.SessionID, err)
+		o.recoverFinalize(ctx, opts, specPath, err)
 	}
 
 	return nil
@@ -740,6 +746,62 @@ func (o *Orchestrator) runFinalize(ctx context.Context, opts OrchestratorOpts, s
 
 	o.emitPhaseComplete(opts, "finalize", fmt.Sprintf("PR created: %s", result.URL))
 	return nil
+}
+
+// recoverFinalize attempts to fix git state via a coder loop and retry finalize.
+// If recovery or retry fails, a phase_error event is emitted and the pipeline continues.
+func (o *Orchestrator) recoverFinalize(ctx context.Context, opts OrchestratorOpts, specPath string, finalizeErr error) {
+	// If context is already cancelled, skip recovery entirely.
+	if ctx.Err() != nil {
+		log.Printf("[orchestrator:%s] context cancelled, skipping finalize recovery", opts.SessionID)
+		o.emitPhaseError(opts, finalizeErr)
+		return
+	}
+
+	for attempt := 0; attempt < maxFinalizeRecoveries; attempt++ {
+		prompt := buildFinalizeRecoveryPrompt(finalizeErr)
+		if err := o.runCoderWithMessage(ctx, opts, prompt); err != nil {
+			log.Printf("[orchestrator:%s] finalize recovery coder failed: %v", opts.SessionID, err)
+			o.emitPhaseError(opts, finalizeErr)
+			return
+		}
+
+		retryErr := o.runFinalize(ctx, opts, specPath)
+		if retryErr == nil {
+			return
+		}
+
+		log.Printf("[orchestrator:%s] finalize retry %d failed: %v", opts.SessionID, attempt+1, retryErr)
+		finalizeErr = retryErr
+	}
+
+	o.emitPhaseError(opts, finalizeErr)
+}
+
+// buildFinalizeRecoveryPrompt creates a focused prompt for the coder to fix git state.
+func buildFinalizeRecoveryPrompt(err error) string {
+	return fmt.Sprintf(
+		"The finalize phase (PR creation) failed with the following error:\n\n"+
+			"  %s\n\n"+
+			"Fix the git state so finalize can succeed on retry. Typical fixes:\n"+
+			"- Run `git status` and `git diff` to inspect the situation\n"+
+			"- commit uncommitted changes with an appropriate message\n"+
+			"- Resolve merge/rebase conflicts and continue the rebase\n"+
+			"- Abort a stuck rebase and retry\n\n"+
+			"Do not modify any code files. Only fix the git state (commit, rebase, etc.).\n"+
+			"Do not add new features or refactor anything.",
+		err,
+	)
+}
+
+func (o *Orchestrator) emitPhaseError(opts OrchestratorOpts, err error) {
+	opts.Emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: opts.SessionID,
+		Type:      "phase_error",
+		Content:   fmt.Sprintf("finalize: %v", err),
+		Timestamp: time.Now().UnixMilli(),
+	})
 }
 
 // shouldCreatePR checks if we're in a state where PR creation makes sense.

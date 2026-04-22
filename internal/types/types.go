@@ -26,7 +26,7 @@ type InboundMessage struct {
 // "queue_immediate", "queue_on_complete", "pr_monitor", "pr_url",
 // "task_status", "intent_classified", "ideation_start", "ideation_candidate",
 // "clarification_start", "clarification_question", "planning_start",
-// "planning_selection", "staleness_warning", "staleness_error".
+// "planning_selection", "staleness_warning", "staleness_error", "phase_error".
 type OutboundEvent struct {
 	ID        string      `json:"id"`
 	SessionID string      `json:"sessionId"`
