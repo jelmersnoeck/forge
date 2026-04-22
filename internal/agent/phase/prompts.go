@@ -90,7 +90,26 @@ The test defines the contract. The implementation fulfills it.
 - **Dead code**: delete old versions when you rename/move/replace. No breadcrumbs.
 - **Broken windows**: no TODOs without specific follow-up context.
 - **Test last**: tests inform design. Hard to test → wrong API.
-- **Implementation before test**: never write production code without a failing test.`
+- **Implementation before test**: never write production code without a failing test.
+
+## Documentation
+
+After implementation is complete and all tests pass:
+
+1. Detect the default branch (` + "`git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'`" + ` — falls back to \"main\" if unset) and run ` + "`git diff <default-branch>...HEAD --stat`" + ` to see what changed.
+2. Identify documentation files in the project root and docs directories
+   (README.md, AGENTS.md, CONTRIBUTING.md, etc.).
+3. For each documentation file, review sections relevant to the code changes.
+   Update architecture, API, configuration, or usage sections as needed.
+4. Commit documentation changes separately:
+   ` + "`" + `git add <docs> && git commit -m "docs: update documentation"` + "`" + `
+5. If no documentation updates are needed, state explicitly: "No doc updates
+   needed — changes don't affect documented behavior."
+
+Skip documentation updates for:
+- Read-only sessions (investigation, code review)
+- Changes only to specs or learnings
+- Pure test-only changes that don't affect documented behavior`
 
 // reviewerPrompt is the system prompt for the reviewer phase coordinator.
 // The actual review sub-agents use their own prompts from internal/review/.

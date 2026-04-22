@@ -24,6 +24,17 @@ func TestAssemble_BasePrompt(t *testing.T) {
 	r.Contains(blocks[0].Text, "MUST reconcile the spec")
 }
 
+func TestAssemble_DocumentationSection_NotInBaseOrSpecPrompt(t *testing.T) {
+	r := require.New(t)
+
+	// Assemble with no phase prompt — base + spec only
+	bundle := types.ContextBundle{}
+	blocks := Assemble(bundle, "/greendale/community-college")
+	r.GreaterOrEqual(len(blocks), 1)
+	r.NotContains(blocks[0].Text, "## Documentation",
+		"base/spec prompt should not contain Documentation section")
+}
+
 func TestAssemble_AgentsMD_Instructions(t *testing.T) {
 	r := require.New(t)
 

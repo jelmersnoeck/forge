@@ -156,6 +156,44 @@ func TestPromptForPhase(t *testing.T) {
 	}
 }
 
+func TestCoderPrompt_ContainsDocumentationSection(t *testing.T) {
+	r := require.New(t)
+
+	prompt := PromptForPhase("code")
+
+	// Documentation section must be present in coder prompt
+	r.Contains(prompt, "## Documentation")
+	r.Contains(prompt, "git diff <default-branch>...HEAD --stat")
+	r.Contains(prompt, "README.md, AGENTS.md, CONTRIBUTING.md")
+	r.Contains(prompt, "No doc updates")
+	r.Contains(prompt, "Read-only sessions")
+	r.Contains(prompt, "specs or learnings")
+	r.Contains(prompt, "test-only changes")
+	r.Contains(prompt, `git commit -m "docs: update documentation"`)
+}
+
+func TestDocumentationSection_OnlyInCoderPhase(t *testing.T) {
+	r := require.New(t)
+
+	// Documentation section must NOT appear in non-coder phases
+	nonCoderPhases := []string{"spec", "review", "qa", "plan"}
+	for _, phase := range nonCoderPhases {
+		prompt := PromptForPhase(phase)
+		r.NotContains(prompt, "## Documentation",
+			"phase %q should not contain Documentation section", phase)
+	}
+
+	// Empty phases obviously don't have it
+	for _, phase := range []string{"ideate", "clarify"} {
+		prompt := PromptForPhase(phase)
+		r.Empty(prompt, "phase %q should be empty", phase)
+	}
+
+	// Unknown phase defaults to coder — should have it
+	prompt := PromptForPhase("greendale")
+	r.Contains(prompt, "## Documentation")
+}
+
 func TestInjectPhasePrompt(t *testing.T) {
 	r := require.New(t)
 
