@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,4 +57,67 @@ func writeFile(t *testing.T, dir, name, content string) {
 	path := filepath.Join(dir, name)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+func TestGHAvailable_Cached(t *testing.T) {
+	r := require.New(t)
+	// Repeated calls return the same value (cached via sync.Once).
+	a := GHAvailable()
+	b := GHAvailable()
+	r.Equal(a, b, "cached result must be stable")
+}
+
+func TestValidateBranchName(t *testing.T) {
+	tests := map[string]struct {
+		branch string
+		want   bool
+	}{
+		"simple feature":      {branch: "jelmer/add-feature", want: true},
+		"dots allowed":        {branch: "release/1.0.0", want: true},
+		"underscores allowed": {branch: "fix_bug_123", want: true},
+		"dot in middle":       {branch: "v1.2.3-rc.1", want: true},
+		"empty":               {branch: "", want: false},
+		"starts with dash":    {branch: "-malicious", want: false},
+		"shell metachar $":    {branch: "branch$(whoami)", want: false},
+		"backtick":            {branch: "branch`id`", want: false},
+		"semicolon":           {branch: "branch;rm -rf /", want: false},
+		"space":               {branch: "branch name", want: false},
+		"pipe":                {branch: "branch|cat", want: false},
+		"ampersand":           {branch: "branch&echo", want: false},
+		"path traversal":      {branch: "../../../etc/passwd", want: false},
+		"hidden traversal":    {branch: "feature/../../../etc", want: false},
+		"double dot segment":  {branch: "foo/..bar", want: false},
+		"trailing double dot": {branch: "branch..", want: false},
+		"just double dot":     {branch: "..", want: false},
+		"starts with dot":     {branch: ".hidden", want: false},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, ValidateBranchName(tc.branch))
+		})
+	}
+}
+
+func TestGitOutputCtx_CancelledContext(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir, "main")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := GitOutputCtx(ctx, dir, "rev-parse", "HEAD")
+	r.Error(err, "cancelled context should cause error")
+}
+
+func TestGitOutputFullCtx_Works(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir, "main")
+
+	stdout, stderr, err := GitOutputFullCtx(context.Background(), dir, "rev-parse", "HEAD")
+	r.NoError(err)
+	r.NotEmpty(stdout, "should return a commit SHA")
+	r.Empty(stderr)
 }

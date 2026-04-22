@@ -117,6 +117,11 @@ func (l *Loop) TotalUsage() types.TokenUsage {
 	return l.totalUsage
 }
 
+// ToolsUsed returns whether any tool was executed during this loop's lifetime.
+func (l *Loop) ToolsUsed() bool {
+	return l.toolsUsed
+}
+
 // Model returns the model being used.
 func (l *Loop) Model() string {
 	return l.model

@@ -812,6 +812,43 @@ func TestLoop_StreamError_MaxCompact(t *testing.T) {
 	r.Contains(err.Error(), "prompt too long after 3 compaction attempts")
 }
 
+func TestLoop_ToolsUsed_TrueAfterToolExecution(t *testing.T) {
+	r := require.New(t)
+
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "Cool cool cool"}},
+			}, nil
+		},
+	})
+
+	l := makeLoop(t, &MockToolProvider{}, registry)
+	r.False(l.ToolsUsed(), "should be false before any tool execution")
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "Read something for Troy Barnes", emit)
+	r.NoError(err)
+
+	r.True(l.ToolsUsed(), "should be true after tool execution")
+}
+
+func TestLoop_ToolsUsed_FalseForTextOnly(t *testing.T) {
+	r := require.New(t)
+
+	l := makeLoop(t, &MockTextProvider{}, tools.NewRegistry())
+	r.False(l.ToolsUsed(), "should be false before any execution")
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "Just chatting at Greendale", emit)
+	r.NoError(err)
+
+	r.False(l.ToolsUsed(), "should remain false when no tools executed")
+}
+
 func TestLoop_OnComplete_CalledAfterToolUse(t *testing.T) {
 	r := require.New(t)
 
