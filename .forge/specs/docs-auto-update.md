@@ -1,6 +1,6 @@
 ---
 id: docs-auto-update
-status: draft
+status: implemented
 ---
 # Auto-update AGENTS.md and README.md after every coding session
 
