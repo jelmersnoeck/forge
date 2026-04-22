@@ -32,6 +32,7 @@ type Worker struct {
 	sessionsDir string
 	mode        string // "swe" (default), "spec", "code", "review"
 	specPath    string // spec file path for --spec flag
+	ghAvailable bool   // cached exec.LookPath("gh") result
 }
 
 // NewWorker creates a new Worker.
@@ -43,6 +44,7 @@ func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath string) *Wo
 		sessionsDir: sessionsDir,
 		mode:        mode,
 		specPath:    specPath,
+		ghAvailable: tools.GHAvailable(),
 	}
 }
 
@@ -127,6 +129,7 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		var emit func(types.OutboundEvent)
+		turnToolsUsed := false
 		emit = func(event types.OutboundEvent) {
 			if event.ID == "" {
 				event.ID = uuid.New().String()
@@ -145,11 +148,16 @@ func (w *Worker) Run(ctx context.Context) {
 			case "queue_on_complete":
 				w.hub.EnqueueCompletion(event.Content)
 			case "tool_use":
+				turnToolsUsed = true
 				// After any tool use, execute immediate queue
 				w.executeImmediateQueue(ctx, registry, historyID, emit)
 			case "done":
 				// Before done event, execute completion queue
 				w.executeCompletionQueue(ctx, registry, historyID, emit)
+				// Deterministic PR ensure step — runs before done reaches CLI.
+				if turnToolsUsed {
+					w.ensurePR(ctx, prov, w.specPath, emit)
+				}
 			}
 
 			w.hub.PublishEvent(event)
@@ -424,6 +432,32 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 			Type:     "queued_task_result",
 			Content:  fmt.Sprintf("[%s queue] %s\n%s", queueType, command, result.Content[0].Text),
 			ToolName: "Bash",
+		})
+	}
+}
+
+// ensurePR runs the deterministic PR creation/update step.
+// Called after every turn that executed tools. Non-fatal: failures are
+// logged, pr_url not emitted, session continues.
+func (w *Worker) ensurePR(ctx context.Context, prov types.LLMProvider, specPath string, emit func(types.OutboundEvent)) {
+	if !w.ghAvailable {
+		return
+	}
+
+	// 30s timeout so a hung gh/git call doesn't block done forever.
+	prCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	result := phase.EnsurePR(prCtx, prov, w.cwd, specPath)
+	if result.Error != nil {
+		log.Printf("[agent:%s] ensurePR: %v", w.sessionID, result.Error)
+		return
+	}
+
+	if result.URL != "" {
+		emit(types.OutboundEvent{
+			Type:    "pr_url",
+			Content: result.URL,
 		})
 	}
 }

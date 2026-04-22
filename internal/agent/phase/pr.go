@@ -45,6 +45,8 @@ const maxDiffLen = 8000
 // CreatePR performs the full deterministic PR creation workflow:
 //
 //	preconditions → fetch/rebase/push → LLM-generate title+body → gh pr create
+//
+// Deprecated: Use EnsurePR instead, which handles both creation and update.
 func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
 	// Check preconditions.
 	ok, reason := shouldCreatePR(cwd)
@@ -366,4 +368,90 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// EnsurePR creates a new PR or updates an existing one.
+// Returns the PR URL on success. Non-fatal: errors are logged, not propagated.
+//
+//	┌────────────────┐
+//	│ preconditions   │ git repo? feature branch? has changes?
+//	└───────┬────────┘
+//	        │
+//	        ▼
+//	┌────────────────┐
+//	│ existingPRURL  │ gh pr view → URL or ""
+//	└───────┬────────┘
+//	        │
+//	   ┌────┴────┐
+//	   │         │
+//	   ▼         ▼
+//	 no PR    has PR
+//	   │         │
+//	   ▼         ▼
+//	 CreatePR  push --force-with-lease
+//	   │         │
+//	   ▼         ▼
+//	 PRResult  PRResult{URL: existing}
+func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
+	// Bail if context is already cancelled.
+	if ctx.Err() != nil {
+		return PRResult{Error: fmt.Errorf("skipped: %w", ctx.Err())}
+	}
+
+	// Check preconditions.
+	ok, reason := shouldCreatePR(cwd)
+	if !ok {
+		return PRResult{Error: fmt.Errorf("skipped: %s", reason)}
+	}
+
+	// Check for existing PR.
+	existing := existingPRURL(cwd)
+
+	switch existing {
+	case "":
+		// No existing PR — create one via the full workflow.
+		return CreatePR(ctx, prov, cwd, specPath)
+
+	default:
+		// PR exists — push any new commits and return existing URL.
+		return ensureExistingPR(ctx, cwd, existing)
+	}
+}
+
+// ensureExistingPR pushes new commits to an existing PR.
+// Skips push if there's nothing new to push.
+func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
+	base := detectDefaultBranchSafe(cwd)
+
+	// Fetch + rebase (best-effort — if it fails, still return existing URL).
+	if _, _, err := tools.GitOutputFull(cwd, "fetch", "origin", base); err != nil {
+		log.Printf("[pr] fetch failed (continuing with push): %v", err)
+	} else if _, stderr, err := tools.GitOutputFull(cwd, "rebase", "origin/"+base); err != nil {
+		log.Printf("[pr] rebase failed (aborting rebase, continuing): %s", stderr)
+		_ = tools.RunGitCmd(cwd, "rebase", "--abort")
+	}
+
+	// Check if we have unpushed commits.
+	branch, _ := tools.GitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	localSHA, _ := tools.GitOutput(cwd, "rev-parse", "HEAD")
+	remoteSHA, _ := tools.GitOutput(cwd, "rev-parse", "origin/"+branch)
+
+	if localSHA != "" && localSHA != remoteSHA {
+		if _, stderr, err := tools.GitOutputFull(cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
+			log.Printf("[pr] push failed: %s", stderr)
+			// Still return existing URL — the PR exists even if push failed.
+		}
+	}
+
+	return PRResult{URL: prURL}
+}
+
+// existingPRURL checks if a PR already exists for the current branch.
+// Returns the PR URL or "" if none exists.
+func existingPRURL(cwd string) string {
+	out, err := tools.GHOutput(cwd, "pr", "view", "--json", "url", "--jq", ".url")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }

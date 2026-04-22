@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// GHAvailable reports whether the gh CLI is on PATH.
+func GHAvailable() bool {
+	_, err := exec.LookPath("gh")
+	return err == nil
+}
+
 // DetectDefaultBranch figures out the repo's default branch.
 func DetectDefaultBranch(cwd string) string {
 	// Try gh first — it knows the remote default
