@@ -2,7 +2,6 @@ package phase
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -85,15 +84,41 @@ func TestSanitizeStderr_Redacts(t *testing.T) {
 
 func TestPRMetrics_PushFailureCounter(t *testing.T) {
 	r := require.New(t)
-	// Counter should exist as a package-level atomic.
-	val := atomic.LoadInt64(&prPushFailures)
-	r.GreaterOrEqual(val, int64(0), "push failure counter should be non-negative")
+	m := PRMetricsInstance()
+	r.GreaterOrEqual(m.PushFailures(), int64(0), "push failure counter should be non-negative")
 }
 
 func TestPRMetrics_InvalidPRURLCounter(t *testing.T) {
 	r := require.New(t)
-	val := atomic.LoadInt64(&prInvalidURLResponses)
-	r.GreaterOrEqual(val, int64(0), "invalid URL counter should be non-negative")
+	m := PRMetricsInstance()
+	r.GreaterOrEqual(m.InvalidURLResults(), int64(0), "invalid URL counter should be non-negative")
+}
+
+// --- Issue 6: hasUnpushedCommits error triggers push fallback ---
+
+func TestEnsureExistingPR_PushesOnUnpushedCheckError(t *testing.T) {
+	r := require.New(t)
+
+	// Repo with no remote: hasUnpushedCommits fails, so ensureExistingPR
+	// should attempt a push anyway (safety fallback), resulting in both
+	// a "check unpushed commits" and "push --force-with-lease" op error.
+	dir := t.TempDir()
+	run(t, dir, "git", "init", "-b", "main")
+	writeTestFile(t, dir, "README.md", "# Senor Chang's classroom")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "initial")
+	run(t, dir, "git", "checkout", "-b", "jelmer/push-fallback-test")
+
+	result := ensureExistingPR(context.Background(), dir, "https://github.com/test/repo/pull/42")
+	r.Equal("https://github.com/test/repo/pull/42", result.URL)
+
+	// Should have errors for both the unpushed check AND the push attempt.
+	ops := make([]string, len(result.OperationErrors))
+	for i, e := range result.OperationErrors {
+		ops[i] = e.Operation
+	}
+	r.Contains(ops, "check unpushed commits", "should record unpushed check failure")
+	r.Contains(ops, "push --force-with-lease", "should attempt push when unpushed check fails")
 }
 
 // --- Issue 6: hasUnpushedCommits returns error ---

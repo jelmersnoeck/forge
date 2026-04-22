@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/tools"
@@ -371,14 +370,6 @@ var genericTitles = []string{
 	"quick fix", "hotfix", "patch", "test", "tests",
 }
 
-// --- PR operation metrics (atomic counters for production observability) ---
-
-// prPushFailures tracks how often git push --force-with-lease fails.
-var prPushFailures int64
-
-// prInvalidURLResponses tracks how often gh pr view returns non-PR URLs.
-var prInvalidURLResponses int64
-
 // prURLPathSegments maps forge name to URL path segment used in PR/MR URLs.
 //
 //   - GitHub:       /owner/repo/pull/N
@@ -393,14 +384,8 @@ var prURLPathSegments = map[string]string{
 }
 
 // prURLPattern matches common pull request / merge request URL paths.
-// Built from prURLPathSegments at init time.
-var prURLPattern = func() *regexp.Regexp {
-	segments := make([]string, 0, len(prURLPathSegments))
-	for _, seg := range prURLPathSegments {
-		segments = append(segments, regexp.QuoteMeta(seg))
-	}
-	return regexp.MustCompile(`(?i)/(` + strings.Join(segments, "|") + `)/\d+`)
-}()
+// Hardcoded to avoid runtime regex construction from potentially mutable data.
+var prURLPattern = regexp.MustCompile(`(?i)/(pull|merge_requests|pull-requests|pullrequest)/\d+`)
 
 // isValidPRURL checks that a string is an HTTP(S) URL pointing to a
 // pull request or merge request on a known forge.
@@ -560,16 +545,16 @@ func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
 		return PRResult{URL: prURL, Error: fmt.Errorf("invalid branch name %q", branch)}
 	}
 
-	// Push if there are unpushed commits.
+	// Push if there are unpushed commits (or if we can't tell — safer to push).
 	has, unpushErr := hasUnpushedCommits(ctx, cwd, branch)
 	if unpushErr != nil {
 		opErr := &PROperationError{Operation: "check unpushed commits", Err: unpushErr}
 		opErrors = append(opErrors, opErr)
-		log.Printf("[pr] %v", opErr)
+		log.Printf("[pr] %v — will attempt push as safety fallback", opErr)
 	}
-	if has {
+	if has || unpushErr != nil {
 		if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "push", "--force-with-lease", "origin", "HEAD"); err != nil {
-			atomic.AddInt64(&prPushFailures, 1)
+			prMetrics.RecordPushFailure()
 			opErr := &PROperationError{
 				Operation: "push --force-with-lease",
 				Stderr:    stderr,
@@ -577,7 +562,7 @@ func ensureExistingPR(ctx context.Context, cwd, prURL string) PRResult {
 			}
 			opErrors = append(opErrors, opErr)
 			log.Printf("[pr] push_failure_count=%d %v (check auth, permissions, network)",
-				atomic.LoadInt64(&prPushFailures), opErr)
+				prMetrics.PushFailures(), opErr)
 		}
 	}
 
@@ -635,9 +620,9 @@ func existingPRURL(ctx context.Context, cwd string) string {
 		return ""
 	}
 	if !isValidPRURL(result) {
-		atomic.AddInt64(&prInvalidURLResponses, 1)
+		prMetrics.RecordInvalidURLResult()
 		log.Printf("[pr] invalid_url_response_count=%d existingPRURL got non-PR URL %q, ignoring",
-			atomic.LoadInt64(&prInvalidURLResponses), result)
+			prMetrics.InvalidURLResults(), result)
 		return ""
 	}
 	return result
