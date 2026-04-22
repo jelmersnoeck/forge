@@ -163,7 +163,7 @@ func TestCoderPrompt_ContainsDocumentationSection(t *testing.T) {
 
 	// Documentation section must be present in coder prompt
 	r.Contains(prompt, "## Documentation")
-	r.Contains(prompt, "git diff main...HEAD --stat")
+	r.Contains(prompt, "git diff <default-branch>...HEAD --stat")
 	r.Contains(prompt, "README.md, AGENTS.md, CONTRIBUTING.md")
 	r.Contains(prompt, "No doc updates")
 	r.Contains(prompt, "Read-only sessions")

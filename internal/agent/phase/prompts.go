@@ -96,7 +96,7 @@ The test defines the contract. The implementation fulfills it.
 
 After implementation is complete and all tests pass:
 
-1. Run ` + "`git diff main...HEAD --stat`" + ` (or equivalent) to see what changed.
+1. Detect the default branch (` + "`git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'`" + ` — falls back to \"main\" if unset) and run ` + "`git diff <default-branch>...HEAD --stat`" + ` to see what changed.
 2. Identify documentation files in the project root and docs directories
    (README.md, AGENTS.md, CONTRIBUTING.md, etc.).
 3. For each documentation file, review sections relevant to the code changes.
