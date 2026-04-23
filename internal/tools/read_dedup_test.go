@@ -21,7 +21,7 @@ func TestReadDedup(t *testing.T) {
 				path := filepath.Join(dir, "troy.txt")
 				r.NoError(os.WriteFile(path, []byte("Troy Barnes\nAbed Nadir"), 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 				input := map[string]any{"file_path": path}
 				tool := ReadTool()
@@ -33,7 +33,8 @@ func TestReadDedup(t *testing.T) {
 				r.Contains(res1.Content[0].Text, "Troy Barnes")
 
 				// State should be populated
-				r.Contains(state, path)
+				_, ok := state.Get(path)
+				r.True(ok)
 
 				// Second read: stub
 				res2, err := tool.Handler(input, ctx)
@@ -48,7 +49,7 @@ func TestReadDedup(t *testing.T) {
 				path := filepath.Join(dir, "britta.txt")
 				r.NoError(os.WriteFile(path, []byte("Britta Perry"), 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 				input := map[string]any{"file_path": path}
 				tool := ReadTool()
@@ -76,7 +77,7 @@ func TestReadDedup(t *testing.T) {
 				lines := strings.Repeat("Winger speech line\n", 50)
 				r.NoError(os.WriteFile(path, []byte(lines), 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 				tool := ReadTool()
 
@@ -98,7 +99,7 @@ func TestReadDedup(t *testing.T) {
 				path := filepath.Join(dir, "chang.txt")
 				r.NoError(os.WriteFile(path, []byte("Senor Chang\nBen Chang\nKevin"), 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 				tool := ReadTool()
 
@@ -119,14 +120,15 @@ func TestReadDedup(t *testing.T) {
 				path := filepath.Join(dir, "annie.txt")
 				r.NoError(os.WriteFile(path, []byte("Annie Edison"), 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 
 				// Read the file
 				readTool := ReadTool()
 				_, err := readTool.Handler(map[string]any{"file_path": path}, ctx)
 				r.NoError(err)
-				r.Contains(state, path)
+				_, ok := state.Get(path)
+				r.True(ok)
 
 				// Edit the file
 				editTool := EditTool()
@@ -138,7 +140,8 @@ func TestReadDedup(t *testing.T) {
 				r.NoError(err)
 
 				// State should be invalidated
-				r.NotContains(state, path)
+				_, ok = state.Get(path)
+				r.False(ok)
 
 				// Next read should return fresh content
 				res, err := readTool.Handler(map[string]any{"file_path": path}, ctx)
@@ -153,14 +156,15 @@ func TestReadDedup(t *testing.T) {
 				path := filepath.Join(dir, "dean.txt")
 				r.NoError(os.WriteFile(path, []byte("Dean Pelton"), 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 
 				// Read the file
 				readTool := ReadTool()
 				_, err := readTool.Handler(map[string]any{"file_path": path}, ctx)
 				r.NoError(err)
-				r.Contains(state, path)
+				_, ok := state.Get(path)
+				r.True(ok)
 
 				// Overwrite the file
 				writeTool := WriteTool()
@@ -171,7 +175,8 @@ func TestReadDedup(t *testing.T) {
 				r.NoError(err)
 
 				// State should be invalidated
-				r.NotContains(state, path)
+				_, ok = state.Get(path)
+				r.False(ok)
 
 				// Next read should return fresh content
 				res, err := readTool.Handler(map[string]any{"file_path": path}, ctx)
@@ -217,7 +222,7 @@ func TestReadDedup(t *testing.T) {
 				}
 				r.NoError(os.WriteFile(path, pngData, 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 				tool := ReadTool()
 
@@ -231,7 +236,8 @@ func TestReadDedup(t *testing.T) {
 				r.Equal("image", res2.Content[0].Type)
 
 				// Images should not appear in read state
-				r.NotContains(state, path)
+				_, ok := state.Get(path)
+				r.False(ok)
 			},
 		},
 		"bash-modified file detected via mtime": {
@@ -240,7 +246,7 @@ func TestReadDedup(t *testing.T) {
 				path := filepath.Join(dir, "pierce.txt")
 				r.NoError(os.WriteFile(path, []byte("Pierce Hawthorne"), 0644))
 
-				state := make(types.ReadState)
+				state := types.NewReadState()
 				ctx := types.ToolContext{ReadState: state}
 				tool := ReadTool()
 
@@ -251,9 +257,9 @@ func TestReadDedup(t *testing.T) {
 				// Simulate bash modifying the file (no explicit invalidation)
 				// Artificially set a stale mtime in the state to simulate
 				// the file being modified by an external process.
-				entry := state[path]
+				entry, _ := state.Get(path)
 				entry.MtimeUnix = entry.MtimeUnix - 10
-				state[path] = entry
+				state.Set(path, entry)
 
 				// Next read should return fresh content (mtime mismatch)
 				res, err := tool.Handler(map[string]any{"file_path": path}, ctx)

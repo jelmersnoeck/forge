@@ -44,7 +44,7 @@ type Loop struct {
 	callCount     int
 
 	// Per-session file read dedup state, shared across all tool calls.
-	readState types.ReadState
+	readState *types.ReadState
 
 	// toolsUsed tracks whether any tool was executed during the loop.
 	toolsUsed bool
@@ -102,7 +102,7 @@ func New(opts Options) *Loop {
 		audit:        audit,
 		budget:       budget,
 		retryPolicy:  retryPolicy,
-		readState:    make(types.ReadState),
+		readState:    types.NewReadState(),
 		onComplete:   opts.OnComplete,
 	}
 }
