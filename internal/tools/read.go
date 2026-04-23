@@ -111,7 +111,7 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	// Only applies to text reads. Edit/Write invalidate the entry
 	// so the next Read after a mutation always returns fresh content.
 	if ctx.ReadState != nil {
-		if entry, exists := ctx.ReadState[filePath]; exists {
+		if entry, exists := ctx.ReadState.Get(filePath); exists {
 			if entry.Offset == offset && entry.Limit == limit {
 				if info.ModTime().Unix() == entry.MtimeUnix {
 					return types.ToolResult{
@@ -155,13 +155,11 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	}
 
 	// Store state for dedup on subsequent reads.
-	if ctx.ReadState != nil {
-		ctx.ReadState[filePath] = types.ReadFileEntry{
-			MtimeUnix: info.ModTime().Unix(),
-			Offset:    offset,
-			Limit:     limit,
-		}
-	}
+	ctx.ReadState.Set(filePath, types.ReadFileEntry{
+		MtimeUnix: info.ModTime().Unix(),
+		Offset:    offset,
+		Limit:     limit,
+	})
 
 	return textResult(strings.Join(lines, "\n")), nil
 }

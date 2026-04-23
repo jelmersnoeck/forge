@@ -16,7 +16,7 @@ func newTestCtx(t *testing.T, dir string) types.ToolContext {
 	return types.ToolContext{
 		Ctx:       context.Background(),
 		CWD:       dir,
-		ReadState: make(map[string]types.ReadFileEntry),
+		ReadState: types.NewReadState(),
 		Emit:      func(types.OutboundEvent) {},
 	}
 }

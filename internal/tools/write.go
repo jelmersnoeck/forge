@@ -56,9 +56,7 @@ func writeHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult
 		return errResultf("failed to write file: %v", err)
 	}
 
-	if ctx.ReadState != nil {
-		delete(ctx.ReadState, filePath)
-	}
+	ctx.ReadState.Delete(filePath)
 
 	return textResult(fmt.Sprintf("wrote %d bytes to %s", len(content), filePath)), nil
 }

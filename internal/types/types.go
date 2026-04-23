@@ -3,6 +3,7 @@ package types
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -162,8 +163,47 @@ type ReadFileEntry struct {
 }
 
 // ReadState tracks per-file read state for dedup within a session.
-// Keyed by absolute file path.
-type ReadState map[string]ReadFileEntry
+// Thread-safe for concurrent access from multiple tool goroutines.
+type ReadState struct {
+	mu      sync.RWMutex
+	entries map[string]ReadFileEntry
+}
+
+// NewReadState returns an initialized ReadState ready for use.
+func NewReadState() *ReadState {
+	return &ReadState{entries: make(map[string]ReadFileEntry)}
+}
+
+// Get returns the entry and whether it exists.
+func (rs *ReadState) Get(path string) (ReadFileEntry, bool) {
+	if rs == nil {
+		return ReadFileEntry{}, false
+	}
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	e, ok := rs.entries[path]
+	return e, ok
+}
+
+// Set stores a dedup entry for the given path.
+func (rs *ReadState) Set(path string, entry ReadFileEntry) {
+	if rs == nil {
+		return
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.entries[path] = entry
+}
+
+// Delete removes the entry for the given path (used by Edit/Write).
+func (rs *ReadState) Delete(path string) {
+	if rs == nil {
+		return
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	delete(rs.entries, path)
+}
 
 // ToolContext is passed to every tool handler.
 type ToolContext struct {
@@ -172,7 +212,7 @@ type ToolContext struct {
 	SessionID string
 	HistoryID string
 	Emit      func(OutboundEvent)
-	ReadState ReadState // per-session file read dedup (nil-safe: tools check before use)
+	ReadState *ReadState // per-session file read dedup (nil-safe: tools check before use)
 }
 
 // ToolHandler executes a tool.
