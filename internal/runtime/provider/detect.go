@@ -12,9 +12,13 @@ import (
 )
 
 // validateAPIKey trims whitespace and returns the cleaned key.
-// Returns empty string if the key is blank after trimming.
+// Returns empty string if the key is blank or whitespace-only after trimming.
 func validateAPIKey(key string) string {
-	return strings.TrimSpace(key)
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" && key != "" {
+		log.Printf("[provider] API key is whitespace-only — treating as unset")
+	}
+	return trimmed
 }
 
 // claudeCLIBinary is the executable name for the Claude CLI, used in PATH lookups.

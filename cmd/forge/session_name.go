@@ -26,10 +26,13 @@ func newLightweightProvider() (types.LLMProvider, error) {
 	resolved := provider.ResolveProvider()
 
 	if resolved.ConfigErr != nil {
-		if os.IsNotExist(resolved.ConfigErr) {
+		switch {
+		case os.IsNotExist(resolved.ConfigErr):
 			log.Printf("[session-name] no user config found — falling back to auto-detect")
-		} else {
-			return nil, fmt.Errorf("user config corrupted or unreadable: %w", resolved.ConfigErr)
+		default:
+			// Log and continue rather than bailing out — session naming is
+			// best-effort and a corrupted config shouldn't block it.
+			log.Printf("[session-name] user config corrupted or unreadable: %v — falling back to auto-detect", resolved.ConfigErr)
 		}
 	}
 
