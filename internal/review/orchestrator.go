@@ -141,15 +141,33 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 		return nil
 	}
 
-	provider := o.pickConsolidationProvider()
+	providerName, provider := o.pickConsolidationProvider()
 	if provider == nil {
 		log.Printf("[orchestrator] no provider available for consolidation, using raw findings")
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			Type:      "review_error",
+			Content:   "Consolidation skipped: no LLM provider available, using raw findings",
+			Timestamp: time.Now().Unix(),
+		})
 		return fallbackToRaw(results)
 	}
 
-	consolidated, err := Consolidate(ctx, provider, results)
+	model := modelForProvider(providerName)
+
+	// Use a dedicated timeout so consolidation doesn't consume the full parent budget.
+	consolidateCtx, cancel := context.WithTimeout(ctx, consolidationTimeout)
+	defer cancel()
+
+	consolidated, err := Consolidate(consolidateCtx, provider, model, results)
 	if err != nil {
 		log.Printf("[orchestrator] consolidation error: %v", err)
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			Type:      "review_error",
+			Content:   fmt.Sprintf("Consolidation failed: %v — using raw findings", err),
+			Timestamp: time.Now().Unix(),
+		})
 		return fallbackToRaw(results)
 	}
 
@@ -167,14 +185,15 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 
 // pickConsolidationProvider selects a provider for the consolidation step.
 // Prefers "anthropic" if available, falls back to any other.
-func (o *Orchestrator) pickConsolidationProvider() types.LLMProvider {
+// Returns the provider name and the provider, or ("", nil) if none available.
+func (o *Orchestrator) pickConsolidationProvider() (string, types.LLMProvider) {
 	if p, ok := o.providers["anthropic"]; ok {
-		return p
+		return "anthropic", p
 	}
-	for _, p := range o.providers {
-		return p
+	for name, p := range o.providers {
+		return name, p
 	}
-	return nil
+	return "", nil
 }
 
 // runSingle executes one reviewer against one provider with a timeout.

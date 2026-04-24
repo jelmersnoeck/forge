@@ -13,15 +13,24 @@ import (
 )
 
 const (
-	consolidationTimeout  = 2 * time.Minute
-	maxFindingsForPrompt  = 100
+	// consolidationTimeout bounds the LLM call for deduplication. Two minutes
+	// is generous for a single-turn structured-output request with ≤100 findings;
+	// shorter values risk partial responses on slow providers.
+	consolidationTimeout = 2 * time.Minute
+
+	// maxFindingsForPrompt caps input to the consolidation prompt. 100 findings
+	// ≈ 25-30K tokens — well within the context window while keeping cost and
+	// latency reasonable. Exceeding this truncates lowest-severity findings first.
+	maxFindingsForPrompt = 100
 )
 
 // Consolidate deduplicates and calibrates findings from multiple agents.
 // Falls back to converting raw findings 1:1 if the LLM call fails.
+// The model parameter selects which LLM to use; pass "" for the default.
 func Consolidate(
 	ctx context.Context,
 	provider types.LLMProvider,
+	model string,
 	results []ReviewResult,
 ) ([]ConsolidatedFinding, error) {
 	allFindings := collectAllFindings(results)
@@ -32,10 +41,14 @@ func Consolidate(
 	consolidateCtx, cancel := context.WithTimeout(ctx, consolidationTimeout)
 	defer cancel()
 
+	if model == "" {
+		model = modelForProvider("")
+	}
+
 	userPrompt := buildConsolidationPrompt(results)
 
 	chatReq := types.ChatRequest{
-		Model: "claude-sonnet-4-20250514",
+		Model: model,
 		System: []types.SystemBlock{
 			{Type: "text", Text: consolidationSystemPrompt()},
 		},
@@ -53,7 +66,7 @@ func Consolidate(
 
 	deltaChan, err := provider.Chat(consolidateCtx, chatReq)
 	if err != nil {
-		log.Printf("[consolidate] provider error, falling back to raw: %v", err)
+		log.Printf("[consolidate] provider error (model=%s), falling back to raw: %v", model, err)
 		return fallbackToRaw(results), nil
 	}
 
@@ -61,13 +74,24 @@ func Consolidate(
 
 	// If context expired before we got a response, fall back.
 	if consolidateCtx.Err() != nil && strings.TrimSpace(responseText) == "" {
-		log.Printf("[consolidate] timeout, falling back to raw")
+		cause := "unknown"
+		switch consolidateCtx.Err() {
+		case context.DeadlineExceeded:
+			cause = "deadline exceeded"
+		case context.Canceled:
+			cause = "parent context canceled"
+		}
+		log.Printf("[consolidate] %s during LLM call (collected %d bytes), falling back to raw", cause, len(responseText))
 		return fallbackToRaw(results), nil
 	}
 
 	consolidated, err := parseConsolidationResponse(responseText)
 	if err != nil {
-		log.Printf("[consolidate] parse error, falling back to raw: %v", err)
+		truncated := responseText
+		if len(truncated) > 200 {
+			truncated = truncated[:200] + "..."
+		}
+		log.Printf("[consolidate] parse error, falling back to raw: %v (response prefix: %q)", err, truncated)
 		return fallbackToRaw(results), nil
 	}
 
@@ -118,6 +142,7 @@ Rules:
 }
 
 // buildConsolidationPrompt constructs the user message listing all findings.
+// Finding descriptions are length-capped to limit prompt injection surface.
 func buildConsolidationPrompt(results []ReviewResult) string {
 	type annotatedFinding struct {
 		Finding  Finding
@@ -161,10 +186,18 @@ func buildConsolidationPrompt(results []ReviewResult) string {
 				fmt.Fprintf(&sb, "- EndLine: %d\n", af.Finding.EndLine)
 			}
 		}
-		fmt.Fprintf(&sb, "- Description: %s\n\n", af.Finding.Description)
+		fmt.Fprintf(&sb, "- Description: %s\n\n", capString(af.Finding.Description, 500))
 	}
 
 	return sb.String()
+}
+
+// capString truncates s to maxLen runes to bound prompt size.
+func capString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // parseConsolidationResponse extracts consolidated findings from LLM output.

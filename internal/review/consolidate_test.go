@@ -325,7 +325,7 @@ func TestConsolidate(t *testing.T) {
 			},
 		}
 
-		consolidated, err := Consolidate(context.Background(), provider, results)
+		consolidated, err := Consolidate(context.Background(), provider, "", results)
 		r.NoError(err)
 		r.Len(consolidated, 1)
 		r.Equal(SeverityCritical, consolidated[0].Severity)
@@ -341,7 +341,7 @@ func TestConsolidate(t *testing.T) {
 			{Reviewer: "security", Provider: "anthropic", Error: "boom"},
 		}
 
-		consolidated, err := Consolidate(context.Background(), provider, results)
+		consolidated, err := Consolidate(context.Background(), provider, "", results)
 		r.NoError(err)
 		r.Empty(consolidated)
 	})
@@ -360,7 +360,7 @@ func TestConsolidate(t *testing.T) {
 			},
 		}
 
-		consolidated, err := Consolidate(context.Background(), provider, results)
+		consolidated, err := Consolidate(context.Background(), provider, "", results)
 		r.NoError(err) // fallback, not error
 		r.Len(consolidated, 1)
 		r.Equal("darkest_timeline.go", consolidated[0].File)
@@ -382,7 +382,7 @@ func TestConsolidate(t *testing.T) {
 			},
 		}
 
-		consolidated, err := Consolidate(context.Background(), provider, results)
+		consolidated, err := Consolidate(context.Background(), provider, "", results)
 		r.NoError(err)
 		r.Len(consolidated, 1)
 		r.Equal(SeverityWarning, consolidated[0].Severity)
@@ -408,7 +408,7 @@ func TestConsolidate(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
-		consolidated, err := Consolidate(ctx, provider, results)
+		consolidated, err := Consolidate(ctx, provider, "", results)
 		r.NoError(err)
 		r.Len(consolidated, 1)
 		r.Equal(SeverityCritical, consolidated[0].Severity)
@@ -438,7 +438,7 @@ func TestConsolidate(t *testing.T) {
 			},
 		}
 
-		consolidated, err := Consolidate(context.Background(), provider, results)
+		consolidated, err := Consolidate(context.Background(), provider, "", results)
 		r.NoError(err)
 		r.Len(consolidated, 1)
 		r.Equal(SeverityWarning, consolidated[0].Severity, "LLM should be able to reclassify")
@@ -464,7 +464,7 @@ func TestConsolidate(t *testing.T) {
 			},
 		}
 
-		consolidated, err := Consolidate(context.Background(), provider, results)
+		consolidated, err := Consolidate(context.Background(), provider, "", results)
 		r.NoError(err)
 		r.Len(consolidated, 3, "should accept output even if it has more findings than input")
 	})
