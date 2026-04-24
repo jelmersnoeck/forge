@@ -28,11 +28,9 @@ func newLightweightProvider() (types.LLMProvider, error) {
 	if resolved.ConfigErr != nil {
 		switch {
 		case os.IsNotExist(resolved.ConfigErr):
-			log.Printf("[session-name] no user config found — falling back to auto-detect")
+			log.Printf("[session-name] config_status=not_found — falling back to auto-detect")
 		default:
-			// Log and continue rather than bailing out — session naming is
-			// best-effort and a corrupted config shouldn't block it.
-			log.Printf("[session-name] user config corrupted or unreadable: %v — falling back to auto-detect", resolved.ConfigErr)
+			return nil, fmt.Errorf("config corrupted or unreadable: %w", resolved.ConfigErr)
 		}
 	}
 
@@ -53,7 +51,8 @@ func newLightweightProvider() (types.LLMProvider, error) {
 func generateSlug(prompt string) string {
 	p, err := newLightweightProvider()
 	if err != nil {
-		log.Printf("[session-name] %v — will use random name", err)
+		log.Printf("[session-name] provider_error=%q — using random name", err)
+		return fallbackSessionName()
 	}
 	return generateSessionName(p, prompt)
 }

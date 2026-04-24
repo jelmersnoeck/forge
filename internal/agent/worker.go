@@ -688,7 +688,7 @@ func selectProvider() (types.LLMProvider, string) {
 		return provider.FromNameOrFallback(resolved.Name), resolved.Name
 	}
 
-	log.Println("[provider] WARNING: no provider detected — API calls will fail")
+	log.Printf("[provider] WARNING: provider_status=none_detected fallback=anthropic — all API calls will fail without ANTHROPIC_API_KEY")
 	return provider.NewAnthropic(""), "anthropic"
 }
 

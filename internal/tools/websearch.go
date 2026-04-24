@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -76,6 +77,8 @@ func makeWebSearchHandler(providerName string) types.ToolHandler {
 
 		results, err := dispatchSearch(ctx.Ctx, providerName, query, numResults)
 		if err != nil {
+			cat := classifySearchError(err)
+			log.Printf("[websearch] provider=%s query=%q category=%s error=%q", providerName, query, cat, err)
 			return types.ToolResult{
 				Content: []types.ToolResultContent{{
 					Type: "text",
@@ -94,17 +97,39 @@ func makeWebSearchHandler(providerName string) types.ToolHandler {
 	}
 }
 
+// classifySearchError categorizes a search error for structured logging.
+// Helps operators quickly filter by failure type (auth, rate_limit, network, etc.).
+func classifySearchError(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "API_KEY"):
+		return "auth_missing"
+	case strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 403"):
+		return "auth_rejected"
+	case strings.Contains(msg, "HTTP 429"):
+		return "rate_limit"
+	case strings.Contains(msg, "HTTP 5"):
+		return "server_error"
+	case strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "context canceled"):
+		return "timeout"
+	case strings.Contains(msg, "truncated"):
+		return "response_truncated"
+	default:
+		return "unknown"
+	}
+}
+
 // dispatchSearch routes the query to the appropriate provider backend.
 func dispatchSearch(ctx context.Context, providerName, query string, numResults int) (string, error) {
 	switch providerName {
 	case "openai":
-		apiKey := os.Getenv("OPENAI_API_KEY")
+		apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 		if apiKey == "" {
 			return "", fmt.Errorf("WebSearch requires OPENAI_API_KEY when provider is openai")
 		}
 		return searchViaOpenAI(ctx, apiKey, query, numResults)
 	default:
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 		if apiKey == "" {
 			return "", fmt.Errorf("WebSearch requires ANTHROPIC_API_KEY to be set")
 		}
@@ -225,17 +250,21 @@ func formatSearchResponse(blocks []anthropic.ContentBlockUnion, query string) st
 
 // ── OpenAI Responses API web search ─────────────────────────
 
-// openAIHTTPClient is used for OpenAI search API calls. Separate from
-// http.DefaultClient so we can set a reasonable timeout without affecting
-// other HTTP callers in the process.
-var openAIHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
+// OpenAIHTTPTimeout controls the HTTP client timeout for OpenAI search calls.
+// Override in tests or via configuration for different environments.
+var OpenAIHTTPTimeout = 30 * time.Second
+
+// openAIHTTPClient returns a client with the current OpenAIHTTPTimeout.
+// Constructed per-call so runtime changes to the timeout variable take effect.
+func openAIHTTPClient() *http.Client {
+	return &http.Client{Timeout: OpenAIHTTPTimeout}
 }
 
-// maxResponseBodySize caps how much of an HTTP response we'll read into
+// MaxResponseBodySize caps how much of an HTTP response we'll read into
 // memory. 5 MB is generous for a search API response; anything larger is
-// almost certainly a bug on the server side.
-const maxResponseBodySize = 5 * 1024 * 1024 // 5 MB
+// almost certainly a bug on the server side. Override for environments with
+// different constraints.
+var MaxResponseBodySize int64 = 5 * 1024 * 1024 // 5 MB
 
 // searchViaOpenAI calls OpenAI's Responses API with web_search tool to
 // get search results, then formats them as plain text.
@@ -282,15 +311,19 @@ func searchViaOpenAI(ctx context.Context, apiKey, query string, numResults int) 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := openAIHTTPClient.Do(req)
+	resp, err := openAIHTTPClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBodySize))
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if int64(len(respBody)) >= MaxResponseBodySize {
+		return "", fmt.Errorf("response body truncated at %d bytes — likely malformed", MaxResponseBodySize)
 	}
 
 	if resp.StatusCode != http.StatusOK {

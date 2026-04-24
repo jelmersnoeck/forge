@@ -6,17 +6,24 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
+
+// whitespaceKeyWarningOnce ensures the whitespace-only API key warning is
+// logged at most once per process, preventing log spam from repeated calls.
+var whitespaceKeyWarningOnce sync.Once
 
 // validateAPIKey trims whitespace and returns the cleaned key.
 // Returns empty string if the key is blank or whitespace-only after trimming.
 func validateAPIKey(key string) string {
 	trimmed := strings.TrimSpace(key)
 	if trimmed == "" && key != "" {
-		log.Printf("[provider] API key is whitespace-only — treating as unset")
+		whitespaceKeyWarningOnce.Do(func() {
+			log.Printf("[provider] api_key_status=whitespace_only — treating as unset")
+		})
 	}
 	return trimmed
 }
@@ -125,22 +132,22 @@ func FromName(name string) types.LLMProvider {
 		if key := validateAPIKey(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
 			return NewAnthropic(key)
 		}
-		log.Printf("[provider] provider=anthropic but ANTHROPIC_API_KEY not set")
+		log.Printf("[provider] provider=%s credential_status=missing env_var=ANTHROPIC_API_KEY", name)
 		return nil
 	case "openai":
 		if key := validateAPIKey(os.Getenv("OPENAI_API_KEY")); key != "" {
 			return NewOpenAI(key)
 		}
-		log.Printf("[provider] provider=openai but OPENAI_API_KEY not set")
+		log.Printf("[provider] provider=%s credential_status=missing env_var=OPENAI_API_KEY", name)
 		return nil
 	case "claude-cli":
 		if _, err := exec.LookPath(claudeCLIBinary); err == nil {
 			return NewClaudeCLI()
 		}
-		log.Printf("[provider] provider=claude-cli but `%s` not found on PATH", claudeCLIBinary)
+		log.Printf("[provider] provider=%s credential_status=missing binary=%s", name, claudeCLIBinary)
 		return nil
 	default:
-		log.Printf("[provider] unknown provider %q", name)
+		log.Printf("[provider] provider=%s credential_status=unknown_provider", name)
 		return nil
 	}
 }
@@ -154,22 +161,22 @@ func FromNameOrFallback(name string) types.LLMProvider {
 	case "anthropic":
 		key := validateAPIKey(os.Getenv("ANTHROPIC_API_KEY"))
 		if key == "" {
-			log.Println("[provider] WARNING: provider=anthropic but ANTHROPIC_API_KEY not set — API calls will fail")
+			log.Printf("[provider] WARNING: provider=%s credential_status=missing env_var=ANTHROPIC_API_KEY — API calls will fail", name)
 		}
 		return NewAnthropic(key)
 	case "claude-cli":
 		if _, err := exec.LookPath(claudeCLIBinary); err != nil {
-			log.Printf("[provider] WARNING: provider=claude-cli but `%s` not found on PATH", claudeCLIBinary)
+			log.Printf("[provider] WARNING: provider=%s credential_status=missing binary=%s", name, claudeCLIBinary)
 		}
 		return NewClaudeCLI()
 	case "openai":
 		key := validateAPIKey(os.Getenv("OPENAI_API_KEY"))
 		if key == "" {
-			log.Println("[provider] WARNING: provider=openai but OPENAI_API_KEY not set — API calls will fail")
+			log.Printf("[provider] WARNING: provider=%s credential_status=missing env_var=OPENAI_API_KEY — API calls will fail", name)
 		}
 		return NewOpenAI(key)
 	default:
-		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
+		log.Printf("[provider] WARNING: provider=%s credential_status=unknown_provider — falling back to anthropic", name)
 		return NewAnthropic(validateAPIKey(os.Getenv("ANTHROPIC_API_KEY")))
 	}
 }

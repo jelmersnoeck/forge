@@ -98,16 +98,31 @@ func TestDispatchSearch_NoAPIKey(t *testing.T) {
 	tests := map[string]struct {
 		provider string
 		envKey   string
+		envVal   string
 		wantErr  string
 	}{
 		"anthropic missing key": {
 			provider: "anthropic",
 			envKey:   "ANTHROPIC_API_KEY",
+			envVal:   "",
 			wantErr:  "ANTHROPIC_API_KEY",
 		},
 		"openai missing key": {
 			provider: "openai",
 			envKey:   "OPENAI_API_KEY",
+			envVal:   "",
+			wantErr:  "OPENAI_API_KEY",
+		},
+		"anthropic whitespace-only key": {
+			provider: "anthropic",
+			envKey:   "ANTHROPIC_API_KEY",
+			envVal:   "   \t  ",
+			wantErr:  "ANTHROPIC_API_KEY",
+		},
+		"openai whitespace-only key": {
+			provider: "openai",
+			envKey:   "OPENAI_API_KEY",
+			envVal:   "   \t  ",
 			wantErr:  "OPENAI_API_KEY",
 		},
 	}
@@ -115,7 +130,7 @@ func TestDispatchSearch_NoAPIKey(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			t.Setenv(tc.envKey, "")
+			t.Setenv(tc.envKey, tc.envVal)
 
 			_, err := dispatchSearch(context.Background(), tc.provider, "Troy Barnes", 5)
 			r.Error(err)
