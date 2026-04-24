@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -73,36 +74,7 @@ func makeWebSearchHandler(providerName string) types.ToolHandler {
 			}
 		}
 
-		var results string
-		var err error
-
-		switch providerName {
-		case "openai":
-			apiKey := os.Getenv("OPENAI_API_KEY")
-			if apiKey == "" {
-				return types.ToolResult{
-					Content: []types.ToolResultContent{{
-						Type: "text",
-						Text: "WebSearch requires OPENAI_API_KEY when provider is openai.",
-					}},
-					IsError: true,
-				}, nil
-			}
-			results, err = searchViaOpenAI(ctx.Ctx, apiKey, query, numResults)
-		default:
-			apiKey := os.Getenv("ANTHROPIC_API_KEY")
-			if apiKey == "" {
-				return types.ToolResult{
-					Content: []types.ToolResultContent{{
-						Type: "text",
-						Text: "WebSearch requires ANTHROPIC_API_KEY to be set.",
-					}},
-					IsError: true,
-				}, nil
-			}
-			results, err = searchViaAnthropic(ctx.Ctx, apiKey, query, numResults)
-		}
-
+		results, err := dispatchSearch(ctx.Ctx, providerName, query, numResults)
 		if err != nil {
 			return types.ToolResult{
 				Content: []types.ToolResultContent{{
@@ -119,6 +91,24 @@ func makeWebSearchHandler(providerName string) types.ToolHandler {
 				Text: results,
 			}},
 		}, nil
+	}
+}
+
+// dispatchSearch routes the query to the appropriate provider backend.
+func dispatchSearch(ctx context.Context, providerName, query string, numResults int) (string, error) {
+	switch providerName {
+	case "openai":
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			return "", fmt.Errorf("WebSearch requires OPENAI_API_KEY when provider is openai")
+		}
+		return searchViaOpenAI(ctx, apiKey, query, numResults)
+	default:
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", fmt.Errorf("WebSearch requires ANTHROPIC_API_KEY to be set")
+		}
+		return searchViaAnthropic(ctx, apiKey, query, numResults)
 	}
 }
 
@@ -235,6 +225,18 @@ func formatSearchResponse(blocks []anthropic.ContentBlockUnion, query string) st
 
 // ── OpenAI Responses API web search ─────────────────────────
 
+// openAIHTTPClient is used for OpenAI search API calls. Separate from
+// http.DefaultClient so we can set a reasonable timeout without affecting
+// other HTTP callers in the process.
+var openAIHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
+// maxResponseBodySize caps how much of an HTTP response we'll read into
+// memory. 5 MB is generous for a search API response; anything larger is
+// almost certainly a bug on the server side.
+const maxResponseBodySize = 5 * 1024 * 1024 // 5 MB
+
 // searchViaOpenAI calls OpenAI's Responses API with web_search tool to
 // get search results, then formats them as plain text.
 //
@@ -280,13 +282,13 @@ func searchViaOpenAI(ctx context.Context, apiKey, query string, numResults int) 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := openAIHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}

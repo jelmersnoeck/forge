@@ -94,6 +94,36 @@ func TestWebSearchHandler_NoAPIKey_OpenAI(t *testing.T) {
 	r.Contains(result.Content[0].Text, "OPENAI_API_KEY")
 }
 
+func TestDispatchSearch_NoAPIKey(t *testing.T) {
+	tests := map[string]struct {
+		provider string
+		envKey   string
+		wantErr  string
+	}{
+		"anthropic missing key": {
+			provider: "anthropic",
+			envKey:   "ANTHROPIC_API_KEY",
+			wantErr:  "ANTHROPIC_API_KEY",
+		},
+		"openai missing key": {
+			provider: "openai",
+			envKey:   "OPENAI_API_KEY",
+			wantErr:  "OPENAI_API_KEY",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			t.Setenv(tc.envKey, "")
+
+			_, err := dispatchSearch(context.Background(), tc.provider, "Troy Barnes", 5)
+			r.Error(err)
+			r.Contains(err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestFormatSearchResponse_Empty(t *testing.T) {
 	r := require.New(t)
 

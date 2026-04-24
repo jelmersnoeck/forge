@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
-	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/mcp"
 	"github.com/jelmersnoeck/forge/internal/review"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
@@ -669,41 +668,23 @@ func (w *Worker) makeAgentRunner(
 // selectProvider picks the LLM provider with this priority:
 //  1. FORGE_PROVIDER env var (explicit override)
 //  2. ~/.forge/config.toml [provider].default
-//  3. Auto-detect: ANTHROPIC_API_KEY → OpenAI_API_KEY → `claude` on PATH
+//  3. Auto-detect: ANTHROPIC_API_KEY → OPENAI_API_KEY → `claude` on PATH
 //  4. Fallback to Anthropic (will fail on first call with clear error)
 //
 // Returns both the provider instance and its canonical name.
 func selectProvider() (types.LLMProvider, string) {
-	// Priority 1: explicit env override
-	if envProv := os.Getenv("FORGE_PROVIDER"); envProv != "" {
-		return providerFromName(envProv), envProv
+	resolved := provider.ResolveProvider()
+
+	if resolved.ConfigErr != nil {
+		log.Printf("[provider] ERROR: failed to load user config: %v — falling back to auto-detect", resolved.ConfigErr)
 	}
 
-	// Priority 2: user config
-	userCfg, err := config.LoadUserConfig()
-	if err != nil {
-		log.Printf("[provider] warning: failed to load user config: %v", err)
-	} else if userCfg.Provider.Default != "" {
-		log.Printf("[provider] using configured default: %s", userCfg.Provider.Default)
-		return providerFromName(userCfg.Provider.Default), userCfg.Provider.Default
+	if resolved.Found {
+		log.Printf("[provider] using %s (via %s)", resolved.Name, resolved.Source)
+		return provider.FromNameOrFallback(resolved.Name), resolved.Name
 	}
 
-	// Priority 3: auto-detect from environment
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		return provider.NewAnthropic(key), "anthropic"
-	}
-
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		log.Println("[provider] ANTHROPIC_API_KEY not set, using OpenAI provider")
-		return provider.NewOpenAI(key), "openai"
-	}
-
-	if _, err := exec.LookPath("claude"); err == nil {
-		log.Println("[provider] ANTHROPIC_API_KEY not set, using Claude CLI provider")
-		return provider.NewClaudeCLI(), "claude-cli"
-	}
-
-	log.Println("[provider] WARNING: ANTHROPIC_API_KEY not set and claude CLI not found — API calls will fail")
+	log.Println("[provider] WARNING: no provider detected — API calls will fail")
 	return provider.NewAnthropic(""), "anthropic"
 }
 
@@ -714,33 +695,6 @@ func defaultModelForProvider(providerName string) string {
 		return "gpt-4.1"
 	default:
 		return "claude-opus-4-6"
-	}
-}
-
-// providerFromName instantiates a provider by name. Falls back to Anthropic
-// with a warning if the name is unrecognized.
-func providerFromName(name string) types.LLMProvider {
-	switch name {
-	case "anthropic":
-		key := os.Getenv("ANTHROPIC_API_KEY")
-		if key == "" {
-			log.Println("[provider] WARNING: provider=anthropic but ANTHROPIC_API_KEY not set — API calls will fail")
-		}
-		return provider.NewAnthropic(key)
-	case "claude-cli":
-		if _, err := exec.LookPath("claude"); err != nil {
-			log.Println("[provider] WARNING: provider=claude-cli but `claude` not found on PATH")
-		}
-		return provider.NewClaudeCLI()
-	case "openai":
-		key := os.Getenv("OPENAI_API_KEY")
-		if key == "" {
-			log.Println("[provider] WARNING: provider=openai but OPENAI_API_KEY not set — API calls will fail")
-		}
-		return provider.NewOpenAI(key)
-	default:
-		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
-		return provider.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
 	}
 }
 

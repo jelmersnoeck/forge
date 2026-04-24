@@ -5,13 +5,10 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -27,66 +24,19 @@ import (
 // Intentionally does not cache: this runs once at session start, so the env
 // lookups are negligible and caching would complicate test isolation.
 func newLightweightProvider() types.LLMProvider {
-	// Priority 1: explicit env override
-	if envProv := os.Getenv("FORGE_PROVIDER"); envProv != "" {
-		return providerByName(envProv)
+	resolved := provider.ResolveProvider()
+
+	if resolved.ConfigErr != nil {
+		log.Printf("[session-name] ERROR: failed to load user config: %v — falling back to auto-detect", resolved.ConfigErr)
 	}
 
-	// Priority 2: user config
-	userCfg, err := config.LoadUserConfig()
-	if err == nil && userCfg.Provider.Default != "" {
-		log.Printf("[session-name] using configured provider: %s", userCfg.Provider.Default)
-		return providerByName(userCfg.Provider.Default)
+	if resolved.Found {
+		log.Printf("[session-name] using %s provider (via %s)", resolved.Name, resolved.Source)
+		return provider.FromName(resolved.Name)
 	}
 
-	// Priority 3: auto-detect from environment
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		log.Printf("[session-name] using Anthropic provider")
-		return provider.NewAnthropic(key)
-	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		log.Printf("[session-name] using OpenAI provider")
-		return provider.NewOpenAI(key)
-	}
-	if path, err := exec.LookPath("claude"); err == nil {
-		// LookPath already checks executability on Unix (os.Stat + mode bits),
-		// but verify we can stat the resolved path to catch broken symlinks.
-		if _, statErr := os.Stat(path); statErr == nil {
-			log.Printf("[session-name] using Claude CLI provider (%s)", path)
-			return provider.NewClaudeCLI()
-		}
-		log.Printf("[session-name] claude found at %s but not accessible: %v", path, err)
-	}
 	log.Printf("[session-name] no LLM provider available — will use random names")
 	return nil
-}
-
-// providerByName instantiates a provider by name for lightweight calls.
-// Returns nil for unrecognized names.
-func providerByName(name string) types.LLMProvider {
-	switch name {
-	case "anthropic":
-		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-			return provider.NewAnthropic(key)
-		}
-		log.Printf("[session-name] provider=anthropic but ANTHROPIC_API_KEY not set")
-		return nil
-	case "openai":
-		if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-			return provider.NewOpenAI(key)
-		}
-		log.Printf("[session-name] provider=openai but OPENAI_API_KEY not set")
-		return nil
-	case "claude-cli":
-		if _, err := exec.LookPath("claude"); err == nil {
-			return provider.NewClaudeCLI()
-		}
-		log.Printf("[session-name] provider=claude-cli but `claude` not found on PATH")
-		return nil
-	default:
-		log.Printf("[session-name] unknown provider %q — skipping", name)
-		return nil
-	}
 }
 
 // sessionNameTimeout caps the LLM call for slug generation.
