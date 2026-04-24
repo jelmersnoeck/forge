@@ -7,6 +7,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestIsAliasModel(t *testing.T) {
+	tests := map[string]struct {
+		model string
+		want  bool
+	}{
+		"dated haiku 4.5": {
+			model: "claude-haiku-4-5-20251001",
+			want:  false,
+		},
+		"alias haiku 4.5": {
+			model: "claude-haiku-4-5",
+			want:  true,
+		},
+		"dated sonnet": {
+			model: "claude-3-5-sonnet-20241022",
+			want:  false,
+		},
+		"dated opus": {
+			model: "claude-3-opus-20240229",
+			want:  false,
+		},
+		"alias opus 4-6 (no date suffix)": {
+			model: "claude-opus-4-6",
+			want:  true,
+		},
+		"short model name": {
+			model: "haiku",
+			want:  true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, isAliasModel(tc.model))
+		})
+	}
+}
+
 func TestCalculate(t *testing.T) {
 	r := require.New(t)
 

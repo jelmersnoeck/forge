@@ -3,6 +3,9 @@ package cost
 
 import (
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -90,6 +93,43 @@ var modelPricing = map[string]Pricing{
 	},
 }
 
+// isAliasModel returns true if the model name is an alias (no dated suffix).
+// Alias models like "claude-haiku-4-5" resolve to different underlying models
+// over time, so their hardcoded pricing may drift from the actual model's price.
+func isAliasModel(model string) bool {
+	// Dated models end with -YYYYMMDD (8 digits).
+	if len(model) < 9 {
+		return true
+	}
+	suffix := model[len(model)-8:]
+	for _, c := range suffix {
+		if c < '0' || c > '9' {
+			return true
+		}
+	}
+	return model[len(model)-9] != '-'
+}
+
+// aliasLogOnce ensures alias pricing warnings are logged at most once per model
+// per process lifetime — Calculate is called on every API response, so
+// per-call logging would be extremely noisy.
+var aliasLogOnce sync.Map // model string -> *sync.Once
+
+func logAliasOnce(model string, pricing Pricing) {
+	v, _ := aliasLogOnce.LoadOrStore(model, &sync.Once{})
+	v.(*sync.Once).Do(func() {
+		log.Printf("[cost] using hardcoded pricing for alias model %q — may drift if alias resolves to a differently-priced model", model)
+
+		// Detect potential pricing staleness: if the alias has different pricing
+		// than a known dated variant with the same prefix, warn louder.
+		for dated, dp := range modelPricing {
+			if dated != model && strings.HasPrefix(dated, model) && dp != pricing {
+				log.Printf("[cost] WARNING: alias %q pricing differs from dated variant %q — review hardcoded prices", model, dated)
+			}
+		}
+	})
+}
+
 // Calculate computes the cost in USD for the given token usage and model.
 // Returns 0.0 if model is unknown.
 //
@@ -105,6 +145,10 @@ func Calculate(model string, usage types.TokenUsage) float64 {
 	pricing, ok := modelPricing[model]
 	if !ok {
 		return 0.0
+	}
+
+	if isAliasModel(model) {
+		logAliasOnce(model, pricing)
 	}
 
 	// All token types are charged separately (additive model)
