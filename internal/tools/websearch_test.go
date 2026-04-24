@@ -405,6 +405,18 @@ func TestSearchViaOpenAI_ResponseTruncation(t *testing.T) {
 	})
 }
 
+func TestReadLimitedBody_MaxInt64Overflow(t *testing.T) {
+	r := require.New(t)
+
+	// math.MaxInt64 + 1 would overflow to negative. readLimitedBody should
+	// handle this gracefully by clamping instead of panicking.
+	data := strings.NewReader("Troy Barnes is a football star")
+	body, truncated, err := readLimitedBody(data, 1<<63-1)
+	r.NoError(err)
+	r.False(truncated)
+	r.Equal("Troy Barnes is a football star", string(body))
+}
+
 func mustMarshal(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

@@ -30,7 +30,7 @@ func newLightweightProvider() (types.LLMProvider, error) {
 		case os.IsNotExist(resolved.ConfigErr):
 			log.Printf("[session-name] config_status=not_found — falling back to auto-detect")
 		default:
-			log.Printf("[session-name] config_error=%q", resolved.ConfigErr)
+			log.Printf("[session-name] config_error=%v", resolved.ConfigErr)
 			return nil, fmt.Errorf("configuration file is corrupted or unreadable")
 		}
 	}

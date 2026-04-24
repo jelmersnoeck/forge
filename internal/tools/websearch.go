@@ -290,12 +290,22 @@ func openAIHTTPClient() *http.Client {
 // different constraints.
 var MaxResponseBodySize int64 = 5 * 1024 * 1024 // 5 MB
 
-// readLimitedBody reads up to limit+1 bytes from r. If exactly limit+1 bytes
-// were available, the body exceeded the limit (truncated=true) and only limit
-// bytes are returned. This avoids false positives when the body is exactly at
-// the limit.
+// readLimitedBody reads up to limit bytes from r and reports whether the
+// stream contained more data than limit. It does this by attempting to read
+// limit+1 bytes via io.LimitReader: if all limit+1 bytes are returned the
+// body is over-limit (truncated=true) and only the first limit bytes are
+// returned. When the body is exactly limit bytes or fewer, truncated is false.
+//
+// If limit is math.MaxInt64, the +1 would overflow; in that case we read at
+// most limit bytes and never report truncation (a body that large is already
+// effectively unlimited).
 func readLimitedBody(r io.Reader, limit int64) (body []byte, truncated bool, err error) {
-	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	// Guard against int64 overflow: math.MaxInt64 + 1 wraps to negative.
+	readLimit := limit + 1
+	if readLimit <= 0 {
+		readLimit = limit
+	}
+	data, err := io.ReadAll(io.LimitReader(r, readLimit))
 	if err != nil {
 		return nil, false, err
 	}
