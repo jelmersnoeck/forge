@@ -43,6 +43,7 @@ func Consolidate(
 
 	if model == "" {
 		model = modelForProvider("")
+		log.Printf("[consolidate] no model specified, defaulting to %s", model)
 	}
 
 	userPrompt := buildConsolidationPrompt(results)
@@ -87,10 +88,7 @@ func Consolidate(
 
 	consolidated, err := parseConsolidationResponse(responseText)
 	if err != nil {
-		truncated := responseText
-		if len(truncated) > 200 {
-			truncated = truncated[:200] + "..."
-		}
+		truncated := capString(responseText, 200)
 		log.Printf("[consolidate] parse error, falling back to raw: %v (response prefix: %q)", err, truncated)
 		return fallbackToRaw(results), nil
 	}
@@ -193,11 +191,13 @@ func buildConsolidationPrompt(results []ReviewResult) string {
 }
 
 // capString truncates s to maxLen runes to bound prompt size.
+// Uses rune counting to avoid splitting multi-byte UTF-8 characters.
 func capString(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 // parseConsolidationResponse extracts consolidated findings from LLM output.

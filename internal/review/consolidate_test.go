@@ -586,6 +586,60 @@ func TestFormatConsolidatedForCoder(t *testing.T) {
 	r.NotContains(msg, "chang.go", "suggestion file should not appear")
 }
 
+func TestCapString(t *testing.T) {
+	tests := map[string]struct {
+		input  string
+		maxLen int
+		want   string
+	}{
+		"short ASCII": {
+			input:  "Troy Barnes",
+			maxLen: 20,
+			want:   "Troy Barnes",
+		},
+		"exact length": {
+			input:  "Abed",
+			maxLen: 4,
+			want:   "Abed",
+		},
+		"truncate ASCII": {
+			input:  "Greendale Community College",
+			maxLen: 9,
+			want:   "Greendale...",
+		},
+		"multibyte safe truncation": {
+			// "Señor Chang" — ñ is 2 bytes in UTF-8
+			input:  "Señor Chang",
+			maxLen: 5,
+			want:   "Señor...",
+		},
+		"CJK characters": {
+			// Each CJK char is 3 bytes — truncating at byte boundary would corrupt
+			input:  "日本語テスト",
+			maxLen: 3,
+			want:   "日本語...",
+		},
+		"emoji truncation": {
+			// Emoji are 4 bytes each in UTF-8
+			input:  "🎲🎯🎪🎭",
+			maxLen: 2,
+			want:   "🎲🎯...",
+		},
+		"empty string": {
+			input:  "",
+			maxLen: 10,
+			want:   "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, capString(tc.input, tc.maxLen))
+		})
+	}
+}
+
 func TestBuildConsolidationPromptStructure(t *testing.T) {
 	r := require.New(t)
 

@@ -396,6 +396,7 @@ func TestModelForProvider(t *testing.T) {
 		"openai":        {input: "openai", want: "gpt-4.1"},
 		"OpenAI casing": {input: "OpenAI-prod", want: "gpt-4.1"},
 		"unknown":       {input: "greendale-llm", want: "claude-sonnet-4-20250514"},
+		"empty string":  {input: "", want: "claude-sonnet-4-20250514"},
 	}
 
 	for name, tc := range tests {
@@ -404,6 +405,67 @@ func TestModelForProvider(t *testing.T) {
 			r.Equal(tc.want, modelForProvider(tc.input))
 		})
 	}
+}
+
+// callTrackingProvider wraps a mockProvider and records how many Chat calls it receives.
+type callTrackingProvider struct {
+	mockProvider
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *callTrackingProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	return p.mockProvider.Chat(ctx, req)
+}
+
+func (p *callTrackingProvider) CallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+func TestConsolidateUsesAllProviders(t *testing.T) {
+	r := require.New(t)
+
+	// Both providers return valid review findings for the review phase.
+	// The consolidation phase should call BOTH providers, not just one.
+	consolidationResponse := `[
+		{"severity":"critical","file":"paintball.go","startLine":42,"description":"SQL injection","sources":[{"reviewer":"security","provider":"anthropic"}]}
+	]`
+
+	anthropicProvider := &callTrackingProvider{
+		mockProvider: mockProvider{response: consolidationResponse},
+	}
+	openaiProvider := &callTrackingProvider{
+		mockProvider: mockProvider{response: consolidationResponse},
+	}
+
+	providers := map[string]types.LLMProvider{
+		"anthropic": anthropicProvider,
+		"openai":    openaiProvider,
+	}
+
+	reviewers := []Reviewer{
+		testReviewer{name: "security"},
+	}
+
+	ec := &eventCollector{}
+	orch := NewOrchestrator(providers, reviewers)
+
+	cr := orch.Run(context.Background(), ReviewRequest{
+		Diff: "diff --git a/paintball.go b/paintball.go\n+func Attack() {}",
+	}, ec.emit)
+
+	r.NotEmpty(cr.Consolidated)
+
+	// Each provider should have been called at least twice:
+	// once for the review phase (1 reviewer x 1 call), plus once for consolidation.
+	// With 2 providers, both should participate in consolidation.
+	r.GreaterOrEqual(anthropicProvider.CallCount(), 2, "anthropic should be called for review + consolidation")
+	r.GreaterOrEqual(openaiProvider.CallCount(), 2, "openai should be called for review + consolidation")
 }
 
 func TestFormatSummary(t *testing.T) {
