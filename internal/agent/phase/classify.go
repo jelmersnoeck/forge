@@ -25,13 +25,15 @@ const (
 // an error occurs (e.g., model deprecated, region unavailable).
 //
 // Priority order rationale:
-//   - claude-haiku-4-5: newest Haiku, best quality/speed tradeoff
-//   - claude-3-5-haiku: stable fallback if the newer model isn't available yet
+//   - claude-haiku-4-5: alias that resolves to latest Haiku — fast path
+//   - claude-3-5-haiku-20241022: distinct older model as true fallback
 //
-// These are real Anthropic model IDs. If a model is retired, the API returns an
-// error and we fall through — no silent misrouting.
+// The fallback must be a genuinely different model (not just a dated version of
+// the same one) so both entries don't fail simultaneously if a model family has
+// an outage. These are real Anthropic model IDs — retired models return an API
+// error and we fall through.
 var classificationModels = []string{
-	"claude-haiku-4-5-20251001",
+	"claude-haiku-4-5",
 	"claude-3-5-haiku-20241022",
 }
 
@@ -71,15 +73,22 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 	classifyPrompt := truncateAtWordBoundary(prompt, maxClassifyPromptLen)
 
 	var lastErr error
-	for _, model := range classificationModels {
+	for i, model := range classificationModels {
 		intent, err := classifyWithModel(ctx, provider, model, classifyPrompt)
 		if err == nil {
+			switch {
+			case i > 0:
+				log.Printf("[classify] succeeded on fallback model %s after %d failed attempt(s)", model, i)
+			default:
+				log.Printf("[classify] intent=%s model=%s", intent, model)
+			}
 			return intent, nil
 		}
 		lastErr = err
-		log.Printf("[classify] model %s failed: %v — trying next", model, err)
+		log.Printf("[classify] model %s failed: %v", model, err)
 	}
 
+	log.Printf("[classify] all %d classification models failed — defaulting to task", len(classificationModels))
 	return IntentTask, fmt.Errorf("all classification models failed: %w", lastErr)
 }
 

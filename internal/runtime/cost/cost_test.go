@@ -7,6 +7,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestIsAliasModel(t *testing.T) {
+	tests := map[string]struct {
+		model string
+		want  bool
+	}{
+		"dated haiku 4.5": {
+			model: "claude-haiku-4-5-20251001",
+			want:  false,
+		},
+		"alias haiku 4.5": {
+			model: "claude-haiku-4-5",
+			want:  true,
+		},
+		"dated sonnet": {
+			model: "claude-3-5-sonnet-20241022",
+			want:  false,
+		},
+		"dated opus": {
+			model: "claude-3-opus-20240229",
+			want:  false,
+		},
+		"alias opus 4-6 (no date suffix)": {
+			model: "claude-opus-4-6",
+			want:  true,
+		},
+		"short model name": {
+			model: "haiku",
+			want:  true,
+		},
+		"exactly 8 chars (date suffix length)": {
+			model: "12345678",
+			want:  true,
+		},
+		"exactly 9 chars no dash separator": {
+			model: "x12345678",
+			want:  true,
+		},
+		"minimum dated model (prefix-YYYYMMDD)": {
+			model: "x-12345678",
+			want:  false,
+		},
+		"empty string": {
+			model: "",
+			want:  true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, isAliasModel(tc.model))
+		})
+	}
+}
+
 func TestCalculate(t *testing.T) {
 	r := require.New(t)
 
@@ -51,6 +106,30 @@ func TestCalculate(t *testing.T) {
 				OutputTokens: 1000,
 			},
 			want: 0.00150, // (1000/1M * 0.25) + (1000/1M * 1.25)
+		},
+		"haiku 4.5 alias": {
+			model: "claude-haiku-4-5",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.006, // (1000/1M * 1.00) + (1000/1M * 5.00)
+		},
+		"haiku 4.5 dated": {
+			model: "claude-haiku-4-5-20251001",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.006, // (1000/1M * 1.00) + (1000/1M * 5.00)
+		},
+		"retired haiku 3.5 still priced for historical lookups": {
+			model: "claude-3-5-haiku-20241022",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.006, // (1000/1M * 1.00) + (1000/1M * 5.00)
 		},
 		"unknown model": {
 			model: "claude-unknown-model",

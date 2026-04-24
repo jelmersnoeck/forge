@@ -3,6 +3,9 @@ package cost
 
 import (
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -81,6 +84,64 @@ var modelPricing = map[string]Pricing{
 		CacheWrite: 1.25,
 		CacheRead:  0.10,
 	},
+	// Claude Haiku 4.5 (alias — resolves to latest Haiku)
+	"claude-haiku-4-5": {
+		Input:      1.00,
+		Output:     5.00,
+		CacheWrite: 1.25,
+		CacheRead:  0.10,
+	},
+}
+
+// dateSuffixLen is the length of the YYYYMMDD date suffix on dated model names.
+const dateSuffixLen = 8
+
+// minDatedModelLen is the minimum length for a dated model name: at least one
+// character, a dash separator, then YYYYMMDD (e.g. "x-20240229").
+const minDatedModelLen = dateSuffixLen + 2 // "-" + YYYYMMDD + at least 1 prefix char
+
+// isAliasModel returns true if the model name is an alias (no dated suffix).
+// Alias models like "claude-haiku-4-5" resolve to different underlying models
+// over time, so their hardcoded pricing may drift from the actual model's price.
+//
+// Dated models end with "-YYYYMMDD" — a dash followed by exactly 8 digits.
+func isAliasModel(model string) bool {
+	if len(model) < minDatedModelLen {
+		return true
+	}
+	if model[len(model)-dateSuffixLen-1] != '-' {
+		return true
+	}
+	for _, c := range model[len(model)-dateSuffixLen:] {
+		if c < '0' || c > '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// aliasLogOnce ensures alias pricing warnings are logged at most once per model
+// per process lifetime — Calculate is called on every API response, so
+// per-call logging would be extremely noisy.
+var aliasLogOnce sync.Map // model string -> *sync.Once
+
+func logAliasOnce(model string, pricing Pricing) {
+	v, _ := aliasLogOnce.LoadOrStore(model, &sync.Once{})
+	once, ok := v.(*sync.Once)
+	if !ok {
+		return
+	}
+	once.Do(func() {
+		log.Printf("[cost] using hardcoded pricing for alias model %q — may drift if alias resolves to a differently-priced model", model)
+
+		// Detect potential pricing staleness: if the alias has different pricing
+		// than a known dated variant with the same prefix, warn louder.
+		for dated, dp := range modelPricing {
+			if dated != model && strings.HasPrefix(dated, model) && dp != pricing {
+				log.Printf("[cost] WARNING: alias %q pricing differs from dated variant %q — review hardcoded prices", model, dated)
+			}
+		}
+	})
 }
 
 // Calculate computes the cost in USD for the given token usage and model.
@@ -98,6 +159,10 @@ func Calculate(model string, usage types.TokenUsage) float64 {
 	pricing, ok := modelPricing[model]
 	if !ok {
 		return 0.0
+	}
+
+	if isAliasModel(model) {
+		logAliasOnce(model, pricing)
 	}
 
 	// All token types are charged separately (additive model)
