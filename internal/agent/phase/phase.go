@@ -17,10 +17,10 @@ type Phase struct {
 
 // Result is the output of a completed phase.
 type Result struct {
-	Phase        string                      // phase name
-	SpecPath     string                      // path to spec file (spec-creator output)
-	Diff         string                      // git diff (coder output)
-	Findings     []review.Finding            // raw review findings (reviewer output)
+	Phase        string                       // phase name
+	SpecPath     string                       // path to spec file (spec-creator output)
+	Diff         string                       // git diff (coder output)
+	Findings     []review.Finding             // raw review findings (reviewer output)
 	Consolidated []review.ConsolidatedFinding // deduplicated findings (post-consolidation)
 	HistoryID    string                      // conversation historyID for session resumption
 }
