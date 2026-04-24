@@ -86,7 +86,7 @@ func TestOrchestrator(t *testing.T) {
 		wantFindings int
 		wantErrors   int
 		wantSummary  string
-		check        func(t *testing.T, results []ReviewResult, ec *eventCollector)
+		check        func(t *testing.T, cr ConsolidatedResults, ec *eventCollector)
 	}{
 		"happy path all reviewers": {
 			providers: map[string]types.LLMProvider{
@@ -100,8 +100,9 @@ func TestOrchestrator(t *testing.T) {
 			wantResults:  2,
 			wantFindings: 2,
 			wantErrors:   0,
-			check: func(t *testing.T, results []ReviewResult, ec *eventCollector) {
+			check: func(t *testing.T, cr ConsolidatedResults, ec *eventCollector) {
 				r := require.New(t)
+				results := cr.Raw
 				for _, res := range results {
 					r.Empty(res.Error)
 					r.Len(res.Findings, 1)
@@ -111,7 +112,7 @@ func TestOrchestrator(t *testing.T) {
 					r.Equal("anthropic", res.Findings[0].Provider)
 				}
 
-				// Verify events: review_start + 2 review_finding + 2 review_agent_done + review_summary
+				// Verify events: review_start + 2 review_finding + 2 review_agent_done + review_consolidated + review_summary
 				startEvents := ec.byType("review_start")
 				r.Len(startEvents, 1)
 				r.Contains(startEvents[0].Content, "2 reviewers")
@@ -119,9 +120,16 @@ func TestOrchestrator(t *testing.T) {
 				findingEvents := ec.byType("review_finding")
 				r.Len(findingEvents, 2)
 
+				// review_consolidated event should be emitted.
+				consolidatedEvents := ec.byType("review_consolidated")
+				r.Len(consolidatedEvents, 1)
+
 				summaryEvents := ec.byType("review_summary")
 				r.Len(summaryEvents, 1)
 				r.Contains(summaryEvents[0].Content, "2 findings")
+
+				// Consolidated findings should exist.
+				r.NotEmpty(cr.Consolidated)
 			},
 		},
 		"one reviewer fails": {
@@ -136,8 +144,9 @@ func TestOrchestrator(t *testing.T) {
 			wantResults:  2,
 			wantFindings: 1,
 			wantErrors:   1,
-			check: func(t *testing.T, results []ReviewResult, ec *eventCollector) {
+			check: func(t *testing.T, cr ConsolidatedResults, ec *eventCollector) {
 				r := require.New(t)
+				results := cr.Raw
 				var errCount, findingCount int
 				for _, res := range results {
 					switch {
@@ -168,8 +177,9 @@ func TestOrchestrator(t *testing.T) {
 			diff:        "diff --git a/mascot.go b/mascot.go\n+func Dance() {}",
 			wantResults: 1,
 			wantErrors:  1,
-			check: func(t *testing.T, results []ReviewResult, ec *eventCollector) {
+			check: func(t *testing.T, cr ConsolidatedResults, ec *eventCollector) {
 				r := require.New(t)
+				results := cr.Raw
 				r.Len(results, 1)
 				r.Contains(results[0].Error, "parse error")
 				r.Nil(results[0].Findings)
@@ -186,9 +196,9 @@ func TestOrchestrator(t *testing.T) {
 				testReviewer{name: "security"},
 			},
 			diff: "   ",
-			check: func(t *testing.T, results []ReviewResult, ec *eventCollector) {
+			check: func(t *testing.T, cr ConsolidatedResults, ec *eventCollector) {
 				r := require.New(t)
-				r.Nil(results)
+				r.Nil(cr.Raw)
 
 				summaryEvents := ec.byType("review_summary")
 				r.Len(summaryEvents, 1)
@@ -210,11 +220,11 @@ func TestOrchestrator(t *testing.T) {
 				testReviewer{name: "code-quality"},
 			},
 			diff: "diff --git a/pillow_fort.go b/pillow_fort.go\n+func Build() {}",
-			check: func(t *testing.T, results []ReviewResult, ec *eventCollector) {
+			check: func(t *testing.T, cr ConsolidatedResults, ec *eventCollector) {
 				r := require.New(t)
 				// With cancelled context, either we get empty findings (partial text)
 				// or errors. The key is we returned cleanly.
-				r.NotNil(results, "should return something even on cancellation")
+				r.NotNil(cr.Raw, "should return something even on cancellation")
 			},
 		},
 	}
@@ -237,7 +247,8 @@ func TestOrchestrator(t *testing.T) {
 				Diff: tc.diff,
 			}
 
-			results := orch.Run(ctx, req, ec.emit)
+			cr := orch.Run(ctx, req, ec.emit)
+			results := cr.Raw
 
 			if tc.wantResults > 0 {
 				r.Len(results, tc.wantResults)
@@ -262,7 +273,7 @@ func TestOrchestrator(t *testing.T) {
 			}
 
 			if tc.check != nil {
-				tc.check(t, results, ec)
+				tc.check(t, cr, ec)
 			}
 		})
 	}
@@ -601,10 +612,11 @@ func TestOrchestratorMultipleProviders(t *testing.T) {
 
 	ec := &eventCollector{}
 	orch := NewOrchestrator(providers, reviewers)
-	results := orch.Run(context.Background(), ReviewRequest{
+	cr := orch.Run(context.Background(), ReviewRequest{
 		Diff: "diff --git a/foo.go b/foo.go\n+func Foo() {}",
 	}, ec.emit)
 
+	results := cr.Raw
 	r.Len(results, 4, "2 reviewers x 2 providers = 4 results")
 
 	// Check start event says 4 agents.
@@ -641,6 +653,11 @@ func TestOrchestratorMultipleProviders(t *testing.T) {
 		r.Contains(ps.Content, "security")
 		r.Contains(ps.Content, "code-quality")
 	}
+
+	// Consolidated findings should be present.
+	consolidatedEvents := ec.byType("review_consolidated")
+	r.Len(consolidatedEvents, 1)
+	r.NotEmpty(cr.Consolidated)
 }
 
 func TestFormatProviderSummary(t *testing.T) {

@@ -235,15 +235,6 @@ func TestFindLatestSpec(t *testing.T) {
 	r.Contains(path, ".md")
 }
 
-func TestConvertToResults(t *testing.T) {
-	r := require.New(t)
-
-	// Empty findings.
-	results := convertToResults(nil)
-	r.Len(results, 1)
-	r.Empty(results[0].Findings)
-}
-
 // helpers
 
 func emptyBundle() types.ContextBundle {

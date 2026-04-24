@@ -57,29 +57,32 @@ func TestBuildCoderPromptWithRealFile(t *testing.T) {
 	r.Contains(prompt, "source of truth")
 }
 
-func TestFormatFindingsForCoder(t *testing.T) {
+func TestFormatConsolidatedFindingsForCoder(t *testing.T) {
 	r := require.New(t)
 
-	findings := []review.Finding{
+	findings := []review.ConsolidatedFinding{
 		{
 			Severity:    review.SeverityCritical,
 			File:        "internal/paintball/gun.go",
 			StartLine:   42,
 			Description: "SQL injection in query builder",
+			Sources:     []review.Source{{Reviewer: "security", Provider: "anthropic"}},
 		},
 		{
 			Severity:    review.SeverityWarning,
 			Description: "Missing nil check on Señor Chang's credentials",
+			Sources:     []review.Source{{Reviewer: "code-quality", Provider: "openai"}},
 		},
 		{
 			Severity:    review.SeveritySuggestion,
 			File:        "internal/paintball/arena.go",
 			StartLine:   10,
 			Description: "Consider extracting into a helper — streets ahead",
+			Sources:     []review.Source{{Reviewer: "maintainability", Provider: "anthropic"}},
 		},
 	}
 
-	result := formatFindingsForCoder(findings)
+	result := formatConsolidatedFindingsForCoder(findings)
 	r.Contains(result, "SQL injection")
 	r.Contains(result, "internal/paintball/gun.go:42")
 	r.Contains(result, "Missing nil check")
@@ -88,24 +91,25 @@ func TestFormatFindingsForCoder(t *testing.T) {
 	r.Contains(result, "Fix ONLY the issues listed below")
 }
 
-func TestFormatFindingsForCoderOnlySuggestions(t *testing.T) {
+func TestFormatConsolidatedFindingsForCoderOnlySuggestions(t *testing.T) {
 	r := require.New(t)
 
-	findings := []review.Finding{
+	findings := []review.ConsolidatedFinding{
 		{
 			Severity:    review.SeveritySuggestion,
 			Description: "Abed recommends a blanket fort module",
+			Sources:     []review.Source{{Reviewer: "code-quality", Provider: "anthropic"}},
 		},
 	}
 
-	result := formatFindingsForCoder(findings)
+	result := formatConsolidatedFindingsForCoder(findings)
 	r.Contains(result, "Fix ONLY")
 	r.NotContains(result, "blanket fort")
 }
 
-func TestFormatFindingsForCoderEmpty(t *testing.T) {
+func TestFormatConsolidatedFindingsForCoderEmpty(t *testing.T) {
 	r := require.New(t)
-	result := formatFindingsForCoder(nil)
+	result := formatConsolidatedFindingsForCoder(nil)
 	r.Contains(result, "Fix ONLY the issues listed below")
 }
 

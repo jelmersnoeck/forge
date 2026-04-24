@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -41,16 +42,17 @@ func NewOrchestrator(providers map[string]types.LLMProvider, reviewers []Reviewe
 }
 
 // Run executes all reviewer×provider combinations concurrently, emitting events
-// as findings arrive, and returns the collected results.
+// as findings arrive, consolidates duplicates via LLM, and returns results.
 //
 //	┌──────────────────────────────────────────┐
 //	│  for each reviewer × provider:           │
 //	│    goroutine → Chat() → parse → emit     │
 //	│                                          │
 //	│  waitgroup barrier                       │
-//	│  emit summary                            │
+//	│  consolidate (LLM dedup)                 │
+//	│  emit review_consolidated + summary      │
 //	└──────────────────────────────────────────┘
-func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(types.OutboundEvent)) []ReviewResult {
+func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(types.OutboundEvent)) ConsolidatedResults {
 	if strings.TrimSpace(req.Diff) == "" {
 		emit(types.OutboundEvent{
 			ID:        uuid.New().String(),
@@ -58,7 +60,7 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 			Content:   "No diff to review",
 			Timestamp: time.Now().Unix(),
 		})
-		return nil
+		return ConsolidatedResults{}
 	}
 
 	totalCombos := len(o.reviewers) * len(o.providers)
@@ -99,6 +101,9 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 
 	wg.Wait()
 
+	// Consolidation: deduplicate and calibrate findings via LLM.
+	consolidated := o.consolidate(ctx, results, emit)
+
 	// Emit per-provider summaries before the aggregate.
 	for _, pName := range sortedProviderNames(results) {
 		var provResults []ReviewResult
@@ -122,7 +127,54 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 		Timestamp: time.Now().Unix(),
 	})
 
-	return results
+	return ConsolidatedResults{
+		Raw:          results,
+		Consolidated: consolidated,
+	}
+}
+
+// consolidate runs the LLM consolidation step and emits a review_consolidated event.
+// Returns raw findings converted 1:1 if consolidation is skipped or fails.
+func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, emit func(types.OutboundEvent)) []ConsolidatedFinding {
+	allFindings := collectAllFindings(results)
+	if len(allFindings) == 0 {
+		return nil
+	}
+
+	provider := o.pickConsolidationProvider()
+	if provider == nil {
+		log.Printf("[orchestrator] no provider available for consolidation, using raw findings")
+		return fallbackToRaw(results)
+	}
+
+	consolidated, err := Consolidate(ctx, provider, results)
+	if err != nil {
+		log.Printf("[orchestrator] consolidation error: %v", err)
+		return fallbackToRaw(results)
+	}
+
+	// Emit the consolidated findings as a single event.
+	cJSON, _ := json.Marshal(consolidated)
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		Type:      "review_consolidated",
+		Content:   string(cJSON),
+		Timestamp: time.Now().Unix(),
+	})
+
+	return consolidated
+}
+
+// pickConsolidationProvider selects a provider for the consolidation step.
+// Prefers "anthropic" if available, falls back to any other.
+func (o *Orchestrator) pickConsolidationProvider() types.LLMProvider {
+	if p, ok := o.providers["anthropic"]; ok {
+		return p
+	}
+	for _, p := range o.providers {
+		return p
+	}
+	return nil
 }
 
 // runSingle executes one reviewer against one provider with a timeout.
