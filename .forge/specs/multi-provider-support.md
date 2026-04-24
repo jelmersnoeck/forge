@@ -1,6 +1,6 @@
 ---
 id: multi-provider-support
-status: draft
+status: implemented
 ---
 # Full multi-provider LLM support (OpenAI, etc.)
 
@@ -15,25 +15,30 @@ provider that implements `types.LLMProvider`.
 
 ## Context
 
-Key files and their Anthropic coupling:
+Files modified:
 
-| File | Coupling |
-|------|----------|
-| `internal/agent/worker.go:87-94` | Default model `claude-opus-4-6`; `strings.HasPrefix(model, "claude-")` filter rejects all non-Anthropic models from settings |
-| `internal/agent/worker.go:620-626` | Same `claude-` prefix filter for sub-agent model selection |
-| `internal/agent/worker.go:704-727` | `providerFromName()` falls back to Anthropic for unknown names |
-| `internal/agent/phase/classify.go:33-36` | `classificationModels` hardcodes two Claude Haiku model IDs |
-| `internal/agent/phase/pr.go:157` | PR generation reuses `classificationModels` (Haiku-only) |
-| `internal/runtime/cost/cost.go:20-84` | `modelPricing` map contains only Claude models; returns `$0.00` for everything else |
-| `internal/tools/websearch.go:67-158` | Directly imports and calls `anthropic-sdk-go`; uses `anthropic.ModelClaudeHaiku4_5` and `WebSearchTool20260209Param` |
-| `cmd/forge/session_name.go:24-44` | Provider auto-detection priority hardcodes Anthropic > OpenAI > Claude CLI |
-| `internal/types/types.go:58-66` | `CacheControl` struct models Anthropic-specific ephemeral caching; no equivalent for OpenAI |
-| `internal/review/orchestrator.go:305-310` | `modelForProvider()` maps provider name to model; defaults to Claude |
-| `internal/runtime/provider/openai.go` | Exists and works, but `CacheControl` fields are silently ignored |
+| File | Change |
+|------|--------|
+| `internal/types/types.go` | Added `Provider` field to `MergedSettings` |
+| `internal/agent/worker.go` | Removed `claude-` prefix model filter; added `defaultModelForProvider()`; updated `selectProvider()` with user config priority; sub-agent uses parent provider |
+| `internal/agent/phase/models.go` | New file: `CheapModels()` for provider-aware lightweight model lookup |
+| `internal/agent/phase/classify.go` | `ClassifyIntent()` accepts `providerName` param; uses `CheapModels()` |
+| `internal/agent/phase/pr.go` | `EnsurePR()`/`CreatePR()`/`generatePRContent()` accept `providerName`; use `CheapModels()` |
+| `internal/agent/phase/orchestrator.go` | Pass provider name through to classify/PR functions |
+| `internal/runtime/cost/cost.go` | Added OpenAI model pricing (gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o3, o3-mini, o4-mini) |
+| `internal/tools/websearch.go` | Refactored to provider-name dispatch: Anthropic uses SDK, OpenAI uses Responses API |
+| `internal/tools/registry.go` | `NewDefaultRegistry()` accepts `providerName` to pass to WebSearch |
+| `cmd/forge/session_name.go` | `newLightweightProvider()` respects `FORGE_PROVIDER` env and user config |
+| `internal/review/orchestrator.go` | Already correct — `modelForProvider()` maps provider name to model |
+| `internal/runtime/provider/openai.go` | Unchanged — already ignores `CacheControl` |
+| `AGENTS.md` | Updated docs for multi-provider env vars and gotchas |
 
-Settings and configuration:
-- `.forge/settings.json` / `.forge/settings.local.json` — `model` field; no `provider` field exists
-- `MergedSettings` struct (`internal/types/types.go:324-328`) — has `Model` but no `Provider`
+Test files updated:
+- `internal/runtime/cost/cost_test.go` — OpenAI pricing tests
+- `internal/tools/websearch_test.go` — Provider-specific handler tests, OpenAI response format tests
+- `internal/agent/phase/classify_test.go` — Updated for new `ClassifyIntent` signature
+- `internal/agent/phase/pr_test.go`, `pr_ensure_test.go` — Updated for new `EnsurePR`/`CreatePR` signatures
+- `internal/agent/ensure_pr_test.go` — Updated for new `ensurePR` signature
 
 ## Behavior
 
@@ -54,10 +59,12 @@ Settings and configuration:
 - `Calculate()` continues to return `0.0` for unknown models (no behavior change).
 
 ### 4. WebSearch tool is provider-agnostic
-- The `WebSearch` tool handler is refactored to accept a `types.LLMProvider` (or a search-specific interface) instead of directly constructing an Anthropic client.
-- When the active provider is Anthropic, continue using the existing `web_search_20260209` server tool approach.
-- When the active provider is OpenAI, use OpenAI's `web_search` tool (available on `gpt-4.1` and newer models) or fall back to a simple HTTP search approach.
-- The tool must not import `anthropic-sdk-go` if the active provider is not Anthropic.
+- The `WebSearch` tool handler is refactored to accept a `providerName string` and dispatch to the appropriate search backend.
+- When the active provider is Anthropic or Claude CLI, continues using the existing `web_search_20260209` server tool via Anthropic SDK.
+- When the active provider is OpenAI, uses OpenAI's Responses API with `web_search` tool (via `gpt-4.1-mini`).
+- The OpenAI search path maps `numResults` to `search_context_size` ("low"/"medium"/"high") and deduplicates URL citations.
+- The tool still imports `anthropic-sdk-go` unconditionally (used for the Anthropic code path), but the OpenAI path is pure `net/http`.
+- WebSearch requires the appropriate API key for the active provider (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`); returns an error result if missing.
 
 ### 5. CacheControl is gracefully ignored by non-Anthropic providers
 - No changes to the `CacheControl` type or how the prompt builder attaches it.
@@ -84,7 +91,7 @@ Settings and configuration:
 ## Interfaces
 
 ```go
-// types.go — addition to MergedSettings
+// types.go — MergedSettings with Provider field
 type MergedSettings struct {
     Provider    string            `json:"provider,omitempty"` // "anthropic", "openai", "claude-cli"
     Model       string            `json:"model,omitempty"`
@@ -92,23 +99,35 @@ type MergedSettings struct {
     Env         map[string]string `json:"env,omitempty"`
 }
 
-// phase/models.go (new or in classify.go) — provider-aware cheap model lookup
+// phase/models.go — provider-aware cheap model lookup
 func CheapModels(providerName string) []string
 
+// phase/classify.go — updated signature
+func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string, providerName string) (Intent, error)
+
+// phase/pr.go — updated signatures
+func EnsurePR(ctx context.Context, prov types.LLMProvider, providerName, cwd, specPath string) PRResult
+func CreatePR(ctx context.Context, prov types.LLMProvider, providerName, cwd, specPath string) PRResult
+
+// agent/worker.go — provider-specific default model
+func defaultModelForProvider(providerName string) string
+
+// tools/websearch.go — provider-name based dispatch
+func WebSearchTool(providerName string) types.ToolDefinition
+
+// tools/registry.go — accepts provider name
+func NewDefaultRegistry(providerName string) *Registry
+
 // cost/cost.go — extended modelPricing map (no type changes)
-// Adds entries like:
+// Added entries:
 //   "gpt-4.1":      {Input: 2.00, Output: 8.00}
 //   "gpt-4.1-mini": {Input: 0.40, Output: 1.60}
+//   "gpt-4.1-nano": {Input: 0.10, Output: 0.40}
 //   "gpt-4o":       {Input: 2.50, Output: 10.00}
 //   "gpt-4o-mini":  {Input: 0.15, Output: 0.60}
-
-// tools/websearch.go — search function signature change
-// Option A: Accept provider interface
-func WebSearchTool(provider types.LLMProvider, providerName string) types.ToolDefinition
-// Option B: Strategy pattern with a SearchBackend interface
-type SearchBackend interface {
-    Search(ctx context.Context, query string, numResults int) (string, error)
-}
+//   "o3":           {Input: 2.00, Output: 8.00}
+//   "o3-mini":      {Input: 1.10, Output: 4.40}
+//   "o4-mini":      {Input: 1.10, Output: 4.40}
 ```
 
 ## Edge Cases
