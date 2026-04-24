@@ -76,8 +76,11 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 	for i, model := range classificationModels {
 		intent, err := classifyWithModel(ctx, provider, model, classifyPrompt)
 		if err == nil {
-			if i > 0 {
+			switch {
+			case i > 0:
 				log.Printf("[classify] succeeded on fallback model %s after %d failed attempt(s)", model, i)
+			default:
+				log.Printf("[classify] intent=%s model=%s", intent, model)
 			}
 			return intent, nil
 		}

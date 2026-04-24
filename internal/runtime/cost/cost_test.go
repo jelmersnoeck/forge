@@ -36,6 +36,22 @@ func TestIsAliasModel(t *testing.T) {
 			model: "haiku",
 			want:  true,
 		},
+		"exactly 8 chars (date suffix length)": {
+			model: "12345678",
+			want:  true,
+		},
+		"exactly 9 chars no dash separator": {
+			model: "x12345678",
+			want:  true,
+		},
+		"minimum dated model (prefix-YYYYMMDD)": {
+			model: "x-12345678",
+			want:  false,
+		},
+		"empty string": {
+			model: "",
+			want:  true,
+		},
 	}
 
 	for name, tc := range tests {

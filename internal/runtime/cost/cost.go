@@ -93,21 +93,31 @@ var modelPricing = map[string]Pricing{
 	},
 }
 
+// dateSuffixLen is the length of the YYYYMMDD date suffix on dated model names.
+const dateSuffixLen = 8
+
+// minDatedModelLen is the minimum length for a dated model name: at least one
+// character, a dash separator, then YYYYMMDD (e.g. "x-20240229").
+const minDatedModelLen = dateSuffixLen + 2 // "-" + YYYYMMDD + at least 1 prefix char
+
 // isAliasModel returns true if the model name is an alias (no dated suffix).
 // Alias models like "claude-haiku-4-5" resolve to different underlying models
 // over time, so their hardcoded pricing may drift from the actual model's price.
+//
+// Dated models end with "-YYYYMMDD" — a dash followed by exactly 8 digits.
 func isAliasModel(model string) bool {
-	// Dated models end with -YYYYMMDD (8 digits).
-	if len(model) < 9 {
+	if len(model) < minDatedModelLen {
 		return true
 	}
-	suffix := model[len(model)-8:]
-	for _, c := range suffix {
+	if model[len(model)-dateSuffixLen-1] != '-' {
+		return true
+	}
+	for _, c := range model[len(model)-dateSuffixLen:] {
 		if c < '0' || c > '9' {
 			return true
 		}
 	}
-	return model[len(model)-9] != '-'
+	return false
 }
 
 // aliasLogOnce ensures alias pricing warnings are logged at most once per model
@@ -117,7 +127,11 @@ var aliasLogOnce sync.Map // model string -> *sync.Once
 
 func logAliasOnce(model string, pricing Pricing) {
 	v, _ := aliasLogOnce.LoadOrStore(model, &sync.Once{})
-	v.(*sync.Once).Do(func() {
+	once, ok := v.(*sync.Once)
+	if !ok {
+		return
+	}
+	once.Do(func() {
 		log.Printf("[cost] using hardcoded pricing for alias model %q — may drift if alias resolves to a differently-priced model", model)
 
 		// Detect potential pricing staleness: if the alias has different pricing
