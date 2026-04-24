@@ -25,14 +25,14 @@ const (
 // an error occurs (e.g., model deprecated, region unavailable).
 //
 // Priority order rationale:
-//   - claude-haiku-4-5: newest Haiku, best quality/speed tradeoff
-//   - claude-3-5-haiku: stable fallback if the newer model isn't available yet
+//   - claude-haiku-4-5: alias that always resolves to latest Haiku
+//   - claude-haiku-4-5-20251001: explicit dated version as fallback
 //
 // These are real Anthropic model IDs. If a model is retired, the API returns an
 // error and we fall through — no silent misrouting.
 var classificationModels = []string{
+	"claude-haiku-4-5",
 	"claude-haiku-4-5-20251001",
-	"claude-3-5-haiku-20241022",
 }
 
 // classificationTimeout is the per-attempt timeout for classification.

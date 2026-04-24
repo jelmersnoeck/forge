@@ -81,6 +81,13 @@ var modelPricing = map[string]Pricing{
 		CacheWrite: 1.25,
 		CacheRead:  0.10,
 	},
+	// Claude Haiku 4.5 (alias — resolves to latest Haiku)
+	"claude-haiku-4-5": {
+		Input:      1.00,
+		Output:     5.00,
+		CacheWrite: 1.25,
+		CacheRead:  0.10,
+	},
 }
 
 // Calculate computes the cost in USD for the given token usage and model.
