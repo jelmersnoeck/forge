@@ -20,25 +20,27 @@ Files modified:
 | File | Change |
 |------|--------|
 | `internal/types/types.go` | Added `Provider` field to `MergedSettings` |
-| `internal/agent/worker.go` | Removed `claude-` prefix model filter; added `defaultModelForProvider()`; updated `selectProvider()` with user config priority; sub-agent uses parent provider |
+| `internal/agent/worker.go` | Removed `claude-` prefix model filter; added `defaultModelForProvider()`; `selectProvider()` delegates to `provider.ResolveProvider()`; sub-agent uses parent provider |
 | `internal/agent/phase/models.go` | New file: `CheapModels()` for provider-aware lightweight model lookup |
 | `internal/agent/phase/classify.go` | `ClassifyIntent()` accepts `providerName` param; uses `CheapModels()` |
 | `internal/agent/phase/pr.go` | `EnsurePR()`/`CreatePR()`/`generatePRContent()` accept `providerName`; use `CheapModels()` |
 | `internal/agent/phase/orchestrator.go` | Pass provider name through to classify/PR functions |
 | `internal/runtime/cost/cost.go` | Added OpenAI model pricing (gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o3, o3-mini, o4-mini) |
-| `internal/tools/websearch.go` | Refactored to provider-name dispatch: Anthropic uses SDK, OpenAI uses Responses API |
+| `internal/tools/websearch.go` | Refactored to provider-name dispatch: Anthropic uses SDK, OpenAI uses Responses API with dedicated HTTP client (30s timeout) and response body size limit (5MB) |
 | `internal/tools/registry.go` | `NewDefaultRegistry()` accepts `providerName` to pass to WebSearch |
-| `cmd/forge/session_name.go` | `newLightweightProvider()` respects `FORGE_PROVIDER` env and user config |
+| `cmd/forge/session_name.go` | `newLightweightProvider()` delegates to `provider.ResolveProvider()`, surfaces config errors |
+| `internal/runtime/provider/detect.go` | New file: `ResolveProvider()`, `AutoDetect()`, `FromName()`, `FromNameOrFallback()` — shared provider detection logic |
 | `internal/review/orchestrator.go` | Already correct — `modelForProvider()` maps provider name to model |
 | `internal/runtime/provider/openai.go` | Unchanged — already ignores `CacheControl` |
 | `AGENTS.md` | Updated docs for multi-provider env vars and gotchas |
 
 Test files updated:
 - `internal/runtime/cost/cost_test.go` — OpenAI pricing tests
-- `internal/tools/websearch_test.go` — Provider-specific handler tests, OpenAI response format tests
+- `internal/tools/websearch_test.go` — Provider-specific handler tests, OpenAI response format tests, dispatchSearch tests
 - `internal/agent/phase/classify_test.go` — Updated for new `ClassifyIntent` signature
 - `internal/agent/phase/pr_test.go`, `pr_ensure_test.go` — Updated for new `EnsurePR`/`CreatePR` signatures
 - `internal/agent/ensure_pr_test.go` — Updated for new `ensurePR` signature
+- `internal/runtime/provider/detect_test.go` — AutoDetect, FromName, FromNameOrFallback tests
 
 ## Behavior
 
@@ -114,6 +116,19 @@ func defaultModelForProvider(providerName string) string
 
 // tools/websearch.go — provider-name based dispatch
 func WebSearchTool(providerName string) types.ToolDefinition
+func dispatchSearch(ctx context.Context, providerName, query string, numResults int) (string, error)
+
+// provider/detect.go — shared provider resolution (DRY)
+type ResolveResult struct {
+    Name      string  // canonical name
+    Source    string  // "env", "config", "auto-detect"
+    Found     bool
+    ConfigErr error   // non-nil when config exists but failed to load
+}
+func ResolveProvider() ResolveResult
+func AutoDetect() DetectResult
+func FromName(name string) types.LLMProvider        // nil on missing creds
+func FromNameOrFallback(name string) types.LLMProvider // always non-nil
 
 // tools/registry.go — accepts provider name
 func NewDefaultRegistry(providerName string) *Registry
@@ -132,7 +147,7 @@ func NewDefaultRegistry(providerName string) *Registry
 
 ## Edge Cases
 
-1. **Unknown provider name in settings** — `providerFromName()` currently falls back to Anthropic with a warning. Should continue to do so, but log the actual unknown name.
+1. **Unknown provider name in settings** — `FromNameOrFallback()` falls back to Anthropic with a warning, logging the unknown name. `FromName()` returns nil for the same case.
 
 2. **OpenAI model in settings but provider="anthropic"** — Model is passed through to Anthropic API, which will return an error. This is the correct behavior (provider validates its own models). No special handling needed.
 
