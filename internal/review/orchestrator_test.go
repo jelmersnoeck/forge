@@ -1192,6 +1192,138 @@ func TestConsolidationRaceSafety(t *testing.T) {
 	r.NotNil(consolidated)
 }
 
+// TestConsolidationScoreUnknownSeverity verifies that consolidationScore handles
+// unknown severity values gracefully (returns 0 weight, no panic).
+func TestConsolidationScoreUnknownSeverity(t *testing.T) {
+	tests := map[string]struct {
+		findings []ConsolidatedFinding
+		want     int
+	}{
+		"known severities": {
+			findings: []ConsolidatedFinding{
+				{Severity: SeverityCritical},
+				{Severity: SeverityWarning},
+				{Severity: SeveritySuggestion},
+			},
+			want: 6, // 3+2+1
+		},
+		"unknown severity treated as zero": {
+			findings: []ConsolidatedFinding{
+				{Severity: "info"},
+				{Severity: "high"},
+				{Severity: SeverityWarning},
+			},
+			want: 2, // 0+0+2
+		},
+		"all unknown": {
+			findings: []ConsolidatedFinding{
+				{Severity: "bananas"},
+				{Severity: ""},
+			},
+			want: 0,
+		},
+		"empty list": {
+			findings: nil,
+			want:     0,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, consolidationScore(tc.findings))
+		})
+	}
+}
+
+// TestSelectBestConsolidation verifies the helper that picks the best
+// consolidation result: highest severity score wins, then finding count
+// breaks ties.
+func TestSelectBestConsolidation(t *testing.T) {
+	tests := map[string]struct {
+		results      []consolidationResult
+		wantLen      int
+		wantSeverity Severity // severity of first finding in best result
+	}{
+		"higher score wins": {
+			results: []consolidationResult{
+				{
+					providerName: "noisy",
+					findings: []ConsolidatedFinding{
+						{Severity: SeveritySuggestion},
+						{Severity: SeveritySuggestion},
+						{Severity: SeveritySuggestion},
+					},
+				},
+				{
+					providerName: "precise",
+					findings: []ConsolidatedFinding{
+						{Severity: SeverityCritical},
+						{Severity: SeverityWarning},
+					},
+				},
+			},
+			wantLen:      2,
+			wantSeverity: SeverityCritical,
+		},
+		"tiebreaker uses count": {
+			results: []consolidationResult{
+				{
+					providerName: "a",
+					findings: []ConsolidatedFinding{
+						{Severity: SeverityWarning},
+					},
+				},
+				{
+					providerName: "b",
+					findings: []ConsolidatedFinding{
+						{Severity: SeveritySuggestion},
+						{Severity: SeveritySuggestion},
+					},
+				},
+			},
+			// score: a=2, b=2 — tie, b has more findings
+			wantLen:      2,
+			wantSeverity: SeveritySuggestion,
+		},
+		"errors skipped": {
+			results: []consolidationResult{
+				{providerName: "broken", err: fmt.Errorf("Chang broke it")},
+				{
+					providerName: "good",
+					findings: []ConsolidatedFinding{
+						{Severity: SeverityWarning},
+					},
+				},
+			},
+			wantLen:      1,
+			wantSeverity: SeverityWarning,
+		},
+		"all errors": {
+			results: []consolidationResult{
+				{providerName: "a", err: fmt.Errorf("nope")},
+				{providerName: "b", err: fmt.Errorf("also nope")},
+			},
+			wantLen: 0,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			best, count := selectBestConsolidation(tc.results)
+			if tc.wantLen == 0 {
+				r.Equal(0, count)
+				r.Nil(best)
+				return
+			}
+			r.Greater(count, 0)
+			r.Len(best, tc.wantLen)
+			r.Equal(tc.wantSeverity, best[0].Severity)
+		})
+	}
+}
+
 func TestHasCriticalFindings(t *testing.T) {
 	tests := map[string]struct {
 		results []ReviewResult

@@ -156,13 +156,8 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 	}
 
 	// Run consolidation against each provider concurrently.
-	// Results are collected via a channel — no shared slice needed.
-	type consolidationResult struct {
-		providerName string
-		findings     []ConsolidatedFinding
-		err          error
-	}
-
+	// Results are collected via a channel with context-aware draining
+	// to prevent goroutine leaks if the parent context is cancelled.
 	resultCh := make(chan consolidationResult, len(providerPairs))
 	for _, pp := range providerPairs {
 		go func(name string, prov types.LLMProvider) {
@@ -171,35 +166,46 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 			defer cancel()
 
 			consolidated, err := Consolidate(consolidateCtx, prov, model, results)
-			resultCh <- consolidationResult{
+			select {
+			case resultCh <- consolidationResult{
 				providerName: name,
 				findings:     consolidated,
 				err:          err,
+			}:
+			case <-ctx.Done():
+				// Parent cancelled — nobody is reading resultCh. Log and bail
+				// to avoid goroutine leak.
+				if err != nil {
+					log.Printf("[orchestrator] consolidation via %s failed (context cancelled): %v", name, err)
+				}
 			}
 		}(pp.name, pp.provider)
 	}
 
 	all := make([]consolidationResult, 0, len(providerPairs))
 	for range providerPairs {
-		all = append(all, <-resultCh)
+		select {
+		case cr := <-resultCh:
+			all = append(all, cr)
+		case <-ctx.Done():
+			log.Printf("[orchestrator] context cancelled while collecting consolidation results (%d/%d collected)", len(all), len(providerPairs))
+		}
+		// Break out of the range loop if context is done.
+		if ctx.Err() != nil {
+			break
+		}
 	}
 
-	// Merge: pick the provider whose findings have the highest total severity
-	// weight. This avoids favoring noisy providers that generate many low-quality
-	// suggestions over providers that return fewer high-severity findings.
-	var best []ConsolidatedFinding
-	bestScore := 0
-	successCount := 0
+	best, successCount := selectBestConsolidation(all)
 	for _, cr := range all {
 		if cr.err != nil {
 			log.Printf("[orchestrator] consolidation via %s failed: %v", cr.providerName, cr.err)
-			continue
-		}
-		successCount++
-		score := consolidationScore(cr.findings)
-		if score > bestScore || (score == bestScore && len(cr.findings) > len(best)) {
-			best = cr.findings
-			bestScore = score
+			emit(types.OutboundEvent{
+				ID:        uuid.New().String(),
+				Type:      "review_error",
+				Content:   fmt.Sprintf("Consolidation via %s failed: %v", cr.providerName, cr.err),
+				Timestamp: time.Now().Unix(),
+			})
 		}
 	}
 
@@ -227,14 +233,56 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 }
 
 // consolidationScore computes a weighted score for a set of consolidated
-// findings: critical=3, warning=2, suggestion=1. Higher scores indicate
-// more important findings, preventing noisy providers from winning by volume.
+// findings: critical=3, warning=2, suggestion=1, unknown=0. Higher scores
+// indicate more important findings, preventing noisy providers from winning
+// by volume alone.
 func consolidationScore(findings []ConsolidatedFinding) int {
 	score := 0
 	for _, f := range findings {
-		score += severityRank(f.Severity)
+		rank := severityRank(f.Severity)
+		if rank == 0 && f.Severity != "" {
+			log.Printf("[orchestrator] unknown severity %q in consolidated finding, treating as weight 0", f.Severity)
+		}
+		score += rank
 	}
 	return score
+}
+
+// selectBestConsolidation picks the provider whose findings have the highest
+// total severity weight. On ties, the provider with more findings wins (more
+// coverage at equal quality). Returns nil and 0 if all results errored.
+//
+//	Score     = sum(severityRank(f.Severity)) for each finding
+//	Tiebreak  = len(findings) — more coverage at equal quality
+func selectBestConsolidation(results []consolidationResult) ([]ConsolidatedFinding, int) {
+	var (
+		best      []ConsolidatedFinding
+		bestScore int
+		count     int
+	)
+	for _, cr := range results {
+		if cr.err != nil {
+			continue
+		}
+		count++
+		score := consolidationScore(cr.findings)
+		switch {
+		case score > bestScore:
+			best = cr.findings
+			bestScore = score
+		case score == bestScore && len(cr.findings) > len(best):
+			best = cr.findings
+			bestScore = score
+		}
+	}
+	return best, count
+}
+
+// consolidationResult holds one provider's consolidation output or error.
+type consolidationResult struct {
+	providerName string
+	findings     []ConsolidatedFinding
+	err          error
 }
 
 // providerPair pairs a name with its LLMProvider for consolidation dispatch.
