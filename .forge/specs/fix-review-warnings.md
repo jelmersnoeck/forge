@@ -42,8 +42,14 @@ var MaxResponseBodySize int64 = 5 * 1024 * 1024
 // changes to OpenAIHTTPTimeout take effect (not frozen at init).
 func openAIHTTPClient() *http.Client
 
-// classifySearchError categorizes errors for structured logging
+// classifySearchError categorizes errors via errors.Is / errors.As
+// (no string matching). Returns: auth_missing, response_truncated,
+// timeout, auth_rejected, rate_limit, server_error, unknown.
 func classifySearchError(err error) string
+
+// readLimitedBody reads limit+1 bytes to detect truncation without
+// false positives at the exact boundary.
+func readLimitedBody(r io.Reader, limit int64) (body []byte, truncated bool, err error)
 
 // detect.go — sync.Once-guarded whitespace warning
 var whitespaceKeyWarningOnce sync.Once
@@ -51,5 +57,6 @@ var whitespaceKeyWarningOnce sync.Once
 
 ## Edge Cases
 - Whitespace-only API keys should be treated as empty (already handled, adding log-once)
-- LimitReader hitting exact limit boundary: detect truncation by checking if body size equals limit
+- LimitReader hitting exact limit boundary: `readLimitedBody` reads `limit+1` bytes — if all `limit+1` are read, the body was truncated; if `<= limit` bytes were read, the body fit. No false positives for exact-size responses.
 - generateSlug with provider error: should still return a valid slug (fallback name)
+- Config error in newLightweightProvider: returns sanitized "configuration file is corrupted or unreadable" — no file paths leaked
