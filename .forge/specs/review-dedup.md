@@ -1,6 +1,6 @@
 ---
 id: review-dedup
-status: draft
+status: implemented
 ---
 # LLM-based deduplication and severity calibration for review findings
 
@@ -13,19 +13,30 @@ severity labels and descriptions, producing noisy, redundant output that confuse
 both the user and the coder fix loop.
 
 ## Context
-Files and systems that change:
+Files and systems that changed:
 
-- `internal/review/orchestrator.go` — `Orchestrator.Run()`: insert consolidation
-  step between `wg.Wait()` and the summary/emit phase. New `consolidate()` method.
+- `internal/review/orchestrator.go` — `Orchestrator.Run()`: returns `ConsolidatedResults`,
+  adds `consolidate()` method and `pickConsolidationProvider()`.
 - `internal/review/consolidate.go` — new file: `Consolidate()` function, prompt
-  construction, response parsing, `ConsolidatedFinding` type.
-- `internal/review/review.go` — add `ConsolidatedFinding` type (or extend
-  `Finding` with a `Sources` field).
-- `internal/review/orchestrator_test.go` — tests for consolidation logic.
-- `internal/review/consolidate_test.go` — unit tests for prompt building, JSON
-  parsing, edge cases.
-- `internal/agent/phase/orchestrator.go` — `runReviewerWithDiff` and
-  `formatFindingsForCoder` must operate on consolidated findings.
+  construction, response parsing, `fallbackToRaw()`, `collectAllFindings()`,
+  `FormatConsolidatedMessage()`, `FormatConsolidatedForCoder()`,
+  `HasConsolidatedHighSeverity()`, `HasConsolidatedCritical()`.
+- `internal/review/review.go` — added `ConsolidatedFinding`, `Source`, and
+  `ConsolidatedResults` types.
+- `internal/review/orchestrator_test.go` — updated tests for `ConsolidatedResults`
+  return type, added consolidation event assertions.
+- `internal/review/consolidate_test.go` — new file: comprehensive tests for
+  consolidation prompt building, JSON parsing, fallback, timeout, edge cases.
+- `internal/agent/phase/orchestrator.go` — `runReviewerWithDiff` populates
+  `result.Consolidated`; review loop uses consolidated findings for severity
+  checks and coder formatting. `formatFindingsForCoder` and `convertToResults`
+  removed, replaced by `formatConsolidatedFindingsForCoder`.
+- `internal/agent/phase/orchestrator_test.go` — updated tests to use consolidated
+  findings API.
+- `internal/agent/phase/phase.go` — `Result` type gains `Consolidated` field.
+- `internal/agent/phase/phase_test.go` — removed `TestConvertToResults` (dead code).
+- `internal/agent/worker.go` — `/review` command handler uses consolidated
+  findings when available.
 
 Existing types referenced:
 - `review.Finding` (review.go)
@@ -99,6 +110,12 @@ type Source struct {
     Reviewer string `json:"reviewer"`
     Provider string `json:"provider"`
 }
+
+// ConsolidatedResults wraps both raw and deduplicated findings.
+type ConsolidatedResults struct {
+    Raw          []ReviewResult
+    Consolidated []ConsolidatedFinding
+}
 ```
 
 ```go
@@ -114,14 +131,7 @@ func Consolidate(
 ```
 
 ```go
-// internal/review/orchestrator.go — updated Run signature stays the same,
-// but returns consolidated findings in addition to raw results.
-
-// ConsolidatedResults wraps both raw and deduplicated findings.
-type ConsolidatedResults struct {
-    Raw          []ReviewResult
-    Consolidated []ConsolidatedFinding
-}
+// internal/review/orchestrator.go
 
 // Orchestrator.Run now returns ConsolidatedResults instead of []ReviewResult.
 func (o *Orchestrator) Run(
@@ -132,10 +142,22 @@ func (o *Orchestrator) Run(
 ```
 
 ```go
-// Updated helpers that operate on consolidated findings.
+// Helpers that operate on consolidated findings.
 func FormatConsolidatedMessage(findings []ConsolidatedFinding) string
+func FormatConsolidatedForCoder(findings []ConsolidatedFinding) string
 func HasConsolidatedHighSeverity(findings []ConsolidatedFinding) bool
 func HasConsolidatedCritical(findings []ConsolidatedFinding) bool
+```
+
+```go
+// internal/agent/phase/phase.go — Result type gains Consolidated field.
+type Result struct {
+    Phase        string
+    SpecPath     string
+    Diff         string
+    Findings     []review.Finding
+    Consolidated []review.ConsolidatedFinding
+}
 ```
 
 ## Edge Cases
