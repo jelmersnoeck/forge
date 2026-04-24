@@ -92,7 +92,7 @@ var modelPricing = map[string]Pricing{
 		CacheRead:  0.10,
 	},
 
-// OpenAI GPT-4.1
+	// OpenAI GPT-4.1
 	"gpt-4.1": {Input: 2.00, Output: 8.00},
 	// OpenAI GPT-4.1 Mini
 	"gpt-4.1-mini": {Input: 0.40, Output: 1.60},

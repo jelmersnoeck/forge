@@ -20,7 +20,6 @@ const (
 	IntentTask     Intent = "task"
 )
 
-
 // classificationTimeout is the per-attempt timeout for classification.
 // Kept tight: spec targets <500ms, but network jitter needs a buffer.
 const classificationTimeout = 2 * time.Second

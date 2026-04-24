@@ -122,13 +122,13 @@ func TestValidateAPIKey(t *testing.T) {
 		input string
 		want  string
 	}{
-		"clean key":            {input: "sk-ant-test", want: "sk-ant-test"},
-		"leading whitespace":   {input: "  sk-ant-test", want: "sk-ant-test"},
-		"trailing whitespace":  {input: "sk-ant-test  ", want: "sk-ant-test"},
-		"both sides":           {input: "  sk-ant-test  ", want: "sk-ant-test"},
-		"tabs and newlines":    {input: "\t sk-ant-test \n", want: "sk-ant-test"},
-		"whitespace only":      {input: "  \t\n  ", want: ""},
-		"empty":                {input: "", want: ""},
+		"clean key":           {input: "sk-ant-test", want: "sk-ant-test"},
+		"leading whitespace":  {input: "  sk-ant-test", want: "sk-ant-test"},
+		"trailing whitespace": {input: "sk-ant-test  ", want: "sk-ant-test"},
+		"both sides":          {input: "  sk-ant-test  ", want: "sk-ant-test"},
+		"tabs and newlines":   {input: "\t sk-ant-test \n", want: "sk-ant-test"},
+		"whitespace only":     {input: "  \t\n  ", want: ""},
+		"empty":               {input: "", want: ""},
 	}
 
 	for name, tc := range tests {
