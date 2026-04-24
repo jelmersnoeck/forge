@@ -156,42 +156,39 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 	}
 
 	// Run consolidation against each provider concurrently.
+	// Results are collected via a channel — no shared slice needed.
 	type consolidationResult struct {
 		providerName string
 		findings     []ConsolidatedFinding
 		err          error
 	}
 
-	var (
-		wg  sync.WaitGroup
-		mu  sync.Mutex
-		all []consolidationResult
-	)
+	resultCh := make(chan consolidationResult, len(providerPairs))
 	for _, pp := range providerPairs {
-		wg.Add(1)
 		go func(name string, prov types.LLMProvider) {
-			defer wg.Done()
-
 			model := modelForProvider(name)
 			consolidateCtx, cancel := context.WithTimeout(ctx, consolidationTimeout)
 			defer cancel()
 
 			consolidated, err := Consolidate(consolidateCtx, prov, model, results)
-
-			mu.Lock()
-			all = append(all, consolidationResult{
+			resultCh <- consolidationResult{
 				providerName: name,
 				findings:     consolidated,
 				err:          err,
-			})
-			mu.Unlock()
+			}
 		}(pp.name, pp.provider)
 	}
-	wg.Wait()
 
-	// Merge: pick the most complete successful result (most findings wins,
-	// as it's the most conservative — doesn't discard anything prematurely).
+	all := make([]consolidationResult, 0, len(providerPairs))
+	for range providerPairs {
+		all = append(all, <-resultCh)
+	}
+
+	// Merge: pick the provider whose findings have the highest total severity
+	// weight. This avoids favoring noisy providers that generate many low-quality
+	// suggestions over providers that return fewer high-severity findings.
 	var best []ConsolidatedFinding
+	bestScore := 0
 	successCount := 0
 	for _, cr := range all {
 		if cr.err != nil {
@@ -199,8 +196,10 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 			continue
 		}
 		successCount++
-		if len(cr.findings) > len(best) {
+		score := consolidationScore(cr.findings)
+		if score > bestScore || (score == bestScore && len(cr.findings) > len(best)) {
 			best = cr.findings
+			bestScore = score
 		}
 	}
 
@@ -225,6 +224,17 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 	})
 
 	return best
+}
+
+// consolidationScore computes a weighted score for a set of consolidated
+// findings: critical=3, warning=2, suggestion=1. Higher scores indicate
+// more important findings, preventing noisy providers from winning by volume.
+func consolidationScore(findings []ConsolidatedFinding) int {
+	score := 0
+	for _, f := range findings {
+		score += severityRank(f.Severity)
+	}
+	return score
 }
 
 // providerPair pairs a name with its LLMProvider for consolidation dispatch.
