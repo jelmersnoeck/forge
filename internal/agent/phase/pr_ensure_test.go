@@ -32,7 +32,7 @@ func TestExistingPRURL_NoGH(t *testing.T) {
 
 func TestEnsurePR_NotGitRepo(t *testing.T) {
 	r := require.New(t)
-	result := EnsurePR(context.Background(), nil, t.TempDir(), "")
+	result := EnsurePR(context.Background(), nil, "anthropic", t.TempDir(), "")
 	r.Empty(result.URL)
 	r.Error(result.Error)
 	r.Contains(result.Error.Error(), "skipped")
@@ -42,7 +42,7 @@ func TestEnsurePR_OnMainBranch(t *testing.T) {
 	r := require.New(t)
 
 	_, local := initGitRepoWithRemote(t, "main")
-	result := EnsurePR(context.Background(), nil, local, "")
+	result := EnsurePR(context.Background(), nil, "anthropic", local, "")
 	r.Empty(result.URL)
 	r.Error(result.Error)
 	r.Contains(result.Error.Error(), "on main branch")
@@ -54,7 +54,7 @@ func TestEnsurePR_NoChanges(t *testing.T) {
 	_, local := initGitRepoWithRemote(t, "main")
 	run(t, local, "git", "checkout", "-b", "jelmer/no-changes")
 
-	result := EnsurePR(context.Background(), nil, local, "")
+	result := EnsurePR(context.Background(), nil, "anthropic", local, "")
 	r.Empty(result.URL)
 	r.Error(result.Error)
 	r.Contains(result.Error.Error(), "no changes")
@@ -72,7 +72,7 @@ func TestEnsurePR_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	result := EnsurePR(ctx, nil, local, "")
+	result := EnsurePR(ctx, nil, "anthropic", local, "")
 	// With cancelled context, should bail during fetch/rebase/push.
 	// The precondition checks pass (they don't use ctx), but subsequent
 	// git operations may fail or the gh call will fail.

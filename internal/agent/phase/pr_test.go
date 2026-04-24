@@ -51,7 +51,7 @@ func TestEnsurePR_ContextCancelledImmediate(t *testing.T) {
 	cancel()
 
 	// EnsurePR checks ctx.Err() first and bails.
-	result := EnsurePR(ctx, nil, t.TempDir(), "")
+	result := EnsurePR(ctx, nil, "anthropic", t.TempDir(), "")
 	r.Error(result.Error)
 	r.Contains(result.Error.Error(), "skipped")
 }
@@ -171,7 +171,7 @@ func TestCreatePR_DeprecatedDelegatesToInternal(t *testing.T) {
 
 	// CreatePR on a non-git dir should hit the same precondition check
 	// as createNewPR.
-	result := CreatePR(context.Background(), nil, t.TempDir(), "")
+	result := CreatePR(context.Background(), nil, "anthropic", t.TempDir(), "")
 	r.Error(result.Error)
 	r.Contains(result.Error.Error(), "skipped")
 }

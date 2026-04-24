@@ -123,7 +123,7 @@ func TestRegistry(t *testing.T) {
 
 func TestNewDefaultRegistry(t *testing.T) {
 	r := require.New(t)
-	reg := NewDefaultRegistry()
+	reg := NewDefaultRegistry("anthropic")
 
 	expectedTools := []string{"Read", "Write", "Edit", "Bash", "Glob", "Grep"}
 	for _, name := range expectedTools {

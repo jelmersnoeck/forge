@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
-	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/mcp"
 	"github.com/jelmersnoeck/forge/internal/review"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
@@ -52,8 +51,8 @@ func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath string) *Wo
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[agent:%s] worker started, cwd=%s", w.sessionID, w.cwd)
 
-	prov := selectProvider()
-	registry := tools.NewDefaultRegistry()
+	prov, providerName := selectProvider()
+	registry := tools.NewDefaultRegistry(providerName)
 	loader := rctx.NewLoader(w.cwd)
 	bundle, err := loader.Load([]string{"user", "project", "local"})
 	if err != nil {
@@ -61,6 +60,12 @@ func (w *Worker) Run(ctx context.Context) {
 		bundle = types.ContextBundle{
 			AgentDefinitions: make(map[string]types.AgentDefinition),
 		}
+	}
+
+	// Ensure the provider name is set on settings so downstream code
+	// (model selection, classification, PR generation) can use it.
+	if bundle.Settings.Provider == "" {
+		bundle.Settings.Provider = providerName
 	}
 	store := session.NewStore(w.sessionsDir)
 
@@ -81,15 +86,11 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 	}()
 
-	// Pick model: settings override, but only pass through real API model IDs
-	// to the Anthropic provider. Claude CLI accepts aliases (sonnet, opus, etc.).
-	_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
-	const defaultModel = "claude-opus-4-6"
-	model := defaultModel
-	switch {
-	case isClaudeCLI && bundle.Settings.Model != "":
-		model = bundle.Settings.Model
-	case bundle.Settings.Model != "" && strings.HasPrefix(bundle.Settings.Model, "claude-"):
+	// Pick model: use settings override, or fall back to provider-specific default.
+	// Any non-empty model string is passed through — the provider itself is
+	// responsible for rejecting invalid models.
+	model := defaultModelForProvider(bundle.Settings.Provider)
+	if bundle.Settings.Model != "" {
 		model = bundle.Settings.Model
 	}
 
@@ -156,7 +157,7 @@ func (w *Worker) Run(ctx context.Context) {
 				w.executeCompletionQueue(ctx, registry, historyID, emit)
 				// Deterministic PR ensure step — runs before done reaches CLI.
 				if turnToolsUsed {
-					w.ensurePR(ctx, prov, w.specPath, emit)
+					w.ensurePR(ctx, prov, providerName, w.specPath, emit)
 				}
 			}
 
@@ -439,7 +440,7 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 // ensurePR runs the deterministic PR creation/update step.
 // Called after every turn that executed tools. Non-fatal: failures are
 // logged, pr_url not emitted, session continues.
-func (w *Worker) ensurePR(ctx context.Context, prov types.LLMProvider, specPath string, emit func(types.OutboundEvent)) {
+func (w *Worker) ensurePR(ctx context.Context, prov types.LLMProvider, providerName, specPath string, emit func(types.OutboundEvent)) {
 	if !w.ghAvailable {
 		return
 	}
@@ -455,7 +456,7 @@ func (w *Worker) ensurePR(ctx context.Context, prov types.LLMProvider, specPath 
 	prCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	result := phase.EnsurePR(prCtx, prov, w.cwd, specPath)
+	result := phase.EnsurePR(prCtx, prov, providerName, w.cwd, specPath)
 	if result.Error != nil {
 		log.Printf("[agent:%s] ensurePR: %v", w.sessionID, result.Error)
 		return
@@ -619,9 +620,8 @@ func (w *Worker) makeAgentRunner(
 
 		model := agent.Model
 		if model == "" {
-			const defaultModel = "claude-opus-4-6"
-			model = defaultModel
-			if m := bundle.Settings.Model; m != "" && strings.HasPrefix(m, "claude-") {
+			model = defaultModelForProvider(bundle.Settings.Provider)
+			if m := bundle.Settings.Model; m != "" {
 				model = m
 			}
 		}
@@ -668,61 +668,37 @@ func (w *Worker) makeAgentRunner(
 // selectProvider picks the LLM provider with this priority:
 //  1. FORGE_PROVIDER env var (explicit override)
 //  2. ~/.forge/config.toml [provider].default
-//  3. Auto-detect: ANTHROPIC_API_KEY → Anthropic API, `claude` on PATH → CLI
+//  3. Auto-detect: ANTHROPIC_API_KEY → OPENAI_API_KEY → `claude` on PATH
 //  4. Fallback to Anthropic (will fail on first call with clear error)
-func selectProvider() types.LLMProvider {
-	// Priority 1: explicit env override
-	if envProv := os.Getenv("FORGE_PROVIDER"); envProv != "" {
-		return providerFromName(envProv)
+//
+// Returns both the provider instance and its canonical name.
+func selectProvider() (types.LLMProvider, string) {
+	resolved := provider.ResolveProvider()
+
+	if resolved.ConfigErr != nil {
+		if os.IsNotExist(resolved.ConfigErr) {
+			log.Printf("[provider] no user config found — falling back to auto-detect")
+		} else {
+			log.Printf("[provider] ERROR: user config corrupted or unreadable: %v — falling back to auto-detect", resolved.ConfigErr)
+		}
 	}
 
-	// Priority 2: user config
-	userCfg, err := config.LoadUserConfig()
-	if err != nil {
-		log.Printf("[provider] warning: failed to load user config: %v", err)
-	} else if userCfg.Provider.Default != "" {
-		log.Printf("[provider] using configured default: %s", userCfg.Provider.Default)
-		return providerFromName(userCfg.Provider.Default)
+	if resolved.Found {
+		log.Printf("[provider] using %s (via %s)", resolved.Name, resolved.Source)
+		return provider.FromNameOrFallback(resolved.Name), resolved.Name
 	}
 
-	// Priority 3: auto-detect from environment
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		return provider.NewAnthropic(key)
-	}
-
-	if _, err := exec.LookPath("claude"); err == nil {
-		log.Println("[provider] ANTHROPIC_API_KEY not set, using Claude CLI provider")
-		return provider.NewClaudeCLI()
-	}
-
-	log.Println("[provider] WARNING: ANTHROPIC_API_KEY not set and claude CLI not found — API calls will fail")
-	return provider.NewAnthropic("")
+	log.Printf("[provider] WARNING: provider_status=none_detected fallback=anthropic — all API calls will fail without ANTHROPIC_API_KEY")
+	return provider.NewAnthropic(""), "anthropic"
 }
 
-// providerFromName instantiates a provider by name. Falls back to Anthropic
-// with a warning if the name is unrecognized.
-func providerFromName(name string) types.LLMProvider {
-	switch name {
-	case "anthropic":
-		key := os.Getenv("ANTHROPIC_API_KEY")
-		if key == "" {
-			log.Println("[provider] WARNING: provider=anthropic but ANTHROPIC_API_KEY not set — API calls will fail")
-		}
-		return provider.NewAnthropic(key)
-	case "claude-cli":
-		if _, err := exec.LookPath("claude"); err != nil {
-			log.Println("[provider] WARNING: provider=claude-cli but `claude` not found on PATH")
-		}
-		return provider.NewClaudeCLI()
+// defaultModelForProvider returns the default model for a given provider name.
+func defaultModelForProvider(providerName string) string {
+	switch providerName {
 	case "openai":
-		key := os.Getenv("OPENAI_API_KEY")
-		if key == "" {
-			log.Println("[provider] WARNING: provider=openai but OPENAI_API_KEY not set — API calls will fail")
-		}
-		return provider.NewOpenAI(key)
+		return "gpt-4.1"
 	default:
-		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
-		return provider.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
+		return "claude-opus-4-6"
 	}
 }
 

@@ -279,7 +279,7 @@ func TestRunDebate_emitsEvents(t *testing.T) {
 
 	sessDir := t.TempDir()
 	store := session.NewStore(sessDir)
-	registry := tools.NewDefaultRegistry()
+	registry := tools.NewDefaultRegistry("anthropic")
 
 	var events []types.OutboundEvent
 	emit := func(e types.OutboundEvent) {

@@ -33,7 +33,7 @@ func TestEnsurePR_SkippedWhenGHUnavailable(t *testing.T) {
 		events = append(events, e)
 	}
 
-	w.ensurePR(context.Background(), nil, "", emit)
+	w.ensurePR(context.Background(), nil, "anthropic", "", emit)
 
 	// No events should be emitted when gh is unavailable.
 	r.Empty(events, "should not emit any events when gh unavailable")
@@ -59,7 +59,7 @@ func TestEnsurePR_NonFatalOnError(t *testing.T) {
 	}
 
 	// Should not panic or return error; just log and skip.
-	w.ensurePR(context.Background(), nil, "", emit)
+	w.ensurePR(context.Background(), nil, "anthropic", "", emit)
 
 	// No pr_url event since it's not a git repo.
 	for _, e := range events {
@@ -84,7 +84,7 @@ func TestEnsurePR_RespectsTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	w.ensurePR(context.Background(), nil, "", emit)
+	w.ensurePR(context.Background(), nil, "anthropic", "", emit)
 	elapsed := time.Since(start)
 
 	// Should complete quickly (not a git repo -> fast bail).
@@ -111,7 +111,7 @@ func TestEnsurePR_SkippedWhenParentContextCancelled(t *testing.T) {
 	cancel() // cancel before calling
 
 	start := time.Now()
-	w.ensurePR(ctx, nil, "", emit)
+	w.ensurePR(ctx, nil, "anthropic", "", emit)
 	elapsed := time.Since(start)
 
 	// Should bail immediately on cancelled context — no pr_url, no long wait.

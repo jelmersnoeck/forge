@@ -6,7 +6,6 @@ import (
 	"log"
 	"math/rand"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -15,32 +14,48 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
-// newLightweightProvider creates a provider for cheap LLM calls (session naming)
-// using env-var auto-detection with a fixed priority order:
-// Anthropic > OpenAI > Claude CLI. Returns nil when no provider is available.
+// newLightweightProvider creates a provider for cheap LLM calls (session naming).
+// Priority order:
+//  1. FORGE_PROVIDER env var (explicit override)
+//  2. ~/.forge/config.toml [provider].default
+//  3. Auto-detect: ANTHROPIC_API_KEY > OPENAI_API_KEY > Claude CLI
 //
-// Intentionally does not cache: this runs once at session start, so the env
-// lookups are negligible and caching would complicate test isolation.
-func newLightweightProvider() types.LLMProvider {
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		log.Printf("[session-name] using Anthropic provider")
-		return provider.NewAnthropic(key)
-	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		log.Printf("[session-name] using OpenAI provider")
-		return provider.NewOpenAI(key)
-	}
-	if path, err := exec.LookPath("claude"); err == nil {
-		// LookPath already checks executability on Unix (os.Stat + mode bits),
-		// but verify we can stat the resolved path to catch broken symlinks.
-		if _, statErr := os.Stat(path); statErr == nil {
-			log.Printf("[session-name] using Claude CLI provider (%s)", path)
-			return provider.NewClaudeCLI()
+// Returns an error when a provider was resolved but credentials are unavailable,
+// or when no provider could be detected at all.
+func newLightweightProvider() (types.LLMProvider, error) {
+	resolved := provider.ResolveProvider()
+
+	if resolved.ConfigErr != nil {
+		switch {
+		case os.IsNotExist(resolved.ConfigErr):
+			log.Printf("[session-name] config_status=not_found — falling back to auto-detect")
+		default:
+			log.Printf("[session-name] config_error=%q", resolved.ConfigErr)
+			return nil, fmt.Errorf("configuration file is corrupted or unreadable")
 		}
-		log.Printf("[session-name] claude found at %s but not accessible: %v", path, err)
 	}
-	log.Printf("[session-name] no LLM provider available — will use random names")
-	return nil
+
+	if !resolved.Found {
+		return nil, fmt.Errorf("no LLM provider available")
+	}
+
+	log.Printf("[session-name] using %s provider (via %s)", resolved.Name, resolved.Source)
+	p := provider.FromName(resolved.Name)
+	if p == nil {
+		return nil, fmt.Errorf("provider %s resolved but credentials unavailable", resolved.Name)
+	}
+	return p, nil
+}
+
+// generateSlug creates a session slug from a prompt, handling provider
+// creation and fallback internally. Callers don't need to touch the provider.
+func generateSlug(prompt string) string {
+	p, err := newLightweightProvider()
+	if err != nil {
+		log.Printf("[session-name] provider_error=%q — using random name", err)
+		return fallbackSessionName()
+	}
+	return generateSessionName(p, prompt)
 }
 
 // sessionNameTimeout caps the LLM call for slug generation.

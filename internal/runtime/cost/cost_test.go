@@ -144,6 +144,81 @@ func TestCalculate(t *testing.T) {
 			usage: types.TokenUsage{},
 			want:  0.0,
 		},
+		"openai gpt-4.1 basic usage": {
+			model: "gpt-4.1",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 500,
+			},
+			want: 0.006, // (1000/1M * 2.00) + (500/1M * 8.00) = 0.002 + 0.004
+		},
+		"openai gpt-4.1-mini": {
+			model: "gpt-4.1-mini",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.002, // (1000/1M * 0.40) + (1000/1M * 1.60) = 0.0004 + 0.0016
+		},
+		"openai gpt-4.1-nano": {
+			model: "gpt-4.1-nano",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.0005, // (1000/1M * 0.10) + (1000/1M * 0.40) = 0.0001 + 0.0004
+		},
+		"openai gpt-4o": {
+			model: "gpt-4o",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.0125, // (1000/1M * 2.50) + (1000/1M * 10.00) = 0.0025 + 0.01
+		},
+		"openai gpt-4o-mini": {
+			model: "gpt-4o-mini",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.00075, // (1000/1M * 0.15) + (1000/1M * 0.60) = 0.00015 + 0.0006
+		},
+		"openai o3": {
+			model: "o3",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.010, // (1000/1M * 2.00) + (1000/1M * 8.00) = 0.002 + 0.008
+		},
+		"openai o3-mini": {
+			model: "o3-mini",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.0055, // (1000/1M * 1.10) + (1000/1M * 4.40) = 0.0011 + 0.0044
+		},
+		"openai o4-mini": {
+			model: "o4-mini",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.0055, // (1000/1M * 1.10) + (1000/1M * 4.40) = 0.0011 + 0.0044
+		},
+		"openai cache tokens ignored": {
+			model: "gpt-4.1",
+			usage: types.TokenUsage{
+				InputTokens:         1000,
+				OutputTokens:        500,
+				CacheCreationTokens: 5000,
+				CacheReadTokens:     10000,
+			},
+			// CacheWrite/CacheRead are 0.0 for OpenAI, so cache tokens cost nothing
+			want: 0.006, // same as basic: (1000/1M * 2.00) + (500/1M * 8.00)
+		},
 	}
 
 	for name, tc := range tests {

@@ -98,7 +98,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 
 	// Classify intent (skip if spec is provided — that's unambiguously a task).
 	if specPath == "" {
-		intent, err := ClassifyIntent(ctx, opts.Provider, opts.InitialPrompt)
+		intent, err := ClassifyIntent(ctx, opts.Provider, opts.InitialPrompt, opts.Bundle.Settings.Provider)
 		if err != nil {
 			log.Printf("[orchestrator:%s] classification error (defaulting to task): %v", opts.SessionID, err)
 			opts.Emit(types.OutboundEvent{

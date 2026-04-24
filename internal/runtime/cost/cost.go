@@ -19,7 +19,7 @@ type Pricing struct {
 }
 
 // modelPricing maps model names to their pricing.
-// Prices as of April 2026 from Anthropic's pricing page.
+// Prices as of April 2026 from Anthropic and OpenAI pricing pages.
 var modelPricing = map[string]Pricing{
 	// Claude Sonnet 4.5 (2025-09-29)
 	"claude-sonnet-4-5-20250929": {
@@ -91,6 +91,23 @@ var modelPricing = map[string]Pricing{
 		CacheWrite: 1.25,
 		CacheRead:  0.10,
 	},
+
+	// OpenAI GPT-4.1
+	"gpt-4.1": {Input: 2.00, Output: 8.00},
+	// OpenAI GPT-4.1 Mini
+	"gpt-4.1-mini": {Input: 0.40, Output: 1.60},
+	// OpenAI GPT-4.1 Nano
+	"gpt-4.1-nano": {Input: 0.10, Output: 0.40},
+	// OpenAI GPT-4o
+	"gpt-4o": {Input: 2.50, Output: 10.00},
+	// OpenAI GPT-4o Mini
+	"gpt-4o-mini": {Input: 0.15, Output: 0.60},
+	// OpenAI o3
+	"o3": {Input: 2.00, Output: 8.00},
+	// OpenAI o3-mini
+	"o3-mini": {Input: 1.10, Output: 4.40},
+	// OpenAI o4-mini
+	"o4-mini": {Input: 1.10, Output: 4.40},
 }
 
 // dateSuffixLen is the length of the YYYYMMDD date suffix on dated model names.
