@@ -20,11 +20,9 @@ import (
 //  2. ~/.forge/config.toml [provider].default
 //  3. Auto-detect: ANTHROPIC_API_KEY > OPENAI_API_KEY > Claude CLI
 //
-// Returns nil when no provider is available.
-//
-// Intentionally does not cache: this runs once at session start, so the env
-// lookups are negligible and caching would complicate test isolation.
-func newLightweightProvider() types.LLMProvider {
+// Returns an error when a provider was resolved but credentials are unavailable,
+// or when no provider could be detected at all.
+func newLightweightProvider() (types.LLMProvider, error) {
 	resolved := provider.ResolveProvider()
 
 	if resolved.ConfigErr != nil {
@@ -35,17 +33,16 @@ func newLightweightProvider() types.LLMProvider {
 		}
 	}
 
-	if resolved.Found {
-		log.Printf("[session-name] using %s provider (via %s)", resolved.Name, resolved.Source)
-		p := provider.FromName(resolved.Name)
-		if p == nil {
-			log.Printf("[session-name] provider %s resolved but credentials unavailable — will use random names", resolved.Name)
-		}
-		return p
+	if !resolved.Found {
+		return nil, fmt.Errorf("no LLM provider available")
 	}
 
-	log.Printf("[session-name] no LLM provider available — will use random names")
-	return nil
+	log.Printf("[session-name] using %s provider (via %s)", resolved.Name, resolved.Source)
+	p := provider.FromName(resolved.Name)
+	if p == nil {
+		return nil, fmt.Errorf("provider %s resolved but credentials unavailable", resolved.Name)
+	}
+	return p, nil
 }
 
 // sessionNameTimeout caps the LLM call for slug generation.

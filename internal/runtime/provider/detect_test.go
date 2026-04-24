@@ -43,6 +43,7 @@ func TestAutoDetect(t *testing.T) {
 			r.Equal(tc.wantFound, result.Found)
 			if tc.wantFound {
 				r.Equal(tc.wantName, result.Name)
+				r.NotNil(result.Provider, "Provider should be non-nil when Found is true")
 			}
 		})
 	}

@@ -14,10 +14,13 @@ import (
 const claudeCLIBinary = "claude"
 
 // DetectResult holds the outcome of provider auto-detection.
-// Callers use Name with FromName/FromNameOrFallback to instantiate the provider.
+// Provider is a ready-to-use instance (nil when Found is false).
+// Name is the canonical provider name for callers that need deferred
+// instantiation via FromName/FromNameOrFallback.
 type DetectResult struct {
-	Name  string
-	Found bool
+	Provider types.LLMProvider
+	Name     string
+	Found    bool
 }
 
 // ResolveResult holds the outcome of the full provider resolution chain.
@@ -85,18 +88,18 @@ func ResolveProvider() ResolveResult {
 // Returns Found=false when nothing is available.
 func AutoDetect() DetectResult {
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		return DetectResult{Name: "anthropic", Found: true}
+		return DetectResult{Provider: NewAnthropic(key), Name: "anthropic", Found: true}
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		return DetectResult{Name: "openai", Found: true}
+		return DetectResult{Provider: NewOpenAI(key), Name: "openai", Found: true}
 	}
-	if path, err := exec.LookPath(claudeCLIBinary); err == nil {
+	if resolvedPath, err := exec.LookPath(claudeCLIBinary); err == nil {
 		// LookPath checks executability, but verify the resolved path to catch
 		// broken symlinks.
-		if _, statErr := os.Stat(path); statErr == nil {
-			return DetectResult{Name: "claude-cli", Found: true}
+		if _, statErr := os.Stat(resolvedPath); statErr == nil {
+			return DetectResult{Provider: NewClaudeCLI(), Name: "claude-cli", Found: true}
 		} else {
-			log.Printf("[provider] claude found at %s but not accessible: %v", path, statErr)
+			log.Printf("[provider] %s found at %s but not accessible: %v", claudeCLIBinary, resolvedPath, statErr)
 		}
 	}
 	return DetectResult{}
@@ -120,10 +123,10 @@ func FromName(name string) types.LLMProvider {
 		log.Printf("[provider] provider=openai but OPENAI_API_KEY not set")
 		return nil
 	case "claude-cli":
-		if _, err := exec.LookPath("claude"); err == nil {
+		if _, err := exec.LookPath(claudeCLIBinary); err == nil {
 			return NewClaudeCLI()
 		}
-		log.Printf("[provider] provider=claude-cli but `claude` not found on PATH")
+		log.Printf("[provider] provider=claude-cli but `%s` not found on PATH", claudeCLIBinary)
 		return nil
 	default:
 		log.Printf("[provider] unknown provider %q", name)
@@ -144,8 +147,8 @@ func FromNameOrFallback(name string) types.LLMProvider {
 		}
 		return NewAnthropic(key)
 	case "claude-cli":
-		if _, err := exec.LookPath("claude"); err != nil {
-			log.Println("[provider] WARNING: provider=claude-cli but `claude` not found on PATH")
+		if _, err := exec.LookPath(claudeCLIBinary); err != nil {
+			log.Printf("[provider] WARNING: provider=claude-cli but `%s` not found on PATH", claudeCLIBinary)
 		}
 		return NewClaudeCLI()
 	case "openai":
