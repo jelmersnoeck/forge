@@ -5,10 +5,17 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
+
+// validateAPIKey trims whitespace and returns the cleaned key.
+// Returns empty string if the key is blank after trimming.
+func validateAPIKey(key string) string {
+	return strings.TrimSpace(key)
+}
 
 // claudeCLIBinary is the executable name for the Claude CLI, used in PATH lookups.
 const claudeCLIBinary = "claude"
@@ -87,10 +94,10 @@ func ResolveProvider() ResolveResult {
 //
 // Returns Found=false when nothing is available.
 func AutoDetect() DetectResult {
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+	if key := validateAPIKey(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
 		return DetectResult{Provider: NewAnthropic(key), Name: "anthropic", Found: true}
 	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+	if key := validateAPIKey(os.Getenv("OPENAI_API_KEY")); key != "" {
 		return DetectResult{Provider: NewOpenAI(key), Name: "openai", Found: true}
 	}
 	if resolvedPath, err := exec.LookPath(claudeCLIBinary); err == nil {
@@ -111,13 +118,13 @@ func AutoDetect() DetectResult {
 func FromName(name string) types.LLMProvider {
 	switch name {
 	case "anthropic":
-		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		if key := validateAPIKey(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
 			return NewAnthropic(key)
 		}
 		log.Printf("[provider] provider=anthropic but ANTHROPIC_API_KEY not set")
 		return nil
 	case "openai":
-		if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		if key := validateAPIKey(os.Getenv("OPENAI_API_KEY")); key != "" {
 			return NewOpenAI(key)
 		}
 		log.Printf("[provider] provider=openai but OPENAI_API_KEY not set")
@@ -141,7 +148,7 @@ func FromName(name string) types.LLMProvider {
 func FromNameOrFallback(name string) types.LLMProvider {
 	switch name {
 	case "anthropic":
-		key := os.Getenv("ANTHROPIC_API_KEY")
+		key := validateAPIKey(os.Getenv("ANTHROPIC_API_KEY"))
 		if key == "" {
 			log.Println("[provider] WARNING: provider=anthropic but ANTHROPIC_API_KEY not set — API calls will fail")
 		}
@@ -152,14 +159,14 @@ func FromNameOrFallback(name string) types.LLMProvider {
 		}
 		return NewClaudeCLI()
 	case "openai":
-		key := os.Getenv("OPENAI_API_KEY")
+		key := validateAPIKey(os.Getenv("OPENAI_API_KEY"))
 		if key == "" {
 			log.Println("[provider] WARNING: provider=openai but OPENAI_API_KEY not set — API calls will fail")
 		}
 		return NewOpenAI(key)
 	default:
 		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
-		return NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
+		return NewAnthropic(validateAPIKey(os.Getenv("ANTHROPIC_API_KEY")))
 	}
 }
 

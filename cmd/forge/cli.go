@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1294,11 +1293,7 @@ func (m model) sendMessage(text string) tea.Cmd {
 // branch and worktree names are not changed after creation.
 func (m model) generateTitle(prompt string) tea.Cmd {
 	return func() tea.Msg {
-		p, err := newLightweightProvider()
-		if err != nil {
-			log.Printf("[session-name] %v — will use random name", err)
-		}
-		title := generateSessionName(p, prompt)
+		title := generateSlug(prompt)
 		return sessionTitleMsg(title)
 	}
 }
@@ -1427,11 +1422,7 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	// Generate session ID with a readable name.
 	// If we have a prompt, ask Haiku for a slug (up to 3s).
 	// Otherwise, pick a random adjective-noun pair.
-	p, err := newLightweightProvider()
-	if err != nil {
-		log.Printf("[session-name] %v — will use random name", err)
-	}
-	slug := generateSessionName(p, initialPrompt)
+	slug := generateSlug(initialPrompt)
 	sessionID := time.Now().Format("20060102") + "-" + slug
 
 	// Check if we're in a git repo and should create a worktree

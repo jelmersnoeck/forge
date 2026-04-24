@@ -29,7 +29,7 @@ func newLightweightProvider() (types.LLMProvider, error) {
 		if os.IsNotExist(resolved.ConfigErr) {
 			log.Printf("[session-name] no user config found — falling back to auto-detect")
 		} else {
-			log.Printf("[session-name] ERROR: user config corrupted or unreadable: %v — falling back to auto-detect", resolved.ConfigErr)
+			return nil, fmt.Errorf("user config corrupted or unreadable: %w", resolved.ConfigErr)
 		}
 	}
 
@@ -43,6 +43,16 @@ func newLightweightProvider() (types.LLMProvider, error) {
 		return nil, fmt.Errorf("provider %s resolved but credentials unavailable", resolved.Name)
 	}
 	return p, nil
+}
+
+// generateSlug creates a session slug from a prompt, handling provider
+// creation and fallback internally. Callers don't need to touch the provider.
+func generateSlug(prompt string) string {
+	p, err := newLightweightProvider()
+	if err != nil {
+		log.Printf("[session-name] %v — will use random name", err)
+	}
+	return generateSessionName(p, prompt)
 }
 
 // sessionNameTimeout caps the LLM call for slug generation.
