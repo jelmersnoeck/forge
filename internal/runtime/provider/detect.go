@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"log"
 	"os"
 	"os/exec"
@@ -9,11 +10,14 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
+// claudeCLIBinary is the executable name for the Claude CLI, used in PATH lookups.
+const claudeCLIBinary = "claude"
+
 // DetectResult holds the outcome of provider auto-detection.
+// Callers use Name with FromName/FromNameOrFallback to instantiate the provider.
 type DetectResult struct {
-	Provider types.LLMProvider
-	Name     string
-	Found    bool
+	Name  string
+	Found bool
 }
 
 // ResolveResult holds the outcome of the full provider resolution chain.
@@ -55,6 +59,10 @@ func ResolveProvider() ResolveResult {
 	switch {
 	case err != nil:
 		configErr = err
+		// Distinguish expected "file not found" from real config problems.
+		if !isNotExist(err) {
+			log.Printf("[provider] WARNING: user config is corrupted or unreadable: %v — falling through to auto-detect", err)
+		}
 	case userCfg.Provider.Default != "":
 		return ResolveResult{Name: userCfg.Provider.Default, Source: "config", Found: true}
 	}
@@ -62,6 +70,9 @@ func ResolveProvider() ResolveResult {
 	// Priority 3: auto-detect from environment
 	result := AutoDetect()
 	if result.Found {
+		if configErr != nil && !isNotExist(configErr) {
+			log.Printf("[provider] WARNING: resolved via auto-detect but config had errors: %v", configErr)
+		}
 		return ResolveResult{Name: result.Name, Source: "auto-detect", Found: true, ConfigErr: configErr}
 	}
 
@@ -74,18 +85,19 @@ func ResolveProvider() ResolveResult {
 // Returns Found=false when nothing is available.
 func AutoDetect() DetectResult {
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		return DetectResult{Provider: NewAnthropic(key), Name: "anthropic", Found: true}
+		return DetectResult{Name: "anthropic", Found: true}
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		return DetectResult{Provider: NewOpenAI(key), Name: "openai", Found: true}
+		return DetectResult{Name: "openai", Found: true}
 	}
-	if path, err := exec.LookPath("claude"); err == nil {
+	if path, err := exec.LookPath(claudeCLIBinary); err == nil {
 		// LookPath checks executability, but verify the resolved path to catch
 		// broken symlinks.
 		if _, statErr := os.Stat(path); statErr == nil {
-			return DetectResult{Provider: NewClaudeCLI(), Name: "claude-cli", Found: true}
+			return DetectResult{Name: "claude-cli", Found: true}
+		} else {
+			log.Printf("[provider] claude found at %s but not accessible: %v", path, statErr)
 		}
-		log.Printf("[provider] claude found at %s but not accessible", path)
 	}
 	return DetectResult{}
 }
@@ -146,4 +158,13 @@ func FromNameOrFallback(name string) types.LLMProvider {
 		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
 		return NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
 	}
+}
+
+// isNotExist reports whether err (or any wrapped error) is a "file not found" error.
+func isNotExist(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return os.IsNotExist(pathErr)
+	}
+	return os.IsNotExist(err)
 }

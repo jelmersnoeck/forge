@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -27,12 +28,20 @@ func newLightweightProvider() types.LLMProvider {
 	resolved := provider.ResolveProvider()
 
 	if resolved.ConfigErr != nil {
-		log.Printf("[session-name] ERROR: failed to load user config: %v — falling back to auto-detect", resolved.ConfigErr)
+		if os.IsNotExist(resolved.ConfigErr) {
+			log.Printf("[session-name] no user config found — falling back to auto-detect")
+		} else {
+			log.Printf("[session-name] ERROR: user config corrupted or unreadable: %v — falling back to auto-detect", resolved.ConfigErr)
+		}
 	}
 
 	if resolved.Found {
 		log.Printf("[session-name] using %s provider (via %s)", resolved.Name, resolved.Source)
-		return provider.FromName(resolved.Name)
+		p := provider.FromName(resolved.Name)
+		if p == nil {
+			log.Printf("[session-name] provider %s resolved but credentials unavailable — will use random names", resolved.Name)
+		}
+		return p
 	}
 
 	log.Printf("[session-name] no LLM provider available — will use random names")

@@ -676,7 +676,11 @@ func selectProvider() (types.LLMProvider, string) {
 	resolved := provider.ResolveProvider()
 
 	if resolved.ConfigErr != nil {
-		log.Printf("[provider] ERROR: failed to load user config: %v — falling back to auto-detect", resolved.ConfigErr)
+		if os.IsNotExist(resolved.ConfigErr) {
+			log.Printf("[provider] no user config found — falling back to auto-detect")
+		} else {
+			log.Printf("[provider] ERROR: user config corrupted or unreadable: %v — falling back to auto-detect", resolved.ConfigErr)
+		}
 	}
 
 	if resolved.Found {
