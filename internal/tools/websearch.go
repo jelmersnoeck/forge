@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,24 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
+
+// ── Sentinel and typed errors for structured classification ──
+
+// ErrAuthMissing signals a missing API key for the search provider.
+var ErrAuthMissing = errors.New("API key not set")
+
+// ErrResponseTruncated signals that the response body exceeded MaxResponseBodySize.
+var ErrResponseTruncated = errors.New("response body truncated")
+
+// HTTPStatusError represents a non-200 HTTP response from a search API.
+type HTTPStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
+}
 
 // WebSearchTool returns the WebSearch tool definition.
 // The providerName determines which search backend to use:
@@ -98,25 +117,30 @@ func makeWebSearchHandler(providerName string) types.ToolHandler {
 }
 
 // classifySearchError categorizes a search error for structured logging.
-// Helps operators quickly filter by failure type (auth, rate_limit, network, etc.).
+// Uses error types and sentinel errors instead of string matching.
 func classifySearchError(err error) string {
-	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "API_KEY"):
+	case errors.Is(err, ErrAuthMissing):
 		return "auth_missing"
-	case strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 403"):
-		return "auth_rejected"
-	case strings.Contains(msg, "HTTP 429"):
-		return "rate_limit"
-	case strings.Contains(msg, "HTTP 5"):
-		return "server_error"
-	case strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "context canceled"):
-		return "timeout"
-	case strings.Contains(msg, "truncated"):
+	case errors.Is(err, ErrResponseTruncated):
 		return "response_truncated"
-	default:
-		return "unknown"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "timeout"
 	}
+
+	var httpErr *HTTPStatusError
+	if errors.As(err, &httpErr) {
+		switch {
+		case httpErr.StatusCode == 401 || httpErr.StatusCode == 403:
+			return "auth_rejected"
+		case httpErr.StatusCode == 429:
+			return "rate_limit"
+		case httpErr.StatusCode >= 500:
+			return "server_error"
+		}
+	}
+
+	return "unknown"
 }
 
 // dispatchSearch routes the query to the appropriate provider backend.
@@ -125,13 +149,13 @@ func dispatchSearch(ctx context.Context, providerName, query string, numResults 
 	case "openai":
 		apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 		if apiKey == "" {
-			return "", fmt.Errorf("WebSearch requires OPENAI_API_KEY when provider is openai")
+			return "", fmt.Errorf("WebSearch requires OPENAI_API_KEY when provider is openai: %w", ErrAuthMissing)
 		}
 		return searchViaOpenAI(ctx, apiKey, query, numResults)
 	default:
 		apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 		if apiKey == "" {
-			return "", fmt.Errorf("WebSearch requires ANTHROPIC_API_KEY to be set")
+			return "", fmt.Errorf("WebSearch requires ANTHROPIC_API_KEY to be set: %w", ErrAuthMissing)
 		}
 		return searchViaAnthropic(ctx, apiKey, query, numResults)
 	}
@@ -266,6 +290,21 @@ func openAIHTTPClient() *http.Client {
 // different constraints.
 var MaxResponseBodySize int64 = 5 * 1024 * 1024 // 5 MB
 
+// readLimitedBody reads up to limit+1 bytes from r. If exactly limit+1 bytes
+// were available, the body exceeded the limit (truncated=true) and only limit
+// bytes are returned. This avoids false positives when the body is exactly at
+// the limit.
+func readLimitedBody(r io.Reader, limit int64) (body []byte, truncated bool, err error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], true, nil
+	}
+	return data, false, nil
+}
+
 // searchViaOpenAI calls OpenAI's Responses API with web_search tool to
 // get search results, then formats them as plain text.
 //
@@ -317,17 +356,17 @@ func searchViaOpenAI(ctx context.Context, apiKey, query string, numResults int) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBodySize))
+	respBody, truncated, err := readLimitedBody(resp.Body, MaxResponseBodySize)
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
 
-	if int64(len(respBody)) >= MaxResponseBodySize {
-		return "", fmt.Errorf("response body truncated at %d bytes — likely malformed", MaxResponseBodySize)
+	if truncated {
+		return "", fmt.Errorf("response body exceeded %d bytes: %w", MaxResponseBodySize, ErrResponseTruncated)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		return "", &HTTPStatusError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return formatOpenAISearchResponse(respBody, query)
