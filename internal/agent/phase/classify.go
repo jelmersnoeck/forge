@@ -20,22 +20,6 @@ const (
 	IntentTask     Intent = "task"
 )
 
-// classificationModels is a prioritized list of lightweight (cheap/fast) models
-// for intent classification. The provider falls through to the next model when
-// an error occurs (e.g., model deprecated, region unavailable).
-//
-// Priority order rationale:
-//   - claude-haiku-4-5: alias that resolves to latest Haiku — fast path
-//   - claude-3-5-haiku-20241022: distinct older model as true fallback
-//
-// The fallback must be a genuinely different model (not just a dated version of
-// the same one) so both entries don't fail simultaneously if a model family has
-// an outage. These are real Anthropic model IDs — retired models return an API
-// error and we fall through.
-var classificationModels = []string{
-	"claude-haiku-4-5",
-	"claude-3-5-haiku-20241022",
-}
 
 // classificationTimeout is the per-attempt timeout for classification.
 // Kept tight: spec targets <500ms, but network jitter needs a buffer.
@@ -64,16 +48,17 @@ const maxClassifyPromptLen = 1000
 // prompt is an informational question or an actionable task request.
 // Returns (IntentTask, nil) for empty prompts.
 // Returns (IntentTask, err) on classification failure (safe default).
-// Tries each model in classificationModels before giving up.
-func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string) (Intent, error) {
+// Tries each model from CheapModels(providerName) before giving up.
+func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string, providerName string) (Intent, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return IntentTask, nil
 	}
 
 	classifyPrompt := truncateAtWordBoundary(prompt, maxClassifyPromptLen)
 
+	models := CheapModels(providerName)
 	var lastErr error
-	for i, model := range classificationModels {
+	for i, model := range models {
 		intent, err := classifyWithModel(ctx, provider, model, classifyPrompt)
 		if err == nil {
 			switch {
@@ -88,7 +73,7 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 		log.Printf("[classify] model %s failed: %v", model, err)
 	}
 
-	log.Printf("[classify] all %d classification models failed — defaulting to task", len(classificationModels))
+	log.Printf("[classify] all %d classification models failed — defaulting to task", len(models))
 	return IntentTask, fmt.Errorf("all classification models failed: %w", lastErr)
 }
 

@@ -179,7 +179,8 @@ func (r *Registry) Filtered(allowList, denyList []string) *Registry {
 }
 
 // NewDefaultRegistry creates a registry with all built-in tools.
-func NewDefaultRegistry() *Registry {
+// providerName determines provider-specific behavior (e.g., WebSearch backend).
+func NewDefaultRegistry(providerName string) *Registry {
 	r := NewRegistry()
 	r.Register(ReadTool())
 	r.Register(WriteTool())
@@ -189,7 +190,7 @@ func NewDefaultRegistry() *Registry {
 	r.Register(GrepTool())
 	r.Register(QueueImmediateTool)
 	r.Register(QueueOnCompleteTool)
-	r.Register(WebSearchTool())
+	r.Register(WebSearchTool(providerName))
 	r.Register(ReflectTool())
 	// Background task tools
 	r.Register(TaskCreateTool())

@@ -50,12 +50,12 @@ const maxDiffLen = 8000
 //	preconditions → fetch/rebase/push → LLM-generate title+body → gh pr create
 //
 // Deprecated: Use EnsurePR instead, which handles both creation and update.
-func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
-	return createNewPR(ctx, prov, cwd, specPath)
+func CreatePR(ctx context.Context, prov types.LLMProvider, providerName, cwd, specPath string) PRResult {
+	return createNewPR(ctx, prov, providerName, cwd, specPath)
 }
 
 // createNewPR is the internal implementation for creating a new PR.
-func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
+func createNewPR(ctx context.Context, prov types.LLMProvider, providerName, cwd, specPath string) PRResult {
 	// Check preconditions.
 	ok, reason := shouldCreatePR(cwd)
 	if !ok {
@@ -100,7 +100,7 @@ func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath stri
 	}
 
 	// Generate title and body via LLM.
-	title, body, err := generatePRContent(ctx, prov, diff, commitLog, specContent)
+	title, body, err := generatePRContent(ctx, prov, providerName, diff, commitLog, specContent)
 	if err != nil {
 		log.Printf("[pr] LLM generation failed, using fallback: %v", err)
 		title, body = fallbackPRContent(branch, commitLog, diffStat, specContent)
@@ -109,7 +109,7 @@ func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath stri
 	// Validate and retry once if needed.
 	if err := validatePRTitle(title); err != nil {
 		log.Printf("[pr] generated title invalid (%v), retrying", err)
-		title2, body2, err2 := generatePRContent(ctx, prov, diff, commitLog, specContent)
+		title2, body2, err2 := generatePRContent(ctx, prov, providerName, diff, commitLog, specContent)
 		if err2 == nil && validatePRTitle(title2) == nil {
 			title, body = title2, body2
 		} else {
@@ -131,7 +131,7 @@ func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath stri
 }
 
 // generatePRContent uses a cheap LLM call to produce a PR title and description.
-func generatePRContent(ctx context.Context, prov types.LLMProvider, diff, commitLog, specContent string) (string, string, error) {
+func generatePRContent(ctx context.Context, prov types.LLMProvider, providerName, diff, commitLog, specContent string) (string, string, error) {
 	// Truncate diff to keep token count reasonable.
 	truncatedDiff := diff
 	if len(truncatedDiff) > maxDiffLen {
@@ -154,7 +154,7 @@ func generatePRContent(ctx context.Context, prov types.LLMProvider, diff, commit
 	}
 
 	var lastErr error
-	for _, model := range classificationModels {
+	for _, model := range CheapModels(providerName) {
 		title, body, err := generateWithModel(ctx, prov, model, prompt.String())
 		if err == nil {
 			return title, body, nil
@@ -435,7 +435,7 @@ func truncateForLog(s string, maxLen int) string {
 //	   │         │
 //	   ▼         ▼
 //	 PRResult  PRResult{URL: existing}
-func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
+func EnsurePR(ctx context.Context, prov types.LLMProvider, providerName, cwd, specPath string) PRResult {
 	// Bail if context is already cancelled.
 	if ctx.Err() != nil {
 		return PRResult{Error: fmt.Errorf("skipped: %w", ctx.Err())}
@@ -453,7 +453,7 @@ func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string)
 	switch existing {
 	case "":
 		// No existing PR — create one via the full workflow.
-		return createNewPR(ctx, prov, cwd, specPath)
+		return createNewPR(ctx, prov, providerName, cwd, specPath)
 
 	default:
 		// PR exists — push any new commits and return existing URL.

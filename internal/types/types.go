@@ -322,6 +322,7 @@ type SpecEntry struct {
 
 // MergedSettings is the merged result of user + project + local settings.
 type MergedSettings struct {
+	Provider    string            `json:"provider,omitempty"` // "anthropic", "openai", "claude-cli"
 	Model       string            `json:"model,omitempty"`
 	Permissions *PermissionConfig `json:"permissions,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`

@@ -100,14 +100,14 @@ func TestParseIntent(t *testing.T) {
 func TestClassifyIntentEmptyPrompt(t *testing.T) {
 	r := require.New(t)
 	// Empty prompt should skip classification and return task.
-	got, err := ClassifyIntent(t.Context(), nil, "")
+	got, err := ClassifyIntent(t.Context(), nil, "", "anthropic")
 	r.NoError(err)
 	r.Equal(IntentTask, got)
 }
 
 func TestClassifyIntentWhitespacePrompt(t *testing.T) {
 	r := require.New(t)
-	got, err := ClassifyIntent(t.Context(), nil, "   ")
+	got, err := ClassifyIntent(t.Context(), nil, "   ", "anthropic")
 	r.NoError(err)
 	r.Equal(IntentTask, got)
 }
@@ -130,15 +130,16 @@ func TestClassifyIntentSuccess(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
+			models := CheapModels("anthropic")
 			prov := &mockProvider{
 				responses: map[string][]types.ChatDelta{
-					classificationModels[0]: {
+					models[0]: {
 						{Type: "text_delta", Text: tc.response},
 					},
 				},
 			}
 
-			got, err := ClassifyIntent(t.Context(), prov, "how does the caching work?")
+			got, err := ClassifyIntent(t.Context(), prov, "how does the caching work?", "anthropic")
 			r.NoError(err)
 			r.Equal(tc.want, got)
 			r.Len(prov.calls, 1, "should only try first model on success")
@@ -148,10 +149,11 @@ func TestClassifyIntentSuccess(t *testing.T) {
 
 func TestClassifyIntentModelFallback(t *testing.T) {
 	r := require.New(t)
-	r.GreaterOrEqual(len(classificationModels), 2, "need at least 2 models for fallback test")
+	models := CheapModels("anthropic")
+	r.GreaterOrEqual(len(models), 2, "need at least 2 models for fallback test")
 
-	// Only the last model succeeds; all others are absent from mock → return error.
-	lastModel := classificationModels[len(classificationModels)-1]
+	// Only the last model succeeds; all others are absent from mock -> return error.
+	lastModel := models[len(models)-1]
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
 			lastModel: {
@@ -160,10 +162,10 @@ func TestClassifyIntentModelFallback(t *testing.T) {
 		},
 	}
 
-	got, err := ClassifyIntent(t.Context(), prov, "what files handle MCP?")
+	got, err := ClassifyIntent(t.Context(), prov, "what files handle MCP?", "anthropic")
 	r.NoError(err)
 	r.Equal(IntentQuestion, got)
-	r.Len(prov.calls, len(classificationModels), "should try all models before succeeding")
+	r.Len(prov.calls, len(models), "should try all models before succeeding")
 }
 
 func TestClassifyIntentAllModelsFail(t *testing.T) {
@@ -174,7 +176,7 @@ func TestClassifyIntentAllModelsFail(t *testing.T) {
 		responses: map[string][]types.ChatDelta{},
 	}
 
-	got, err := ClassifyIntent(t.Context(), prov, "add a verbose flag")
+	got, err := ClassifyIntent(t.Context(), prov, "add a verbose flag", "anthropic")
 	r.Equal(IntentTask, got, "should default to task on failure")
 	r.Error(err)
 	r.Contains(err.Error(), "all classification models failed")
@@ -183,16 +185,17 @@ func TestClassifyIntentAllModelsFail(t *testing.T) {
 func TestClassifyIntentStreamError(t *testing.T) {
 	r := require.New(t)
 
+	models := CheapModels("anthropic")
 	// Model returns an error delta in the stream.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[0]: {
+			models[0]: {
 				{Type: "error", Text: "rate limited, Troy Barnes"},
 			},
 		},
 	}
 
-	got, err := ClassifyIntent(t.Context(), prov, "explain session lifecycle")
+	got, err := ClassifyIntent(t.Context(), prov, "explain session lifecycle", "anthropic")
 	r.Equal(IntentTask, got)
 	r.Error(err)
 	r.Contains(err.Error(), "all classification models failed")
@@ -201,16 +204,17 @@ func TestClassifyIntentStreamError(t *testing.T) {
 func TestClassifyIntentGarbageResponse(t *testing.T) {
 	r := require.New(t)
 
+	models := CheapModels("anthropic")
 	// Model returns valid stream but garbage content.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[0]: {
+			models[0]: {
 				{Type: "text_delta", Text: "I don't understand, I'm the Human Being mascot"},
 			},
 		},
 	}
 
-	got, err := ClassifyIntent(t.Context(), prov, "how does routing work?")
+	got, err := ClassifyIntent(t.Context(), prov, "how does routing work?", "anthropic")
 	r.Equal(IntentTask, got)
 	r.Error(err)
 }
@@ -227,7 +231,7 @@ func TestClassifyIntentPromptTruncation(t *testing.T) {
 	var capturedPrompt string
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[0]: {
+			CheapModels("anthropic")[0]: {
 				{Type: "text_delta", Text: `{"intent": "task"}`},
 			},
 		},
@@ -241,7 +245,7 @@ func TestClassifyIntentPromptTruncation(t *testing.T) {
 	}
 	_ = origChat
 
-	got, err := ClassifyIntent(t.Context(), wrappedProv, longPrompt)
+	got, err := ClassifyIntent(t.Context(), wrappedProv, longPrompt, "anthropic")
 	r.NoError(err)
 	r.Equal(IntentTask, got)
 	// The prompt sent should be truncated.
@@ -313,10 +317,21 @@ func TestTruncateAtWordBoundary(t *testing.T) {
 	}
 }
 
-func TestClassificationModelsNotEmpty(t *testing.T) {
+func TestCheapModelsNotEmpty(t *testing.T) {
 	r := require.New(t)
-	r.NotEmpty(classificationModels, "classificationModels must have at least one model")
-	for _, m := range classificationModels {
-		r.NotEmpty(m, "classification model must not be empty string")
+	for _, provider := range []string{"anthropic", "openai", "claude-cli"} {
+		models := CheapModels(provider)
+		r.NotEmpty(models, "CheapModels(%q) must have at least one model", provider)
+		for _, m := range models {
+			r.NotEmpty(m, "cheap model must not be empty string")
+		}
 	}
+}
+
+func TestCheapModelsUnknownProvider(t *testing.T) {
+	r := require.New(t)
+	// Unknown provider falls back to anthropic models.
+	models := CheapModels("unknown-provider")
+	r.NotEmpty(models)
+	r.Equal(CheapModels("anthropic"), models)
 }

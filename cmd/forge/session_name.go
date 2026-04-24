@@ -11,17 +11,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
-// newLightweightProvider creates a provider for cheap LLM calls (session naming)
-// using env-var auto-detection with a fixed priority order:
-// Anthropic > OpenAI > Claude CLI. Returns nil when no provider is available.
+// newLightweightProvider creates a provider for cheap LLM calls (session naming).
+// Priority order:
+//  1. FORGE_PROVIDER env var (explicit override)
+//  2. ~/.forge/config.toml [provider].default
+//  3. Auto-detect: ANTHROPIC_API_KEY > OPENAI_API_KEY > Claude CLI
+//
+// Returns nil when no provider is available.
 //
 // Intentionally does not cache: this runs once at session start, so the env
 // lookups are negligible and caching would complicate test isolation.
 func newLightweightProvider() types.LLMProvider {
+	// Priority 1: explicit env override
+	if envProv := os.Getenv("FORGE_PROVIDER"); envProv != "" {
+		return providerByName(envProv)
+	}
+
+	// Priority 2: user config
+	userCfg, err := config.LoadUserConfig()
+	if err == nil && userCfg.Provider.Default != "" {
+		log.Printf("[session-name] using configured provider: %s", userCfg.Provider.Default)
+		return providerByName(userCfg.Provider.Default)
+	}
+
+	// Priority 3: auto-detect from environment
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		log.Printf("[session-name] using Anthropic provider")
 		return provider.NewAnthropic(key)
@@ -41,6 +59,34 @@ func newLightweightProvider() types.LLMProvider {
 	}
 	log.Printf("[session-name] no LLM provider available — will use random names")
 	return nil
+}
+
+// providerByName instantiates a provider by name for lightweight calls.
+// Returns nil for unrecognized names.
+func providerByName(name string) types.LLMProvider {
+	switch name {
+	case "anthropic":
+		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+			return provider.NewAnthropic(key)
+		}
+		log.Printf("[session-name] provider=anthropic but ANTHROPIC_API_KEY not set")
+		return nil
+	case "openai":
+		if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+			return provider.NewOpenAI(key)
+		}
+		log.Printf("[session-name] provider=openai but OPENAI_API_KEY not set")
+		return nil
+	case "claude-cli":
+		if _, err := exec.LookPath("claude"); err == nil {
+			return provider.NewClaudeCLI()
+		}
+		log.Printf("[session-name] provider=claude-cli but `claude` not found on PATH")
+		return nil
+	default:
+		log.Printf("[session-name] unknown provider %q — skipping", name)
+		return nil
+	}
 }
 
 // sessionNameTimeout caps the LLM call for slug generation.
