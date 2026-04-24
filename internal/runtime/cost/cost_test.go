@@ -52,6 +52,30 @@ func TestCalculate(t *testing.T) {
 			},
 			want: 0.00150, // (1000/1M * 0.25) + (1000/1M * 1.25)
 		},
+		"haiku 4.5 alias": {
+			model: "claude-haiku-4-5",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.006, // (1000/1M * 1.00) + (1000/1M * 5.00)
+		},
+		"haiku 4.5 dated": {
+			model: "claude-haiku-4-5-20251001",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.006, // (1000/1M * 1.00) + (1000/1M * 5.00)
+		},
+		"retired haiku 3.5 still priced for historical lookups": {
+			model: "claude-3-5-haiku-20241022",
+			usage: types.TokenUsage{
+				InputTokens:  1000,
+				OutputTokens: 1000,
+			},
+			want: 0.006, // (1000/1M * 1.00) + (1000/1M * 5.00)
+		},
 		"unknown model": {
 			model: "claude-unknown-model",
 			usage: types.TokenUsage{
