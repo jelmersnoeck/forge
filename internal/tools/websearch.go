@@ -302,7 +302,7 @@ var MaxResponseBodySize int64 = 5 * 1024 * 1024 // 5 MB
 func readLimitedBody(r io.Reader, limit int64) (body []byte, truncated bool, err error) {
 	// Guard against int64 overflow: math.MaxInt64 + 1 wraps to negative.
 	readLimit := limit + 1
-	if readLimit <= 0 {
+	if readLimit < limit {
 		readLimit = limit
 	}
 	data, err := io.ReadAll(io.LimitReader(r, readLimit))
