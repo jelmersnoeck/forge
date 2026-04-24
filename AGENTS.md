@@ -87,7 +87,7 @@ Key files:
 ## Configuration
 
 All forge configuration lives under `.forge/`:
-- `.forge/settings.json` — project settings (model, permissions, env)
+- `.forge/settings.json` — project settings (provider, model, permissions, env)
 - `.forge/settings.local.json` — local overrides (gitignored)
 - `.forge/rules/` — additional rule files (`.md`)
 - `.forge/skills/` — skill definitions (`SKILL.md` with frontmatter)
@@ -119,7 +119,7 @@ internal/
   tools/           tool registry + implementations
   agent/           agent HTTP server, single-session hub, worker
   runtime/
-    provider/      LLMProvider interface + Anthropic implementation
+    provider/      LLMProvider interface + Anthropic/OpenAI/ClaudeCLI implementations
     context/       ContextLoader (AGENTS.md, specs, skills, agents, rules)
     prompt/        system prompt assembly
     session/       JSONL session persistence
@@ -153,7 +153,7 @@ just clean              # remove binaries
 
 ### Interactive mode (default)
 ```bash
-export ANTHROPIC_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-...   # or OPENAI_API_KEY for OpenAI provider
 forge                    # spawns local agent, ephemeral session
 forge --skip-worktree    # skip worktree creation, run in current directory
 ```
@@ -287,7 +287,9 @@ POST   /interrupt                     interrupt current work
 
 ## Environment variables
 
-- `ANTHROPIC_API_KEY` — required by the agent (not the server)
+- `ANTHROPIC_API_KEY` — required when provider is `anthropic` (default)
+- `OPENAI_API_KEY` — required when provider is `openai`
+- `FORGE_PROVIDER` — explicit provider override (`anthropic`, `openai`, `claude-cli`)
 - `GATEWAY_PORT` — gateway listen port (default: 3000)
 - `GATEWAY_HOST` — gateway listen host (default: 0.0.0.0)
 - `WORKSPACE_DIR` — default working directory (default: /tmp/forge/workspace)
@@ -296,9 +298,11 @@ POST   /interrupt                     interrupt current work
 
 ## Gotchas
 
-- `~/.forge/settings.json` may contain model aliases like `opus[1m]` that the
-  Anthropic API doesn't understand. Agent filters these — only values
-  starting with `claude-` are passed through.
+- `~/.forge/settings.json` may contain model aliases like `opus[1m]` that
+  provider APIs don't understand. Any non-empty model string is passed through
+  to the configured provider — the provider itself rejects invalid models.
+- `CacheControl` fields in `ChatRequest` are Anthropic-specific. The OpenAI
+  provider silently ignores them — this is correct behavior, not a bug.
 - Gateway loads `.env` from project root at startup (custom loader in
   `cmd/forge/gateway.go`). Explicit env vars take precedence.
 - Anthropic API requires `tool_result` blocks immediately after `tool_use` in
