@@ -76,9 +76,9 @@ func TestReflectTool(t *testing.T) {
 			r.Contains(string(content), tc.wantContain)
 			r.Contains(string(content), "# Learnings -")
 
-			// .forge/AGENTS.md should be auto-created
-			agentsMD, err := os.ReadFile(filepath.Join(tmpDir, ".forge", "AGENTS.md"))
-			r.NoError(err, ".forge/AGENTS.md should be auto-created")
+			// Root AGENTS.md should be auto-created
+			agentsMD, err := os.ReadFile(filepath.Join(tmpDir, "AGENTS.md"))
+			r.NoError(err, "AGENTS.md should be auto-created at project root")
 			r.Contains(string(agentsMD), "# Agent Learnings")
 		})
 	}
@@ -338,13 +338,13 @@ func TestReflectPushesWhenRemoteExists(t *testing.T) {
 func TestEnsureAgentsMD(t *testing.T) {
 	tests := map[string]struct {
 		setup    func(testing.TB, string)
-		wantPath string // relative to tmpDir; "" = .forge/AGENTS.md created
+		wantPath string // relative to tmpDir; "" means noop
 		wantNew  bool   // true if file should be newly created
 		wantNoop bool   // true if nothing should change
 	}{
-		"no AGENTS.md exists, creates .forge/AGENTS.md": {
+		"no AGENTS.md exists, creates root AGENTS.md": {
 			setup:    func(_ testing.TB, _ string) {},
-			wantPath: ".forge/AGENTS.md",
+			wantPath: "AGENTS.md",
 			wantNew:  true,
 		},
 		"root AGENTS.md exists without section, appends": {
@@ -373,12 +373,11 @@ func TestEnsureAgentsMD(t *testing.T) {
 			},
 			wantNoop: true,
 		},
-		"CLAUDE.md exists but no AGENTS.md, creates .forge/AGENTS.md": {
+		"CLAUDE.md exists but no AGENTS.md, skips creation": {
 			setup: func(tb testing.TB, dir string) {
 				require.NoError(tb, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# Legacy\n"), 0644))
 			},
-			wantPath: ".forge/AGENTS.md",
-			wantNew:  true,
+			wantNoop: true,
 		},
 		"root AGENTS.md without trailing newline": {
 			setup: func(tb testing.TB, dir string) {
@@ -467,17 +466,17 @@ func TestReflectCommitsAgentsMD(t *testing.T) {
 	}, ctx)
 	r.NoError(err)
 
-	// .forge/AGENTS.md should be committed
+	// AGENTS.md should be committed
 	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = tmpDir
 	out, err := cmd.Output()
 	r.NoError(err)
-	r.Empty(strings.TrimSpace(string(out)), "working tree should be clean — .forge/AGENTS.md should be committed")
+	r.Empty(strings.TrimSpace(string(out)), "working tree should be clean — AGENTS.md should be committed")
 
-	// Verify .forge/AGENTS.md is tracked
-	cmd = exec.Command("git", "ls-files", ".forge/AGENTS.md")
+	// Verify AGENTS.md is tracked at root
+	cmd = exec.Command("git", "ls-files", "AGENTS.md")
 	cmd.Dir = tmpDir
 	out, err = cmd.Output()
 	r.NoError(err)
-	r.Contains(string(out), ".forge/AGENTS.md")
+	r.Contains(string(out), "AGENTS.md")
 }
