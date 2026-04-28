@@ -201,7 +201,8 @@ your approach to avoid repeating past mistakes.
 // Resolution order:
 //  1. Root AGENTS.md exists → append section if missing
 //  2. .forge/AGENTS.md exists → append section if missing
-//  3. Neither exists (CLAUDE.md doesn't count) → create .forge/AGENTS.md
+//  3. Root CLAUDE.md exists → skip (it serves as the agents file)
+//  4. Neither exists → create root AGENTS.md
 func ensureAgentsMD(cwd string) (string, error) {
 	rootPath := filepath.Join(cwd, "AGENTS.md")
 	forgePath := filepath.Join(cwd, ".forge", "AGENTS.md")
@@ -227,14 +228,17 @@ func ensureAgentsMD(cwd string) (string, error) {
 		return path, nil
 	}
 
-	// Neither exists — create .forge/AGENTS.md
-	if err := os.MkdirAll(filepath.Join(cwd, ".forge"), 0755); err != nil {
+	// If a top-level CLAUDE.md exists, it acts as the agents file — don't
+	// create a competing AGENTS.md.
+	if _, err := os.Stat(filepath.Join(cwd, "CLAUDE.md")); err == nil {
+		return "", nil
+	}
+
+	// Nothing exists — create AGENTS.md at the project root.
+	if err := os.WriteFile(rootPath, []byte(strings.TrimLeft(agentsMDLearningsSection, "\n")), 0644); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(forgePath, []byte(strings.TrimLeft(agentsMDLearningsSection, "\n")), 0644); err != nil {
-		return "", err
-	}
-	return forgePath, nil
+	return rootPath, nil
 }
 
 // ensureGitattributes idempotently adds the learnings line to .gitattributes.
