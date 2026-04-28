@@ -1,6 +1,6 @@
 ---
 id: phase-session-continuity
-status: draft
+status: implemented
 ---
 # Persistent sessions for spec and coder phases across review cycles
 
@@ -13,12 +13,13 @@ the user provides follow-up feedback. This spec adds session continuity for
 the spec-creator and coder phases while keeping reviewers stateless.
 
 ## Context
-Files that change:
+Files changed:
 
-- `internal/agent/phase/orchestrator.go` — `runSWEPipeline`, `runCoder`, `runCoderWithMessage`, `runSpecCreator`: currently each creates a fresh `loop.New()` + `l.Send()`. Must be changed to reuse a loop instance (or Resume via historyID) across calls within a single pipeline run.
-- `internal/runtime/loop/loop.go` — `Loop.Send()`, `Loop.Resume()`, `Loop.HistoryID()`: the Resume mechanism already exists and is used for Q&A continuity. Phase session continuity leverages the same pattern.
-- `internal/agent/phase/phase.go` — `Phase` struct, `Coder()`, `SpecCreator()`, `Reviewer()`: no changes to phase definitions, but referenced for understanding.
-- `internal/agent/phase/debate.go` — `RunDebate()`: spec creation via ideation pipeline; the planner sub-phase that writes the spec should also carry forward its historyID.
+- `internal/agent/phase/orchestrator.go` — `runSWEPipeline`, `runCoder`, `runCoderResume`: `runCoder` now returns `(historyID, error)`. New `runCoderResume` uses `loop.Resume()` with the stored historyID. `runCoderWithMessage` deleted (replaced by the two methods). `runSpecCreator` returns historyID in Result.
+- `internal/agent/phase/phase.go` — `Result` struct gains `HistoryID` field for session resumption plumbing.
+- `internal/agent/phase/debate.go` — `DebateResult` struct gains `PlannerHistoryID` field. `runPlanner` stores `l.HistoryID()` in the result.
+- `internal/runtime/loop/loop.go` — `Loop.Send()`, `Loop.Resume()`, `Loop.HistoryID()`: unchanged (existing API is sufficient).
+- `internal/agent/phase/session_continuity_test.go` — new test file with 5 tests covering coder resume, historyID propagation, session store continuity, spec creator historyID, and reviewer statelessness.
 
 ## Behavior
 - **Coder session continuity**: The first `runCoder` call creates a new conversation loop and stores its `historyID`. Subsequent `runCoderWithMessage` calls (triggered by review findings) use `loop.Resume()` with the stored historyID instead of creating a fresh loop. The fix message is injected as the new user prompt into the existing conversation, so the coder retains full context of what it built and why.
@@ -65,6 +66,27 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 
 // runCoderResume resumes an existing coder conversation with a new message.
 func (o *Orchestrator) runCoderResume(ctx context.Context, opts OrchestratorOpts, historyID, message string) (string, error)
+
+// internal/agent/phase/phase.go
+
+// Result gains HistoryID for session resumption plumbing.
+type Result struct {
+    Phase     string
+    SpecPath  string
+    Diff      string
+    Findings  []review.Finding
+    HistoryID string // conversation historyID for session resumption
+}
+
+// internal/agent/phase/debate.go
+
+// DebateResult gains PlannerHistoryID for future planner resumption.
+type DebateResult struct {
+    SpecPath         string
+    Winner           Candidate
+    Alternatives     []Candidate
+    PlannerHistoryID string // planner conversation historyID
+}
 ```
 
 ## Edge Cases
