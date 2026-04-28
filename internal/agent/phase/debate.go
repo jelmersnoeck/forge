@@ -39,9 +39,10 @@ type ClarifiedResult struct {
 
 // DebateResult is the output of the full ideation pipeline.
 type DebateResult struct {
-	SpecPath     string      `json:"spec_path"`
-	Winner       Candidate   `json:"winner"`
-	Alternatives []Candidate `json:"alternatives"`
+	SpecPath         string      `json:"spec_path"`
+	Winner           Candidate   `json:"winner"`
+	Alternatives     []Candidate `json:"alternatives"`
+	PlannerHistoryID string      `json:"planner_history_id,omitempty"`
 }
 
 // DebateOpts configures a debate run.
@@ -397,7 +398,8 @@ func runPlanner(ctx context.Context, opts DebateOpts, clarified ClarifiedResult)
 	specPath := findLatestSpec(opts.CWD)
 
 	result := DebateResult{
-		SpecPath: specPath,
+		SpecPath:         specPath,
+		PlannerHistoryID: l.HistoryID(),
 	}
 
 	// Best-effort: extract winner from candidates list.
