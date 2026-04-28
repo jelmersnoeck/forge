@@ -2,6 +2,7 @@ package phase
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -32,12 +33,15 @@ func (p *textProvider) Chat(_ context.Context, req types.ChatRequest) (<-chan ty
 // so we can verify Resume is loading history.
 type trackingProvider struct {
 	calls     atomic.Int32
+	mu        sync.Mutex
 	msgCounts []int // len(req.Messages) for each call
 }
 
 func (p *trackingProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	p.calls.Add(1)
+	p.mu.Lock()
 	p.msgCounts = append(p.msgCounts, len(req.Messages))
+	p.mu.Unlock()
 
 	ch := make(chan types.ChatDelta, 3)
 	go func() {
@@ -96,9 +100,17 @@ func TestRunCoderResume_ReusesHistory(t *testing.T) {
 	r.Equal(historyID, newHistoryID, "Resume should preserve the same historyID")
 
 	// The second Chat call should have more messages than the first (loaded history + new prompt).
-	r.GreaterOrEqual(len(prov.msgCounts), 2)
-	r.Greater(prov.msgCounts[1], prov.msgCounts[0],
+	// First call has 1 user message. Resume loads history (user + assistant) + new user = at least 3.
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Equal(2, len(counts), "expected exactly 2 Chat calls (initial + resume)")
+	r.Greater(counts[1], counts[0],
 		"Resumed conversation should have more messages (history was loaded)")
+	r.GreaterOrEqual(counts[1], 3,
+		"Resume should load at least the original user+assistant pair plus the new message")
 }
 
 func TestRunCoderResume_SessionStoreHasAllMessages(t *testing.T) {

@@ -179,6 +179,8 @@ func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string
 // runSWEPipeline runs the full spec → code → review pipeline.
 func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) error {
 
+	var specHistoryID string
+
 	// Phase 1: Spec Creation (skipped if spec already provided)
 	if specPath == "" {
 		useIdeation := shouldIdeate(opts.PipelineHint)
@@ -225,6 +227,8 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 				specPath = findLatestSpec(opts.CWD)
 			}
 
+			specHistoryID = result.HistoryID
+
 			o.emitPhaseComplete(opts, "spec", fmt.Sprintf("spec: %s", specPath))
 		}
 	}
@@ -260,6 +264,8 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 	// Phase 2: Coder
 	o.emitPhaseHandoff(opts, "spec", "code")
 	o.emitPhaseStart(opts, "code")
+
+	log.Printf("[orchestrator:%s] spec phase complete (specHistoryID=%s, specPath=%s)", opts.SessionID, specHistoryID, specPath)
 
 	var coderHistoryID string
 	coderHistoryID, err := o.runCoder(ctx, opts, specPath)
@@ -432,6 +438,8 @@ func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts
 
 	l := loop.New(loopOpts)
 	if err := l.Send(ctx, opts.InitialPrompt, opts.Emit); err != nil {
+		log.Printf("[orchestrator:%s] spec-creator phase Send failed (historyID=%s, promptLen=%d): %v",
+			opts.SessionID, l.HistoryID(), len(opts.InitialPrompt), err)
 		return Result{Phase: "spec", HistoryID: l.HistoryID()}, err
 	}
 
@@ -466,7 +474,9 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 
 	l := loop.New(loopOpts)
 	if err := l.Send(ctx, prompt, opts.Emit); err != nil {
-		return l.HistoryID(), err
+		log.Printf("[orchestrator:%s] coder phase Send failed (historyID=%s, promptLen=%d): %v",
+			opts.SessionID, l.HistoryID(), len(prompt), err)
+		return "", err
 	}
 	return l.HistoryID(), nil
 }
@@ -495,7 +505,10 @@ func (o *Orchestrator) runCoderResume(ctx context.Context, opts OrchestratorOpts
 
 	l := loop.New(loopOpts)
 	if err := l.Resume(ctx, historyID, message, opts.Emit); err != nil {
-		return l.HistoryID(), err
+		log.Printf("[orchestrator:%s] coder resume failed (historyID=%s, messageLen=%d): %v",
+			opts.SessionID, historyID, len(message), err)
+		// Return original historyID — the caller can retry with the same session.
+		return historyID, err
 	}
 	return l.HistoryID(), nil
 }
