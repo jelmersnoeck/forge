@@ -26,15 +26,13 @@ const (
 //
 // Priority order rationale:
 //   - claude-haiku-4-5: alias that resolves to latest Haiku — fast path
-//   - claude-3-5-haiku-20241022: distinct older model as true fallback
+//   - claude-haiku-4-5-20251001: pinned version as stability fallback
 //
-// The fallback must be a genuinely different model (not just a dated version of
-// the same one) so both entries don't fail simultaneously if a model family has
-// an outage. These are real Anthropic model IDs — retired models return an API
-// error and we fall through.
+// The alias resolves to the latest Haiku and may temporarily 404 during
+// rollouts. The dated version anchors to a known-good release.
 var classificationModels = []string{
 	"claude-haiku-4-5",
-	"claude-3-5-haiku-20241022",
+	"claude-haiku-4-5-20251001",
 }
 
 // classificationTimeout is the per-attempt timeout for classification.

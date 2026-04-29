@@ -95,6 +95,7 @@ func generateSessionName(provider types.LLMProvider, prompt string) string {
 	defer cancel()
 
 	req := types.ChatRequest{
+		Model:  "claude-haiku-4-5",
 		System: []types.SystemBlock{},
 		Messages: []types.ChatMessage{
 			{
