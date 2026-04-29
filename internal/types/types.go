@@ -118,6 +118,18 @@ type LLMProvider interface {
 	Chat(ctx context.Context, req ChatRequest) (<-chan ChatDelta, error)
 }
 
+// LightweightModels is a prioritized list of cheap/fast models for auxiliary
+// LLM calls (session naming, intent classification, etc.). Callsites should
+// try each model in order, falling through on error.
+//
+// Priority order:
+//   - claude-haiku-4-5: alias → latest Haiku; fast path, may 404 during rollouts
+//   - claude-haiku-4-5-20251001: pinned release as stability fallback
+var LightweightModels = []string{
+	"claude-haiku-4-5",
+	"claude-haiku-4-5-20251001",
+}
+
 // ── Tool System ──────────────────────────────────────────────
 
 // ToolSchema is sent to the LLM so it knows which tools are available.
