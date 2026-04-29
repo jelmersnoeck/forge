@@ -19,7 +19,7 @@ Commands filter as the user types (e.g. `/r` narrows to `/review`).
 Files and systems that change:
 
 - `internal/review/review.go` — types: Finding, ReviewResult, Reviewer interface, Severity constants
-- `internal/review/reviewers.go` — 5 built-in reviewer implementations + DefaultReviewers/DefaultReviewersWithSpec
+- `internal/review/reviewers.go` — 6 built-in reviewer implementations + DefaultReviewers/DefaultReviewersWithSpec
 - `internal/review/orchestrator.go` — Orchestrator, ReviewRequest, parallel execution, JSON parsing, summary formatting
 - `internal/review/diff.go` — GetDiff, detectBaseBranch, truncation, git helpers
 - `internal/review/orchestrator_test.go` — orchestrator, parser, reviewer, summary, diff tests (49 test cases)
@@ -42,11 +42,12 @@ Files and systems that change:
 - The review spawns 5 reviewer agents in parallel:
   1. **Security** — vulnerabilities, injection, auth issues, secret leaks
   2. **Code Quality & Tests** — correctness, test coverage, error handling, edge cases
-  3. **Maintainability & Readability** — naming, complexity, dead code, consistency
-  4. **Operational Readiness** — observability, logging, docs, config, error messages
-  5. **Spec Validation** — verifies changes match the active spec (skipped if no spec)
+  3. **Simplification** — unnecessary complexity, deep nesting, over-engineering, verbose code
+  4. **Maintainability** — naming, DRY, dead code, consistency, separation of concerns
+  5. **Operational Readiness** — observability, logging, docs, config, error messages
+  6. **Spec Validation** — verifies changes match the active spec (skipped if no spec)
 - Each reviewer runs against every configured provider (Anthropic + OpenAI by default)
-  - Total agents: 5 reviewers × 2 providers = 10 parallel agents
+  - Total agents: 5 reviewers × 2 providers = 10 parallel agents (6 × 2 = 12 with spec)
   - Each agent gets: git diff, project AGENTS.md, active specs, reviewer-specific prompt
   - Each agent is read-only (no tool access — just analysis)
 - Results stream back as `review_finding` events
@@ -157,8 +158,8 @@ type ReviewRequest struct {
 
 func NewOrchestrator(providers map[string]types.LLMProvider, reviewers []Reviewer) *Orchestrator
 func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(types.OutboundEvent)) []ReviewResult
-func DefaultReviewers() []Reviewer          // 4 reviewers
-func DefaultReviewersWithSpec() []Reviewer   // 5 reviewers (includes spec validation)
+func DefaultReviewers() []Reviewer          // 5 reviewers
+func DefaultReviewersWithSpec() []Reviewer   // 6 reviewers (includes spec validation)
 func GetDiff(cwd, baseBranch string) (string, error)
 func FormatFindingsMessage(results []ReviewResult) string
 func HasActionableFindings(results []ReviewResult) bool
@@ -188,7 +189,7 @@ func (h *Hub) ReviewChannel() <-chan string
 - All providers unavailable → return error "no providers available for review"
 - One reviewer times out → include error in results, continue with others
 - Very large diff (>100KB) → truncate with head/tail strategy, warn user
-- No active spec → skip spec validation reviewer, run remaining 4
+- No active spec → skip spec validation reviewer, run remaining 5
 - Review triggered while agent is busy → queue it (same as messages)
 - Network errors mid-review → individual failures reported, others continue
 - Typing `/` with no further characters → show all commands in dropdown
