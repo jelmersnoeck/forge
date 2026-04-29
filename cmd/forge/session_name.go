@@ -98,7 +98,7 @@ func generateSessionName(prov types.LLMProvider, prompt string) string {
 		}
 	}
 
-	log.Printf("[session-name] all %d models failed — falling back to random name", len(types.LightweightModels))
+	log.Printf("[session-name] all %d models failed (tried %v) — falling back to random name", len(types.LightweightModels), types.LightweightModels)
 	return fallbackSessionName()
 }
 
@@ -135,7 +135,11 @@ func trySessionNameModel(prov types.LLMProvider, model, prompt string) string {
 		return ""
 	}
 
-	return sanitizeSlug(text)
+	slug := sanitizeSlug(text)
+	if slug == "" {
+		log.Printf("[session-name] model %s returned empty/unparseable response: %q", model, text)
+	}
+	return slug
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9-]`)

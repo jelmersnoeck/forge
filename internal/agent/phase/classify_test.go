@@ -177,7 +177,7 @@ func TestClassifyIntentAllModelsFail(t *testing.T) {
 	got, err := ClassifyIntent(t.Context(), prov, "add a verbose flag")
 	r.Equal(IntentTask, got, "should default to task on failure")
 	r.Error(err)
-	r.Contains(err.Error(), "all classification models failed")
+	r.Contains(err.Error(), "all models failed")
 }
 
 func TestClassifyIntentStreamError(t *testing.T) {
@@ -195,7 +195,7 @@ func TestClassifyIntentStreamError(t *testing.T) {
 	got, err := ClassifyIntent(t.Context(), prov, "explain session lifecycle")
 	r.Equal(IntentTask, got)
 	r.Error(err)
-	r.Contains(err.Error(), "all classification models failed")
+	r.Contains(err.Error(), "all models failed")
 }
 
 func TestClassifyIntentGarbageResponse(t *testing.T) {

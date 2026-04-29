@@ -71,8 +71,8 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 		log.Printf("[classify] model %s failed: %v", model, err)
 	}
 
-	log.Printf("[classify] all %d classification models failed — defaulting to task", len(types.LightweightModels))
-	return IntentTask, fmt.Errorf("all classification models failed: %w", lastErr)
+	log.Printf("[classify] all %d models failed — defaulting to task", len(types.LightweightModels))
+	return IntentTask, fmt.Errorf("all models failed: %w", lastErr)
 }
 
 // classifyWithModel runs a single classification attempt against a specific model.
