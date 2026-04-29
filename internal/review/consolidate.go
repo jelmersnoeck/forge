@@ -38,9 +38,6 @@ func Consolidate(
 		return nil, nil
 	}
 
-	consolidateCtx, cancel := context.WithTimeout(ctx, consolidationTimeout)
-	defer cancel()
-
 	if model == "" {
 		model = modelForProvider("")
 		log.Printf("[consolidate] no model specified, defaulting to %s", model)
@@ -65,18 +62,18 @@ func Consolidate(
 		Stream:    true,
 	}
 
-	deltaChan, err := provider.Chat(consolidateCtx, chatReq)
+	deltaChan, err := provider.Chat(ctx, chatReq)
 	if err != nil {
 		log.Printf("[consolidate] provider error (model=%s), falling back to raw: %v", model, err)
 		return fallbackToRaw(results), nil
 	}
 
-	responseText := collectResponse(consolidateCtx, deltaChan)
+	responseText := collectResponse(ctx, deltaChan)
 
 	// If context expired before we got a response, fall back.
-	if consolidateCtx.Err() != nil && strings.TrimSpace(responseText) == "" {
+	if ctx.Err() != nil && strings.TrimSpace(responseText) == "" {
 		cause := "unknown"
-		switch consolidateCtx.Err() {
+		switch ctx.Err() {
 		case context.DeadlineExceeded:
 			cause = "deadline exceeded"
 		case context.Canceled:
@@ -97,6 +94,9 @@ func Consolidate(
 	if len(consolidated) > rawCount {
 		log.Printf("[consolidate] warning: consolidation produced %d findings from %d raw (LLM may have invented findings)", len(consolidated), rawCount)
 	}
+
+	// Post-process: deterministic dedup catches duplicates the LLM missed.
+	consolidated = dedupConsolidated(consolidated)
 
 	return consolidated, nil
 }
@@ -228,25 +228,10 @@ func parseConsolidationResponse(text string) ([]ConsolidatedFinding, error) {
 	return findings, nil
 }
 
-// fallbackToRaw converts raw findings 1:1 into ConsolidatedFinding.
+// fallbackToRaw deduplicates raw findings deterministically (no LLM).
+// Groups findings by file, overlapping lines, and description similarity.
 func fallbackToRaw(results []ReviewResult) []ConsolidatedFinding {
-	var out []ConsolidatedFinding
-	for _, r := range results {
-		for _, f := range r.Findings {
-			out = append(out, ConsolidatedFinding{
-				Severity:    f.Severity,
-				File:        f.File,
-				StartLine:   f.StartLine,
-				EndLine:     f.EndLine,
-				Description: f.Description,
-				Sources: []Source{{
-					Reviewer: r.Reviewer,
-					Provider: r.Provider,
-				}},
-			})
-		}
-	}
-	return out
+	return dedupFindings(results)
 }
 
 // collectAllFindings gathers all findings from all results, ignoring errors.
@@ -347,4 +332,11 @@ func HasConsolidatedCritical(findings []ConsolidatedFinding) bool {
 		}
 	}
 	return false
+}
+
+// DedupRawFindings deduplicates raw ReviewResults into ConsolidatedFindings
+// deterministically (no LLM). Exported for callers that need to dedup raw
+// findings when the LLM consolidation path wasn't used.
+func DedupRawFindings(results []ReviewResult) []ConsolidatedFinding {
+	return dedupFindings(results)
 }
