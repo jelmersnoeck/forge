@@ -97,7 +97,9 @@ Focus areas:
 - Over-engineering (interfaces with one implementation, unnecessary generics, etc.)
 - Code that requires a comment to explain when a rewrite would be self-explanatory
 - Boolean logic that could be simplified
-- Unnecessary temporary variables, redundant checks, dead branches
+- Unnecessary temporary variables
+- Redundant checks
+- Dead branches
 
 Severity guide:
 - critical: actively confusing code that is likely to cause bugs due to complexity
@@ -123,11 +125,11 @@ func (MaintainabilityReviewer) SystemPrompt() string {
 	return `You are an expert maintainability reviewer. Analyze the provided git diff for structural and architectural health.
 
 Focus areas:
-- Naming (variables, functions, types) — misleading or unclear names
+- Naming (variables, functions, types) — misleading or unclear
 - DRY violations (copy-pasted logic that should be extracted)
 - Dead code, unused imports, unreachable branches
 - Inconsistent patterns within the codebase
-- Poor separation of concerns, god functions/types
+- Poor separation of concerns, god functions, god types
 - Magic numbers or strings that should be constants
 - Missing or misleading documentation on exported symbols
 
