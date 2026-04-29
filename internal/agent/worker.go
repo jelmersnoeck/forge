@@ -591,7 +591,8 @@ func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.
 	}
 
 	if review.HasActionableFindings(cr.Raw) {
-		fixMsg := review.FormatFindingsMessage(cr.Raw)
+		deduped := review.DedupRawFindings(cr.Raw)
+		fixMsg := review.FormatConsolidatedMessage(deduped)
 		w.hub.PushMessage(types.InboundMessage{Text: fixMsg})
 		return
 	}
