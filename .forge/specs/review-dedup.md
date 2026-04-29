@@ -38,7 +38,14 @@ Files and systems that changed:
 - `internal/agent/phase/phase.go` — `Result` type gains `Consolidated` field.
 - `internal/agent/phase/phase_test.go` — removed `TestConvertToResults` (dead code).
 - `internal/agent/worker.go` — `/review` command handler uses consolidated
-  findings when available.
+  findings when available; fallback path deduplicates raw findings via
+  `DedupRawFindings` before sending to the coder.
+- `internal/review/dedup.go` — new file: deterministic dedup with tiered
+  similarity thresholds. `dedupFindings()` (raw→consolidated), `dedupConsolidated()`
+  (post-LLM cleanup), `isSameFinding()`, `descriptionSimilarAt()`, `linesOverlap()`.
+  Exported `DedupRawFindings()` for callers outside the consolidation path.
+- `internal/review/dedup_test.go` — new file: comprehensive tests for similarity
+  matching, tiered thresholds, dedup merging, line range widening, source attribution.
 
 Existing types referenced:
 - `review.Finding` (review.go)
@@ -78,8 +85,14 @@ Existing types referenced:
   the deduplicated findings as a JSON array.
 - The consolidation step has its own timeout (2 minutes), separate from the
   per-agent timeout.
-- If consolidation fails (LLM error, parse error, timeout), fall back to raw
-  findings — the review must not fail because dedup broke.
+- If consolidation fails (LLM error, parse error, timeout), fall back to
+  deterministic dedup (`dedupFindings`) which groups by file, overlapping lines,
+  and description similarity — the review must not fail because dedup broke.
+- After LLM consolidation succeeds, a deterministic post-processing step
+  (`dedupConsolidated`) catches duplicates the LLM missed.
+- Similarity matching uses tiered thresholds: 30% token overlap for co-located
+  findings (same file + overlapping lines), 40% for same-file or file-less findings.
+  Line proximity is 5 lines.
 
 ## Constraints
 - Must not change the streaming behavior of individual `review_finding` events —
@@ -89,7 +102,7 @@ Existing types referenced:
 - Must not increase the review timeout by more than 2 minutes in the worst case.
 - The consolidation prompt must request JSON output — no free-form text parsing.
 - Must not lose findings — if consolidation fails, raw findings pass through
-  unmodified.
+  with deterministic deduplication (not 1:1, but merged by similarity).
 - The `FormatFindingsMessage` used by the coder fix loop must use consolidated
   findings (when available) to avoid the coder fixing the same issue 5 times.
 - Must not break existing tests — all current orchestrator tests must pass.
@@ -166,6 +179,16 @@ type Result struct {
 }
 ```
 
+```go
+// internal/review/dedup.go — deterministic dedup (no LLM needed)
+
+// DedupRawFindings deduplicates raw ReviewResults into ConsolidatedFindings.
+func DedupRawFindings(results []ReviewResult) []ConsolidatedFinding
+
+// descriptionSimilarAt checks token overlap against a given threshold.
+func descriptionSimilarAt(a, b string, threshold float64) bool
+```
+
 ## Edge Cases
 - **Zero findings across all agents** → skip consolidation entirely, emit clean
   summary immediately.
@@ -187,3 +210,9 @@ type Result struct {
   but accept the output. The LLM should not invent findings, but we can't
   enforce that structurally.
 - **All providers failed** → no findings to consolidate, skip the step.
+- **LLM produces findings with rewritten descriptions** → `dedupConsolidated`
+  catches near-duplicates the LLM failed to merge, using tiered similarity
+  thresholds based on file/line co-location.
+- **Worker fallback path (consolidated empty, raw has findings)** → raw findings
+  are deduplicated via `DedupRawFindings` before being sent to the coder, preventing
+  N×M duplicate fix requests.
