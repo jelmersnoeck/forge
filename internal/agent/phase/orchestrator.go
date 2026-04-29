@@ -179,6 +179,8 @@ func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string
 // runSWEPipeline runs the full spec → code → review pipeline.
 func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) error {
 
+	var specHistoryID string
+
 	// Phase 1: Spec Creation (skipped if spec already provided)
 	if specPath == "" {
 		useIdeation := shouldIdeate(opts.PipelineHint)
@@ -225,6 +227,8 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 				specPath = findLatestSpec(opts.CWD)
 			}
 
+			specHistoryID = result.HistoryID
+
 			o.emitPhaseComplete(opts, "spec", fmt.Sprintf("spec: %s", specPath))
 		}
 	}
@@ -261,7 +265,11 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 	o.emitPhaseHandoff(opts, "spec", "code")
 	o.emitPhaseStart(opts, "code")
 
-	if err := o.runCoder(ctx, opts, specPath); err != nil {
+	log.Printf("[orchestrator:%s] spec phase complete (specHistoryID=%s, specPath=%s)", opts.SessionID, specHistoryID, specPath)
+
+	var coderHistoryID string
+	coderHistoryID, err := o.runCoder(ctx, opts, specPath)
+	if err != nil {
 		return fmt.Errorf("coder phase: %w", err)
 	}
 
@@ -363,7 +371,8 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 		o.emitPhaseStart(opts, "code")
 
 		fixMsg := formatFindingsForCoder(result.Findings)
-		if err := o.runCoderWithMessage(ctx, opts, fixMsg); err != nil {
+		coderHistoryID, err = o.runCoderResume(ctx, opts, coderHistoryID, fixMsg)
+		if err != nil {
 			return fmt.Errorf("coder fix phase: %w", err)
 		}
 
@@ -429,20 +438,20 @@ func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts
 
 	l := loop.New(loopOpts)
 	if err := l.Send(ctx, opts.InitialPrompt, opts.Emit); err != nil {
-		return Result{Phase: "spec"}, err
+		log.Printf("[orchestrator:%s] spec-creator phase Send failed (historyID=%s, promptLen=%d): %v",
+			opts.SessionID, l.HistoryID(), len(opts.InitialPrompt), err)
+		return Result{Phase: "spec", HistoryID: l.HistoryID()}, err
 	}
 
 	// Try to find the spec that was just written.
 	specPath := findLatestSpec(opts.CWD)
-	return Result{Phase: "spec", SpecPath: specPath}, nil
+	return Result{Phase: "spec", SpecPath: specPath, HistoryID: l.HistoryID()}, nil
 }
 
-func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, specPath string) error {
+// runCoder creates a new conversation loop for the coder phase and returns its historyID.
+func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, specPath string) (string, error) {
 	prompt := buildCoderPrompt(specPath)
-	return o.runCoderWithMessage(ctx, opts, prompt)
-}
 
-func (o *Orchestrator) runCoderWithMessage(ctx context.Context, opts OrchestratorOpts, prompt string) error {
 	phase := Coder()
 	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
 
@@ -464,7 +473,44 @@ func (o *Orchestrator) runCoderWithMessage(ctx context.Context, opts Orchestrato
 	}
 
 	l := loop.New(loopOpts)
-	return l.Send(ctx, prompt, opts.Emit)
+	if err := l.Send(ctx, prompt, opts.Emit); err != nil {
+		log.Printf("[orchestrator:%s] coder phase Send failed (historyID=%s, promptLen=%d): %v",
+			opts.SessionID, l.HistoryID(), len(prompt), err)
+		return "", err
+	}
+	return l.HistoryID(), nil
+}
+
+// runCoderResume resumes an existing coder conversation with a new message.
+func (o *Orchestrator) runCoderResume(ctx context.Context, opts OrchestratorOpts, historyID, message string) (string, error) {
+	phase := Coder()
+	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+
+	model := opts.Model
+	if phase.Model != "" {
+		model = phase.Model
+	}
+
+	loopOpts := loop.Options{
+		Provider:     opts.Provider,
+		Tools:        opts.Registry, // coder gets all tools
+		Context:      bundle,
+		CWD:          opts.CWD,
+		SessionStore: opts.SessionStore,
+		SessionID:    opts.SessionID,
+		Model:        model,
+		MaxTurns:     phase.MaxTurns,
+		AuditLogger:  opts.AuditLogger,
+	}
+
+	l := loop.New(loopOpts)
+	if err := l.Resume(ctx, historyID, message, opts.Emit); err != nil {
+		log.Printf("[orchestrator:%s] coder resume failed (historyID=%s, messageLen=%d): %v",
+			opts.SessionID, historyID, len(message), err)
+		// Return original historyID — the caller can retry with the same session.
+		return historyID, err
+	}
+	return l.HistoryID(), nil
 }
 
 func (o *Orchestrator) runReviewer(ctx context.Context, opts OrchestratorOpts, specPath string) (Result, error) {
