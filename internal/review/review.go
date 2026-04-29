@@ -29,6 +29,28 @@ type ReviewResult struct {
 	Error    string    `json:"error,omitempty"`
 }
 
+// ConsolidatedFinding is a deduplicated finding with source attribution.
+type ConsolidatedFinding struct {
+	Severity    Severity `json:"severity"`
+	File        string   `json:"file,omitempty"`
+	StartLine   int      `json:"startLine,omitempty"`
+	EndLine     int      `json:"endLine,omitempty"`
+	Description string   `json:"description"`
+	Sources     []Source `json:"sources"`
+}
+
+// Source identifies which reviewer+provider flagged this issue.
+type Source struct {
+	Reviewer string `json:"reviewer"`
+	Provider string `json:"provider"`
+}
+
+// ConsolidatedResults wraps both raw and deduplicated findings.
+type ConsolidatedResults struct {
+	Raw          []ReviewResult
+	Consolidated []ConsolidatedFinding
+}
+
 // Reviewer is a specialized code review persona backed by a system prompt.
 type Reviewer interface {
 	Name() string

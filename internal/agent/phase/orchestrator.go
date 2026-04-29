@@ -342,16 +342,16 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 			break
 		}
 
-		o.emitPhaseComplete(opts, "review", fmt.Sprintf("%d findings", len(result.Findings)))
+		o.emitPhaseComplete(opts, "review", fmt.Sprintf("%d findings", len(result.Consolidated)))
 
-		results := convertToResults(result.Findings)
-		if !review.HasHighSeverityFindings(results) {
+		// Use consolidated findings for severity checks and coder formatting.
+		if !review.HasConsolidatedHighSeverity(result.Consolidated) {
 			break
 		}
 
 		// Feed findings back to coder
 		if cycle+1 >= o.maxReviewCycles {
-			if review.HasCriticalFindings(results) {
+			if review.HasConsolidatedCritical(result.Consolidated) {
 				// Critical findings remain — reset counter for another pass.
 				cycle = -1 // will become 0 after loop increment
 				log.Printf("[orchestrator:%s] critical findings remain after %d cycles, resetting counter", opts.SessionID, o.maxReviewCycles)
@@ -370,7 +370,7 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 		o.emitPhaseHandoff(opts, "review", "code")
 		o.emitPhaseStart(opts, "code")
 
-		fixMsg := formatFindingsForCoder(result.Findings)
+		fixMsg := formatConsolidatedFindingsForCoder(result.Consolidated)
 		coderHistoryID, err = o.runCoderResume(ctx, opts, coderHistoryID, fixMsg)
 		if err != nil {
 			return fmt.Errorf("coder fix phase: %w", err)
@@ -585,12 +585,13 @@ func (o *Orchestrator) runReviewerWithDiff(ctx context.Context, opts Orchestrato
 		Incremental: incremental,
 	}
 
-	results := orch.Run(ctx, req, opts.Emit)
+	cr := orch.Run(ctx, req, opts.Emit)
 
-	// Flatten all findings into the result.
-	for _, r := range results {
+	// Flatten all raw findings into the result.
+	for _, r := range cr.Raw {
 		result.Findings = append(result.Findings, r.Findings...)
 	}
+	result.Consolidated = cr.Consolidated
 
 	return result, nil
 }
@@ -621,37 +622,10 @@ func buildCoderPrompt(specPath string) string {
 	)
 }
 
-// formatFindingsForCoder converts review findings into a prompt for the coder.
-// Only critical and warning findings are included — suggestions are excluded
-// to avoid scope creep in the fix cycle.
-func formatFindingsForCoder(findings []review.Finding) string {
-	var sb strings.Builder
-	sb.WriteString("Fix ONLY the issues listed below. Do not refactor unrelated code or address issues not in this list.\n")
-
-	for _, f := range findings {
-		switch f.Severity {
-		case review.SeverityCritical, review.SeverityWarning:
-			// include
-		default:
-			continue
-		}
-		loc := ""
-		if f.File != "" {
-			loc = f.File
-			if f.StartLine > 0 {
-				loc += fmt.Sprintf(":%d", f.StartLine)
-			}
-			loc += " — "
-		}
-		fmt.Fprintf(&sb, "\n- [%s] %s%s", f.Severity, loc, f.Description)
-	}
-
-	return sb.String()
-}
-
-// convertToResults wraps findings into ReviewResults for HasActionableFindings.
-func convertToResults(findings []review.Finding) []review.ReviewResult {
-	return []review.ReviewResult{{Findings: findings}}
+// formatConsolidatedFindingsForCoder converts consolidated review findings into
+// a prompt for the coder. Only critical and warning findings are included.
+func formatConsolidatedFindingsForCoder(findings []review.ConsolidatedFinding) string {
+	return review.FormatConsolidatedForCoder(findings)
 }
 
 // findLatestSpec finds the most recently modified spec in .forge/specs/.

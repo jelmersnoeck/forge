@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -41,16 +42,17 @@ func NewOrchestrator(providers map[string]types.LLMProvider, reviewers []Reviewe
 }
 
 // Run executes all reviewer×provider combinations concurrently, emitting events
-// as findings arrive, and returns the collected results.
+// as findings arrive, consolidates duplicates via LLM, and returns results.
 //
 //	┌──────────────────────────────────────────┐
 //	│  for each reviewer × provider:           │
 //	│    goroutine → Chat() → parse → emit     │
 //	│                                          │
 //	│  waitgroup barrier                       │
-//	│  emit summary                            │
+//	│  consolidate (LLM dedup)                 │
+//	│  emit review_consolidated + summary      │
 //	└──────────────────────────────────────────┘
-func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(types.OutboundEvent)) []ReviewResult {
+func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(types.OutboundEvent)) ConsolidatedResults {
 	if strings.TrimSpace(req.Diff) == "" {
 		emit(types.OutboundEvent{
 			ID:        uuid.New().String(),
@@ -58,7 +60,7 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 			Content:   "No diff to review",
 			Timestamp: time.Now().Unix(),
 		})
-		return nil
+		return ConsolidatedResults{}
 	}
 
 	totalCombos := len(o.reviewers) * len(o.providers)
@@ -99,6 +101,9 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 
 	wg.Wait()
 
+	// Consolidation: deduplicate and calibrate findings via LLM.
+	consolidated := o.consolidate(ctx, results, emit)
+
 	// Emit per-provider summaries before the aggregate.
 	for _, pName := range sortedProviderNames(results) {
 		var provResults []ReviewResult
@@ -122,7 +127,182 @@ func (o *Orchestrator) Run(ctx context.Context, req ReviewRequest, emit func(typ
 		Timestamp: time.Now().Unix(),
 	})
 
-	return results
+	return ConsolidatedResults{
+		Raw:          results,
+		Consolidated: consolidated,
+	}
+}
+
+// consolidate runs the LLM consolidation step across all available providers
+// and merges findings. Using multiple providers reduces bias in the
+// deduplication/calibration step. Returns raw findings converted 1:1 if
+// consolidation is skipped or all providers fail.
+func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, emit func(types.OutboundEvent)) []ConsolidatedFinding {
+	allFindings := collectAllFindings(results)
+	if len(allFindings) == 0 {
+		return nil
+	}
+
+	providerPairs := o.consolidationProviders()
+	if len(providerPairs) == 0 {
+		log.Printf("[orchestrator] no provider available for consolidation, using raw findings")
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			Type:      "review_error",
+			Content:   "Consolidation skipped: no LLM provider available, using raw findings",
+			Timestamp: time.Now().Unix(),
+		})
+		return fallbackToRaw(results)
+	}
+
+	// Run consolidation against each provider concurrently.
+	// Results are collected via a channel with context-aware draining
+	// to prevent goroutine leaks if the parent context is cancelled.
+	resultCh := make(chan consolidationResult, len(providerPairs))
+	for _, pp := range providerPairs {
+		go func(name string, prov types.LLMProvider) {
+			model := modelForProvider(name)
+			consolidateCtx, cancel := context.WithTimeout(ctx, consolidationTimeout)
+			defer cancel()
+
+			consolidated, err := Consolidate(consolidateCtx, prov, model, results)
+			select {
+			case resultCh <- consolidationResult{
+				providerName: name,
+				findings:     consolidated,
+				err:          err,
+			}:
+			case <-ctx.Done():
+				// Parent cancelled — nobody is reading resultCh. Log and bail
+				// to avoid goroutine leak.
+				if err != nil {
+					log.Printf("[orchestrator] consolidation via %s failed (context cancelled): %v", name, err)
+				}
+			}
+		}(pp.name, pp.provider)
+	}
+
+	all := make([]consolidationResult, 0, len(providerPairs))
+	for range providerPairs {
+		select {
+		case cr := <-resultCh:
+			all = append(all, cr)
+		case <-ctx.Done():
+			log.Printf("[orchestrator] context cancelled while collecting consolidation results (%d/%d collected)", len(all), len(providerPairs))
+		}
+		// Break out of the range loop if context is done.
+		if ctx.Err() != nil {
+			break
+		}
+	}
+
+	best, successCount := selectBestConsolidation(all)
+	for _, cr := range all {
+		if cr.err != nil {
+			log.Printf("[orchestrator] consolidation via %s failed: %v", cr.providerName, cr.err)
+			emit(types.OutboundEvent{
+				ID:        uuid.New().String(),
+				Type:      "review_error",
+				Content:   fmt.Sprintf("Consolidation via %s failed: %v", cr.providerName, cr.err),
+				Timestamp: time.Now().Unix(),
+			})
+		}
+	}
+
+	if successCount == 0 {
+		log.Printf("[orchestrator] all consolidation providers failed, using raw findings")
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			Type:      "review_error",
+			Content:   "All consolidation providers failed — using raw findings",
+			Timestamp: time.Now().Unix(),
+		})
+		return fallbackToRaw(results)
+	}
+
+	// Emit the consolidated findings as a single event.
+	cJSON, _ := json.Marshal(best)
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		Type:      "review_consolidated",
+		Content:   string(cJSON),
+		Timestamp: time.Now().Unix(),
+	})
+
+	return best
+}
+
+// consolidationScore computes a weighted score for a set of consolidated
+// findings: critical=3, warning=2, suggestion=1, unknown=0. Higher scores
+// indicate more important findings, preventing noisy providers from winning
+// by volume alone.
+func consolidationScore(findings []ConsolidatedFinding) int {
+	score := 0
+	for _, f := range findings {
+		rank := severityRank(f.Severity)
+		if rank == 0 && f.Severity != "" {
+			log.Printf("[orchestrator] unknown severity %q in consolidated finding, treating as weight 0", f.Severity)
+		}
+		score += rank
+	}
+	return score
+}
+
+// selectBestConsolidation picks the provider whose findings have the highest
+// total severity weight. On ties, the provider with more findings wins (more
+// coverage at equal quality). Returns nil and 0 if all results errored.
+//
+//	Score     = sum(severityRank(f.Severity)) for each finding
+//	Tiebreak  = len(findings) — more coverage at equal quality
+func selectBestConsolidation(results []consolidationResult) ([]ConsolidatedFinding, int) {
+	var (
+		best      []ConsolidatedFinding
+		bestScore int
+		count     int
+	)
+	for _, cr := range results {
+		if cr.err != nil {
+			continue
+		}
+		count++
+		score := consolidationScore(cr.findings)
+		switch {
+		case score > bestScore:
+			best = cr.findings
+			bestScore = score
+		case score == bestScore && len(cr.findings) > len(best):
+			best = cr.findings
+			bestScore = score
+		}
+	}
+	return best, count
+}
+
+// consolidationResult holds one provider's consolidation output or error.
+type consolidationResult struct {
+	providerName string
+	findings     []ConsolidatedFinding
+	err          error
+}
+
+// providerPair pairs a name with its LLMProvider for consolidation dispatch.
+type providerPair struct {
+	name     string
+	provider types.LLMProvider
+}
+
+// consolidationProviders returns all available providers for consolidation.
+// Using multiple providers reduces bias in the deduplication step.
+func (o *Orchestrator) consolidationProviders() []providerPair {
+	pairs := make([]providerPair, 0, len(o.providers))
+	for name, p := range o.providers {
+		pairs = append(pairs, providerPair{name: name, provider: p})
+	}
+	// Sort for deterministic ordering.
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].name < pairs[j].name
+	})
+	return pairs
 }
 
 // runSingle executes one reviewer against one provider with a timeout.

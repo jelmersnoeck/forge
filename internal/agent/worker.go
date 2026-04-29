@@ -579,12 +579,19 @@ func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.
 		CWD:        w.cwd,
 	}
 
-	results := orch.Run(ctx, req, emit)
+	cr := orch.Run(ctx, req, emit)
 
 	// If actionable findings exist, send them to the main loop for remediation.
+	// Use consolidated findings for deduplication; fall back to raw if empty.
 	// The conversation loop will emit its own done event when it finishes.
-	if review.HasActionableFindings(results) {
-		fixMsg := review.FormatFindingsMessage(results)
+	if len(cr.Consolidated) > 0 {
+		fixMsg := review.FormatConsolidatedMessage(cr.Consolidated)
+		w.hub.PushMessage(types.InboundMessage{Text: fixMsg})
+		return
+	}
+
+	if review.HasActionableFindings(cr.Raw) {
+		fixMsg := review.FormatFindingsMessage(cr.Raw)
 		w.hub.PushMessage(types.InboundMessage{Text: fixMsg})
 		return
 	}
