@@ -78,32 +78,65 @@ JSON format:
 ` + findingJSONFormat
 }
 
+// ── Simplification ───────────────────────────────────────────
+
+// SimplificationReviewer focuses on code simplicity, readability,
+// and reducing unnecessary complexity.
+type SimplificationReviewer struct{}
+
+func (SimplificationReviewer) Name() string { return "simplification" }
+
+func (SimplificationReviewer) SystemPrompt() string {
+	return `You are an expert code simplification reviewer. Analyze the provided git diff for unnecessary complexity and opportunities to simplify.
+
+Focus areas:
+- Overly complex logic that can be rewritten more simply
+- Unnecessary abstractions or indirection
+- Deep nesting that could use early returns or guard clauses
+- Verbose code that has simpler idiomatic equivalents
+- Over-engineering (interfaces with one implementation, unnecessary generics, etc.)
+- Code that requires a comment to explain when a rewrite would be self-explanatory
+- Boolean logic that could be simplified
+- Unnecessary temporary variables
+- Redundant checks
+- Dead branches
+
+Severity guide:
+- critical: actively confusing code that is likely to cause bugs due to complexity
+- warning: significant simplification opportunity that hurts readability
+- suggestion: minor simplification for clarity
+
+Output your findings as a JSON array. Reference specific files and line numbers from the diff.
+If the diff has no simplification issues, output an empty array: []
+
+JSON format:
+` + findingJSONFormat
+}
+
 // ── Maintainability ──────────────────────────────────────────
 
-// MaintainabilityReviewer checks naming, complexity, dead code,
-// consistency, and DRY violations.
+// MaintainabilityReviewer checks structural and architectural health:
+// naming, DRY, dead code, consistency, and separation of concerns.
 type MaintainabilityReviewer struct{}
 
 func (MaintainabilityReviewer) Name() string { return "maintainability" }
 
 func (MaintainabilityReviewer) SystemPrompt() string {
-	return `You are an expert maintainability reviewer. Analyze the provided git diff for long-term code health.
+	return `You are an expert maintainability reviewer. Analyze the provided git diff for structural and architectural health.
 
 Focus areas:
-- Unclear or misleading naming (variables, functions, types)
-- Excessive complexity (deeply nested logic, god functions)
-- Dead code, unused imports, unreachable branches
+- Naming (variables, functions, types) — misleading or unclear
 - DRY violations (copy-pasted logic that should be extracted)
+- Dead code, unused imports, unreachable branches
 - Inconsistent patterns within the codebase
-- Missing or misleading comments on non-obvious logic
-- Overly clever code that sacrifices readability
-- Poor separation of concerns
+- Poor separation of concerns, god functions, god types
 - Magic numbers or strings that should be constants
+- Missing or misleading documentation on exported symbols
 
 Severity guide:
 - critical: actively misleading code, major architectural problem
-- warning: significant readability/maintenance burden
-- suggestion: minor improvement for clarity or consistency
+- warning: significant maintenance burden, structural issue
+- suggestion: minor improvement for consistency or naming
 
 Output your findings as a JSON array. Reference specific files and line numbers from the diff.
 If the diff has no maintainability issues, output an empty array: []
@@ -183,6 +216,7 @@ func DefaultReviewers() []Reviewer {
 	return []Reviewer{
 		SecurityReviewer{},
 		CodeQualityReviewer{},
+		SimplificationReviewer{},
 		MaintainabilityReviewer{},
 		OperationalReviewer{},
 	}

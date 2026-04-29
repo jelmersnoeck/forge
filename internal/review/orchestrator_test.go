@@ -373,18 +373,18 @@ func TestReviewersList(t *testing.T) {
 	r := require.New(t)
 
 	defaults := DefaultReviewers()
-	r.Len(defaults, 4)
+	r.Len(defaults, 5)
 
-	wantNames := []string{"security", "code-quality", "maintainability", "operational"}
+	wantNames := []string{"security", "code-quality", "simplification", "maintainability", "operational"}
 	for i, rev := range defaults {
 		r.Equal(wantNames[i], rev.Name())
 		r.NotEmpty(rev.SystemPrompt(), "reviewer %s should have a system prompt", rev.Name())
 	}
 
 	withSpec := DefaultReviewersWithSpec()
-	r.Len(withSpec, 5)
-	r.Equal("spec-validation", withSpec[4].Name())
-	r.NotEmpty(withSpec[4].SystemPrompt())
+	r.Len(withSpec, 6)
+	r.Equal("spec-validation", withSpec[5].Name())
+	r.NotEmpty(withSpec[5].SystemPrompt())
 }
 
 func TestModelForProvider(t *testing.T) {
