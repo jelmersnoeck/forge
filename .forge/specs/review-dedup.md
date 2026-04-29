@@ -16,7 +16,9 @@ both the user and the coder fix loop.
 Files and systems that changed:
 
 - `internal/review/orchestrator.go` — `Orchestrator.Run()`: returns `ConsolidatedResults`,
-  adds `consolidate()` method and `pickConsolidationProvider()`.
+  adds `consolidate()` method, `consolidationProviders()`, `selectBestConsolidation()`,
+  and `consolidationScore()`. Consolidation dispatches to all available providers
+  concurrently and picks the result with the highest severity-weighted score.
 - `internal/review/consolidate.go` — new file: `Consolidate()` function, prompt
   construction, response parsing, `fallbackToRaw()`, `collectAllFindings()`,
   `FormatConsolidatedMessage()`, `FormatConsolidatedForCoder()`,
@@ -48,9 +50,8 @@ Existing types referenced:
 ## Behavior
 - After all reviewer×provider goroutines finish, the orchestrator calls a
   consolidation step before emitting per-provider summaries or the final summary.
-- The consolidation step sends all raw findings to an LLM (one of the already-
-  available providers, preferring Anthropic) with a system prompt that instructs
-  it to:
+- The consolidation step sends all raw findings to ALL available LLM providers
+  concurrently (not just one) with a system prompt that instructs each to:
   1. Group findings that describe the same underlying issue (same file/region,
      same root cause) regardless of which reviewer or provider produced them.
   2. For each group, produce a single `ConsolidatedFinding` with:
@@ -62,6 +63,9 @@ Existing types referenced:
      - A `sources` list indicating which reviewer+provider combinations flagged it.
   3. Discard findings that the manager determines are noise/false positives when
      the majority of agents did not flag them AND they are low-severity.
+- The best consolidation result is selected by severity-weighted score
+  (critical=3, warning=2, suggestion=1); ties broken by finding count.
+  This prevents noisy providers from winning by volume alone.
 - The consolidation LLM call uses the same `LLMProvider.Chat()` interface as
   review agents — no new provider machinery needed.
 - The consolidated findings replace the raw findings for:
@@ -123,9 +127,11 @@ type ConsolidatedResults struct {
 
 // Consolidate deduplicates and calibrates findings from multiple agents.
 // Falls back to converting raw findings 1:1 if the LLM call fails.
+// The model parameter selects which LLM to use; pass "" for the default.
 func Consolidate(
     ctx context.Context,
     provider types.LLMProvider,
+    model string,
     results []ReviewResult,
 ) ([]ConsolidatedFinding, error)
 ```
