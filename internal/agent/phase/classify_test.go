@@ -132,7 +132,7 @@ func TestClassifyIntentSuccess(t *testing.T) {
 			r := require.New(t)
 			prov := &mockProvider{
 				responses: map[string][]types.ChatDelta{
-					classificationModels[0]: {
+					types.LightweightModels[0]: {
 						{Type: "text_delta", Text: tc.response},
 					},
 				},
@@ -148,10 +148,10 @@ func TestClassifyIntentSuccess(t *testing.T) {
 
 func TestClassifyIntentModelFallback(t *testing.T) {
 	r := require.New(t)
-	r.GreaterOrEqual(len(classificationModels), 2, "need at least 2 models for fallback test")
+	r.GreaterOrEqual(len(types.LightweightModels), 2, "need at least 2 models for fallback test")
 
 	// Only the last model succeeds; all others are absent from mock → return error.
-	lastModel := classificationModels[len(classificationModels)-1]
+	lastModel := types.LightweightModels[len(types.LightweightModels)-1]
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
 			lastModel: {
@@ -163,7 +163,7 @@ func TestClassifyIntentModelFallback(t *testing.T) {
 	got, err := ClassifyIntent(t.Context(), prov, "what files handle MCP?")
 	r.NoError(err)
 	r.Equal(IntentQuestion, got)
-	r.Len(prov.calls, len(classificationModels), "should try all models before succeeding")
+	r.Len(prov.calls, len(types.LightweightModels), "should try all models before succeeding")
 }
 
 func TestClassifyIntentAllModelsFail(t *testing.T) {
@@ -186,7 +186,7 @@ func TestClassifyIntentStreamError(t *testing.T) {
 	// Model returns an error delta in the stream.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[0]: {
+			types.LightweightModels[0]: {
 				{Type: "error", Text: "rate limited, Troy Barnes"},
 			},
 		},
@@ -204,7 +204,7 @@ func TestClassifyIntentGarbageResponse(t *testing.T) {
 	// Model returns valid stream but garbage content.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[0]: {
+			types.LightweightModels[0]: {
 				{Type: "text_delta", Text: "I don't understand, I'm the Human Being mascot"},
 			},
 		},
@@ -227,7 +227,7 @@ func TestClassifyIntentPromptTruncation(t *testing.T) {
 	var capturedPrompt string
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			classificationModels[0]: {
+			types.LightweightModels[0]: {
 				{Type: "text_delta", Text: `{"intent": "task"}`},
 			},
 		},
@@ -313,10 +313,10 @@ func TestTruncateAtWordBoundary(t *testing.T) {
 	}
 }
 
-func TestClassificationModelsNotEmpty(t *testing.T) {
+func TestLightweightModelsUsed(t *testing.T) {
 	r := require.New(t)
-	r.NotEmpty(classificationModels, "classificationModels must have at least one model")
-	for _, m := range classificationModels {
-		r.NotEmpty(m, "classification model must not be empty string")
+	r.NotEmpty(types.LightweightModels, "types.LightweightModels must have at least one model")
+	for _, m := range types.LightweightModels {
+		r.NotEmpty(m, "model name must not be empty")
 	}
 }

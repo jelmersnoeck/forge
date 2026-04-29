@@ -78,10 +78,11 @@ func drainTextDeltas(deltaChan <-chan types.ChatDelta) (string, error) {
 }
 
 // generateSessionName uses an LLM provider to create a kebab-case slug
-// summarizing the prompt. Falls back to a random adjective-noun pair when
-// provider is nil or the call fails.
-func generateSessionName(provider types.LLMProvider, prompt string) string {
-	if prompt == "" || provider == nil {
+// summarizing the prompt. Tries each model in types.LightweightModels,
+// falling through on error. Falls back to a random adjective-noun pair
+// when provider is nil, prompt is empty, or all models fail.
+func generateSessionName(prov types.LLMProvider, prompt string) string {
+	if prompt == "" || prov == nil {
 		return fallbackSessionName()
 	}
 
@@ -91,11 +92,24 @@ func generateSessionName(provider types.LLMProvider, prompt string) string {
 		prompt = prompt[:maxPromptLen] + "..."
 	}
 
+	for _, model := range types.LightweightModels {
+		if slug := trySessionNameModel(prov, model, prompt); slug != "" {
+			return slug
+		}
+	}
+
+	log.Printf("[session-name] all %d models failed — falling back to random name", len(types.LightweightModels))
+	return fallbackSessionName()
+}
+
+// trySessionNameModel attempts a single model for slug generation.
+// Returns the sanitized slug or "" on failure.
+func trySessionNameModel(prov types.LLMProvider, model, prompt string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), sessionNameTimeout)
 	defer cancel()
 
 	req := types.ChatRequest{
-		Model:  "claude-haiku-4-5",
+		Model:  model,
 		System: []types.SystemBlock{},
 		Messages: []types.ChatMessage{
 			{
@@ -109,24 +123,19 @@ func generateSessionName(provider types.LLMProvider, prompt string) string {
 		Stream:    true,
 	}
 
-	deltaChan, err := provider.Chat(ctx, req)
+	deltaChan, err := prov.Chat(ctx, req)
 	if err != nil {
-		log.Printf("[session-name] provider.Chat failed: %v — falling back to random name", err)
-		return fallbackSessionName()
+		log.Printf("[session-name] model %s failed: %v", model, err)
+		return ""
 	}
 
 	text, err := drainTextDeltas(deltaChan)
 	if err != nil {
-		log.Printf("[session-name] %v — falling back to random name", err)
-		return fallbackSessionName()
+		log.Printf("[session-name] model %s: %v", model, err)
+		return ""
 	}
 
-	slug := sanitizeSlug(text)
-	if slug == "" {
-		log.Printf("[session-name] LLM returned empty/unparseable response — falling back to random name")
-		return fallbackSessionName()
-	}
-	return slug
+	return sanitizeSlug(text)
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9-]`)

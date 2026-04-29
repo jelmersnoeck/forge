@@ -154,7 +154,7 @@ func generatePRContent(ctx context.Context, prov types.LLMProvider, diff, commit
 	}
 
 	var lastErr error
-	for _, model := range classificationModels {
+	for _, model := range types.LightweightModels {
 		title, body, err := generateWithModel(ctx, prov, model, prompt.String())
 		if err == nil {
 			return title, body, nil
