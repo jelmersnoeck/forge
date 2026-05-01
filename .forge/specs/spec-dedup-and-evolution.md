@@ -1,6 +1,6 @@
 ---
 id: spec-dedup-and-evolution
-status: draft
+status: implemented
 ---
 # Spec agent checks for existing specs before creating new ones
 
@@ -12,13 +12,17 @@ creating a new file. This makes specs a progressive, evolving source of truth
 instead of a sprawling archive of point-in-time snapshots.
 
 ## Context
-- `internal/agent/phase/prompts.go` — `specCreatorPrompt`, `plannerPrompt` (system prompts that instruct spec writing behavior)
-- `internal/agent/phase/orchestrator.go` — `runSpecCreator()`, `runSWEPipeline()` (where spec path is discovered)
-- `internal/agent/phase/debate.go` — `runPlanner()`, `buildContextSummary()` (ideation pipeline spec writing)
-- `internal/runtime/prompt/prompt.go` — `specPrompt` (base spec-driven-development instructions in system prompt)
+- `internal/agent/phase/prompts.go` — `specCreatorPrompt`, `plannerPrompt` (system prompts with dedup instructions)
+- `internal/agent/phase/phase.go` — `SpecCreator()` (Edit removed from DisallowedTools)
+- `internal/agent/phase/phase_test.go` — tests for SpecCreator phase config
+- `internal/agent/phase/debate.go` — `runPlanner()`, `buildContextSummary()` (includes implemented specs for dedup)
+- `internal/agent/phase/debate_test.go` — tests for buildContextSummary with implemented specs
+- `internal/runtime/prompt/prompt.go` — `specPrompt`, `BuildSpecIndex()` (spec index injection)
+- `internal/runtime/prompt/prompt_test.go` — tests for BuildSpecIndex()
 - `internal/spec/spec.go` — `LoadSpecs()`, `ParseSpec()` (spec loading and parsing)
-- `internal/types/types.go` — `SpecEntry`, `ContextBundle.Specs`
-- `.forge/specs/` — existing spec files (42 specs at time of writing)
+- `internal/spec/spec_test.go` — tests for LoadSpecs
+- `internal/types/types.go` — `SpecEntry` (added Summary field)
+- `.forge/specs/` — existing spec files
 
 ## Behavior
 - Before writing a new spec, the spec agent reads existing specs in `.forge/specs/` and evaluates relevance to the current request.
@@ -46,44 +50,65 @@ The spec-creator phase tool restrictions in `internal/agent/phase/phase.go`:
 ```go
 // SpecCreator returns the spec-creator phase configuration.
 func SpecCreator() Phase {
-    return Phase{
-        Name: "spec",
-        DisallowedTools: []string{
-            // "Edit" removed — spec creator needs Edit to update existing specs
-            "Agent", "AgentGet", "AgentList", "AgentStop",
-            "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
-            "QueueImmediate", "QueueOnComplete",
-            "UseMCPTool",
-        },
-        MaxTurns: 200,
-    }
+	return Phase{
+		Name: "spec",
+		DisallowedTools: []string{
+			"Agent", "AgentGet", "AgentList", "AgentStop",
+			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+			"QueueImmediate", "QueueOnComplete",
+			"UseMCPTool",
+		},
+		MaxTurns: 200,
+	}
 }
 ```
 
-The spec index format injected into the system prompt
-(`internal/runtime/prompt/prompt.go`):
+The `BuildSpecIndex()` function in `internal/runtime/prompt/prompt.go`:
+
+```go
+func BuildSpecIndex(specs []types.SpecEntry) string
+```
+
+The `SpecEntry.Summary` field added in `internal/types/types.go`:
+
+```go
+type SpecEntry struct {
+	ID      string
+	Status  string
+	Path    string
+	Content string
+	Summary string // first H1 heading from spec content
+}
+```
+
+The spec index format injected into the system prompt:
 
 ```markdown
-Existing Specs:
+## Existing Specs
+
+Review these before creating a new spec:
 
 - **agent-phases** (implemented): Split agent loop into spec-creator, coder, and reviewer phases
 - **automated-review** (active): Automated multi-agent code review system
-- **bash-process-group-kill** (implemented): Kill entire process tree and make loop non-blocking on interrupt
 ...
 ```
 
 Updated `specCreatorPrompt` in `internal/agent/phase/prompts.go` includes a
-"Spec Deduplication" section instructing the agent to check the spec index
-before writing.
+"Spec Deduplication" section instructing the agent to check the spec index.
 
 Updated `plannerPrompt` in `internal/agent/phase/prompts.go` includes the
 same dedup instructions.
+
+`buildContextSummary()` in `internal/agent/phase/debate.go` now includes
+implemented specs alongside active/draft specs for dedup visibility.
 
 ## Edge Cases
 - User request maps to a `superseded` spec — agent creates a new spec (superseded specs are dead).
 - User request maps to an `implemented` spec — agent updates it, sets status back to `active`.
 - User request spans two existing specs — agent picks the most relevant one and updates it; mentions the other in Description.
 - User request is ambiguous (could be update or new) — agent defaults to creating new (safer to have one extra spec than to corrupt an existing one).
-- Spec index is empty (brand new project) — agent creates new spec as before; no dedup check needed.
+- Spec index is empty (brand new project) — agent creates new spec as before; no dedup check needed. `BuildSpecIndex()` returns empty string.
 - Existing spec has an Alternatives section from ideation — preserved during update.
-- The planner receives spec index via `buildContextSummary()` — already includes active/draft specs; needs to also include implemented specs for dedup.
+- The planner receives spec index via `buildContextSummary()` — already includes active/draft specs; now also includes implemented specs for dedup.
+- Specs without an H1 heading — `BuildSpecIndex()` uses the spec ID as fallback summary text.
+- `BuildSpecIndex()` sorts specs alphabetically by ID for stable output.
