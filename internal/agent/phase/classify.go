@@ -85,7 +85,7 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 	}
 
 	slog.Error("classify: all models failed, defaulting to task",
-		"models_tried", len(types.LightweightModels))
+		"models_tried", len(types.LightweightModels), "last_error", lastErr)
 	return IntentTask, fmt.Errorf("all models failed: %w", lastErr)
 }
 
