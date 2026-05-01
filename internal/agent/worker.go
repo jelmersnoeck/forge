@@ -199,7 +199,10 @@ func (w *Worker) Run(ctx context.Context) {
 			default:
 				orchestratorDone = true
 				qaActive = false
-				log.Printf("[agent:%s] state: orchestrator done, task completed", w.sessionID)
+				if result.CoderHistoryID != "" {
+					historyID = result.CoderHistoryID
+				}
+				log.Printf("[agent:%s] state: orchestrator done, coderHistoryID=%s", w.sessionID, historyID)
 			}
 
 		case useOrchestrator && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):
@@ -207,10 +210,12 @@ func (w *Worker) Run(ctx context.Context) {
 			orchestratorDone = true
 
 		case historyID != "":
+			// Resume the coder conversation with coder phase config.
+			coderBundle := phase.InjectPhasePrompt(bundle, "code")
 			l := loop.New(loop.Options{
 				Provider:     prov,
 				Tools:        registry,
-				Context:      bundle,
+				Context:      coderBundle,
 				CWD:          w.cwd,
 				SessionStore: store,
 				SessionID:    w.sessionID,

@@ -55,6 +55,12 @@ type OrchestratorResult struct {
 	// QAHistoryID is set when Intent == IntentQuestion.
 	// The caller uses this to resume the Q&A loop on follow-up.
 	QAHistoryID string
+	// CoderHistoryID is set after the SWE pipeline completes.
+	// The caller uses this to resume the coder conversation for follow-ups.
+	CoderHistoryID string
+	// SpecHistoryID is set after spec creation (planner or spec-creator).
+	// Available for extension (e.g., re-running the spec phase).
+	SpecHistoryID string
 }
 
 // NewSWEOrchestrator creates the default software-engineer orchestrator.
@@ -138,17 +144,14 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 	}
 
 	// Run full SWE pipeline.
-	if err := o.runSWEPipeline(ctx, opts, specPath); err != nil {
-		return OrchestratorResult{Intent: IntentTask}, err
-	}
-	return OrchestratorResult{Intent: IntentTask}, nil
+	return o.runSWEPipeline(ctx, opts, specPath)
 }
 
 // runQA runs the Q&A conversation loop. Returns the history ID for resumption.
 func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string, error) {
 	qa := QA()
 	registry := opts.Registry.Filtered(qa.AllowedTools, qa.DisallowedTools)
-	bundle := injectPhasePrompt(opts.Bundle, qa.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, qa.Name)
 
 	loopOpts := loop.Options{
 		Provider:     opts.Provider,
@@ -177,9 +180,8 @@ func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string
 }
 
 // runSWEPipeline runs the full spec → code → review pipeline.
-func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) error {
-
-	var specHistoryID string
+func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) (OrchestratorResult, error) {
+	result := OrchestratorResult{Intent: IntentTask}
 
 	// Phase 1: Spec Creation (skipped if spec already provided)
 	if specPath == "" {
@@ -190,7 +192,7 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 			// Full ideation pipeline: ideate → clarify → plan
 			o.emitPhaseStart(opts, "ideate")
 
-			result, err := RunDebate(ctx, DebateOpts{
+			debateResult, err := RunDebate(ctx, DebateOpts{
 				Provider:     opts.Provider,
 				Registry:     opts.Registry,
 				Bundle:       opts.Bundle,
@@ -203,13 +205,15 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 				Prompt:       opts.InitialPrompt,
 			})
 			if err != nil {
-				return fmt.Errorf("ideation pipeline: %w", err)
+				return result, fmt.Errorf("ideation pipeline: %w", err)
 			}
 
-			specPath = result.SpecPath
+			specPath = debateResult.SpecPath
 			if specPath == "" {
 				specPath = findLatestSpec(opts.CWD)
 			}
+
+			result.SpecHistoryID = debateResult.PlannerHistoryID
 
 			o.emitPhaseComplete(opts, "ideate", fmt.Sprintf("spec: %s", specPath))
 
@@ -217,17 +221,17 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 			// Single-agent spec creator (original behavior)
 			o.emitPhaseStart(opts, "spec")
 
-			result, err := o.runSpecCreator(ctx, opts)
+			specResult, err := o.runSpecCreator(ctx, opts)
 			if err != nil {
-				return fmt.Errorf("spec-creator phase: %w", err)
+				return result, fmt.Errorf("spec-creator phase: %w", err)
 			}
 
-			specPath = result.SpecPath
+			specPath = specResult.SpecPath
 			if specPath == "" {
 				specPath = findLatestSpec(opts.CWD)
 			}
 
-			specHistoryID = result.HistoryID
+			result.SpecHistoryID = specResult.HistoryID
 
 			o.emitPhaseComplete(opts, "spec", fmt.Sprintf("spec: %s", specPath))
 		}
@@ -248,7 +252,7 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 			// If it's a pull failure (not just uncommitted changes warning),
 			// halt before coding.
 			if staleness.Behind > 0 && !staleness.Pulled {
-				return fmt.Errorf("branch is stale and auto-pull failed: %w", staleness.Error)
+				return result, fmt.Errorf("branch is stale and auto-pull failed: %w", staleness.Error)
 			}
 		case staleness.Pulled:
 			opts.Emit(types.OutboundEvent{
@@ -265,12 +269,12 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 	o.emitPhaseHandoff(opts, "spec", "code")
 	o.emitPhaseStart(opts, "code")
 
-	log.Printf("[orchestrator:%s] spec phase complete (specHistoryID=%s, specPath=%s)", opts.SessionID, specHistoryID, specPath)
+	log.Printf("[orchestrator:%s] spec phase complete (specHistoryID=%s, specPath=%s)", opts.SessionID, result.SpecHistoryID, specPath)
 
 	var coderHistoryID string
 	coderHistoryID, err := o.runCoder(ctx, opts, specPath)
 	if err != nil {
-		return fmt.Errorf("coder phase: %w", err)
+		return result, fmt.Errorf("coder phase: %w", err)
 	}
 
 	o.emitPhaseComplete(opts, "code", "implementation complete")
@@ -336,22 +340,22 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 		}
 		prevReviewSHA = sha
 
-		result, err := o.runReviewerWithDiff(ctx, opts, specPath, diff, incremental)
+		reviewResult, err := o.runReviewerWithDiff(ctx, opts, specPath, diff, incremental)
 		if err != nil {
 			log.Printf("[orchestrator:%s] reviewer error (continuing): %v", opts.SessionID, err)
 			break
 		}
 
-		o.emitPhaseComplete(opts, "review", fmt.Sprintf("%d findings", len(result.Consolidated)))
+		o.emitPhaseComplete(opts, "review", fmt.Sprintf("%d findings", len(reviewResult.Consolidated)))
 
 		// Use consolidated findings for severity checks and coder formatting.
-		if !review.HasConsolidatedHighSeverity(result.Consolidated) {
+		if !review.HasConsolidatedHighSeverity(reviewResult.Consolidated) {
 			break
 		}
 
 		// Feed findings back to coder
 		if cycle+1 >= o.maxReviewCycles {
-			if review.HasConsolidatedCritical(result.Consolidated) {
+			if review.HasConsolidatedCritical(reviewResult.Consolidated) {
 				// Critical findings remain — reset counter for another pass.
 				cycle = -1 // will become 0 after loop increment
 				log.Printf("[orchestrator:%s] critical findings remain after %d cycles, resetting counter", opts.SessionID, o.maxReviewCycles)
@@ -370,17 +374,18 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 		o.emitPhaseHandoff(opts, "review", "code")
 		o.emitPhaseStart(opts, "code")
 
-		fixMsg := formatConsolidatedFindingsForCoder(result.Consolidated)
+		fixMsg := formatConsolidatedFindingsForCoder(reviewResult.Consolidated)
 		coderHistoryID, err = o.runCoderResume(ctx, opts, coderHistoryID, fixMsg)
 		if err != nil {
-			return fmt.Errorf("coder fix phase: %w", err)
+			return result, fmt.Errorf("coder fix phase: %w", err)
 		}
 
 		o.emitPhaseComplete(opts, "code", "fixes applied")
 	}
 
 	// Review → Fix loop complete.
-	return nil
+	result.CoderHistoryID = coderHistoryID
+	return result, nil
 }
 
 // RunSinglePhase runs a single phase in isolation.
@@ -396,7 +401,7 @@ func RunSinglePhase(ctx context.Context, opts OrchestratorOpts, phase Phase) err
 	}
 
 	// Inject phase-specific prompt into the context bundle.
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	loopOpts := loop.Options{
 		Provider:     opts.Provider,
@@ -417,7 +422,7 @@ func RunSinglePhase(ctx context.Context, opts OrchestratorOpts, phase Phase) err
 func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts) (Result, error) {
 	phase := SpecCreator()
 	registry := opts.Registry.Filtered(phase.AllowedTools, phase.DisallowedTools)
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	model := opts.Model
 	if phase.Model != "" {
@@ -453,7 +458,7 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 	prompt := buildCoderPrompt(specPath)
 
 	phase := Coder()
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	model := opts.Model
 	if phase.Model != "" {
@@ -484,7 +489,7 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 // runCoderResume resumes an existing coder conversation with a new message.
 func (o *Orchestrator) runCoderResume(ctx context.Context, opts OrchestratorOpts, historyID, message string) (string, error) {
 	phase := Coder()
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	model := opts.Model
 	if phase.Model != "" {
@@ -656,9 +661,9 @@ func findLatestSpec(cwd string) string {
 	return latest
 }
 
-// injectPhasePrompt adds the phase-specific prompt to the context bundle
+// InjectPhasePrompt adds the phase-specific prompt to the context bundle
 // as an AgentsMD entry so it gets included in the system prompt.
-func injectPhasePrompt(bundle types.ContextBundle, phaseName string) types.ContextBundle {
+func InjectPhasePrompt(bundle types.ContextBundle, phaseName string) types.ContextBundle {
 	phasePrompt := PromptForPhase(phaseName)
 	if phasePrompt == "" {
 		return bundle

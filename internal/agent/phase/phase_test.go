@@ -201,7 +201,7 @@ func TestInjectPhasePrompt(t *testing.T) {
 	bundle := emptyBundle()
 
 	// Inject spec phase prompt.
-	injected := injectPhasePrompt(bundle, "spec")
+	injected := InjectPhasePrompt(bundle, "spec")
 
 	// Original bundle should be unchanged.
 	r.Empty(bundle.AgentsMD)

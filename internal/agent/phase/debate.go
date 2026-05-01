@@ -350,7 +350,7 @@ func runClarifier(ctx context.Context, opts DebateOpts, candidates []Candidate) 
 func runPlanner(ctx context.Context, opts DebateOpts, clarified ClarifiedResult) (DebateResult, error) {
 	phase := Planner()
 	registry := opts.Registry.Filtered(phase.AllowedTools, phase.DisallowedTools)
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	model := opts.Model
 	if phase.Model != "" {
