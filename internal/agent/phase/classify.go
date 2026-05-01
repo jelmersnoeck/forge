@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -43,6 +43,16 @@ Respond with ONLY a JSON object: {"intent": "question"} or {"intent": "task"}`
 // ~1000 chars keeps us well within the ~200 input token budget.
 const maxClassifyPromptLen = 1000
 
+// maxStripInputLen caps input to stripCodeFences. The classifier requests
+// MaxTokens=32, so valid responses are tiny. 4096 is generous headroom;
+// anything beyond is clearly not a well-formed response and is returned as-is.
+const maxStripInputLen = 4096
+
+// Compile-time assertion: maxStripInputLen must be positive and bounded.
+// Prevents accidental edits from setting it to zero or something absurd.
+var _ [maxStripInputLen - 1]struct{}     // fails if <= 0
+var _ [1<<20 - maxStripInputLen]struct{} // fails if > 1 MiB
+
 // ClassifyIntent uses a lightweight LLM call to determine whether the user's
 // prompt is an informational question or an actionable task request.
 // Returns (IntentTask, nil) for empty prompts.
@@ -61,17 +71,24 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 		if err == nil {
 			switch {
 			case i > 0:
-				log.Printf("[classify] succeeded on fallback model %s after %d failed attempt(s)", model, i)
+				slog.Info("classify: succeeded on fallback model",
+					"model", model, "failed_attempts", i)
 			default:
-				log.Printf("[classify] intent=%s model=%s", intent, model)
+				slog.Debug("classify: classified intent",
+					"intent", intent, "model", model)
 			}
 			return intent, nil
 		}
 		lastErr = err
-		log.Printf("[classify] model %s failed: %v", model, err)
+		slog.Warn("classify: model failed",
+			"model", model, "error", err)
 	}
 
-	log.Printf("[classify] all %d models failed — defaulting to task", len(types.LightweightModels))
+	slog.Error("classify: all models failed, defaulting to task",
+		"models_tried", len(types.LightweightModels))
+	if lastErr == nil {
+		return IntentTask, fmt.Errorf("all models failed (no models configured)")
+	}
 	return IntentTask, fmt.Errorf("all models failed: %w", lastErr)
 }
 
@@ -143,15 +160,69 @@ func truncateAtWordBoundary(s string, maxLen int) string {
 	return strings.TrimRightFunc(string(runes[:cut]), unicode.IsSpace) + "..."
 }
 
+// stripCodeFences removes markdown code fences that LLMs sometimes wrap around
+// JSON output, e.g. ```json\n{...}\n``` -> {...}
+//
+// Only strips when the input is a single fenced block: opening ``` at the start
+// and closing ``` at the end. If triple backticks appear in the middle (e.g.
+// inside JSON content), the input is returned unchanged to avoid corrupting data.
+// Inputs larger than maxStripInputLen are returned as-is.
+func stripCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+
+	if len(s) > maxStripInputLen {
+		return s
+	}
+
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+
+	// Closing fence must be at the very end.
+	if !strings.HasSuffix(s, "```") {
+		// Opening fence but no closing fence — strip the opener and return.
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			return strings.TrimSpace(s[idx+1:])
+		}
+		return strings.TrimPrefix(s, "```")
+	}
+
+	// Both opening and closing fences present. Find content between them.
+	// Opening fence: everything up to (and including) the first newline.
+	// Closing fence: the final ```.
+	inner := s[3 : len(s)-3] // strip leading and trailing ```
+
+	// Strip the language tag from the opening fence (e.g. "json\n").
+	if idx := strings.Index(inner, "\n"); idx != -1 {
+		inner = inner[idx+1:]
+	}
+
+	// Verify no stray ``` remain inside the content. If they do, we can't
+	// safely distinguish structural fences from content — return unchanged.
+	if strings.Contains(inner, "```") {
+		return s
+	}
+
+	return strings.TrimSpace(inner)
+}
+
 // parseIntent extracts the intent from the LLM's JSON response.
 // Returns (IntentTask, err) on any parse failure.
 func parseIntent(raw string) (Intent, error) {
-	raw = strings.TrimSpace(raw)
+	stripped := stripCodeFences(raw)
+
+	// Log when code fences were stripped — helps diagnose model behavior.
+	if stripped != strings.TrimSpace(raw) {
+		slog.Info("classify: stripped code fences from LLM response",
+			"raw", raw, "stripped", stripped)
+	}
 
 	var result struct {
 		Intent string `json:"intent"`
 	}
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+	if err := json.Unmarshal([]byte(stripped), &result); err != nil {
+		slog.Error("classify: malformed LLM response",
+			"reason", "parse_failed", "raw", raw, "error", err)
 		return IntentTask, fmt.Errorf("parse error: %w — raw: %q", err, raw)
 	}
 
@@ -161,8 +232,12 @@ func parseIntent(raw string) (Intent, error) {
 	case IntentTask:
 		return IntentTask, nil
 	case "":
+		slog.Error("classify: malformed LLM response",
+			"reason", "missing_intent_field", "raw", raw)
 		return IntentTask, fmt.Errorf("missing intent field in response: %q", raw)
 	default:
+		slog.Error("classify: malformed LLM response",
+			"reason", "unknown_intent", "intent", result.Intent, "raw", raw)
 		return IntentTask, fmt.Errorf("unknown intent %q", result.Intent)
 	}
 }

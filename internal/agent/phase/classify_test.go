@@ -3,6 +3,7 @@ package phase
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -318,5 +319,81 @@ func TestLightweightModelsUsed(t *testing.T) {
 	r.NotEmpty(types.LightweightModels, "types.LightweightModels must have at least one model")
 	for _, m := range types.LightweightModels {
 		r.NotEmpty(m, "model name must not be empty")
+	}
+}
+
+func TestStripCodeFences(t *testing.T) {
+	fence := "```"
+	tests := map[string]struct {
+		input string
+		want  string
+	}{
+		"no fences": {
+			input: `{"intent": "question"}`,
+			want:  `{"intent": "question"}`,
+		},
+		"json fence": {
+			input: fence + "json\n" + `{"intent": "question"}` + "\n" + fence,
+			want:  `{"intent": "question"}`,
+		},
+		"bare fence": {
+			input: fence + "\n" + `{"intent": "task"}` + "\n" + fence,
+			want:  `{"intent": "task"}`,
+		},
+		"fence with surrounding whitespace": {
+			input: "  " + fence + "json\n" + `{"intent": "question"}` + "\n" + fence + "  ",
+			want:  `{"intent": "question"}`,
+		},
+		"fence with no newline after opening": {
+			input: fence + `{"intent": "task"}` + fence,
+			want:  `{"intent": "task"}`,
+		},
+		"content with triple backticks returned as-is": {
+			// If ``` appears inside the JSON content, don't try to strip —
+			// we can't safely determine which backticks are structural.
+			input: fence + "json\n" + `{"code": "use ` + fence + ` for blocks"}` + "\n" + fence,
+			want:  fence + "json\n" + `{"code": "use ` + fence + ` for blocks"}` + "\n" + fence,
+		},
+		"only opening fence no closing": {
+			input: fence + "json\n" + `{"intent": "task"}`,
+			want:  `{"intent": "task"}`,
+		},
+		"oversized input returned as-is": {
+			input: fence + "json\n" + strings.Repeat("x", maxStripInputLen+1) + "\n" + fence,
+			want:  fence + "json\n" + strings.Repeat("x", maxStripInputLen+1) + "\n" + fence,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, stripCodeFences(tc.input))
+		})
+	}
+}
+
+func TestParseIntentCodeFenced(t *testing.T) {
+	fence := "```"
+	tests := map[string]struct {
+		input string
+		want  Intent
+	}{
+		"json fence question": {
+			input: fence + "json\n" + `{"intent": "question"}` + "\n" + fence,
+			want:  IntentQuestion,
+		},
+		"bare fence task": {
+			input: fence + "\n" + `{"intent": "task"}` + "\n" + fence,
+			want:  IntentTask,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got, err := parseIntent(tc.input)
+			r.NoError(err)
+			r.Equal(tc.want, got)
+		})
 	}
 }
