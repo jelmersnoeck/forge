@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/config"
+	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -230,6 +231,62 @@ func TestLoadSpecs_nonexistentDir(t *testing.T) {
 	specs, err := LoadSpecs("/nonexistent/greendale")
 	r.NoError(err)
 	r.Nil(specs)
+}
+
+func TestLoadSpecs_populatesDescription(t *testing.T) {
+	r := require.New(t)
+	dir := t.TempDir()
+
+	content := "---\nid: paintball\nstatus: active\n---\n# Campus-wide paintball\n\n## Description\nGreendale needs a defense grid for paintball episodes.\n\n## Behavior\nTroy arms the grid."
+	r.NoError(os.WriteFile(filepath.Join(dir, "paintball.md"), []byte(content), 0o644))
+
+	specs, err := LoadSpecs(dir)
+	r.NoError(err)
+	r.Len(specs, 1)
+	r.Equal("Greendale needs a defense grid for paintball episodes.", specs[0].Description)
+}
+
+func TestFormatSpecIndex(t *testing.T) {
+	tests := map[string]struct {
+		specs []types.SpecEntry
+		want  string
+	}{
+		"empty specs": {
+			specs: nil,
+			want:  "",
+		},
+		"single spec": {
+			specs: []types.SpecEntry{
+				{ID: "paintball-defense", Status: "active", Header: "Campus-wide paintball defense system"},
+			},
+			want: "Existing Specs:\n\n- **paintball-defense** (active): Campus-wide paintball defense system\n",
+		},
+		"multiple specs sorted by ID": {
+			specs: []types.SpecEntry{
+				{ID: "study-room", Status: "implemented", Header: "Study room booking"},
+				{ID: "blanket-fort", Status: "draft", Header: "Blanket fort construction"},
+				{ID: "paintball", Status: "active", Header: "Paintball defense grid"},
+			},
+			want: "Existing Specs:\n\n- **blanket-fort** (draft): Blanket fort construction\n- **paintball** (active): Paintball defense grid\n- **study-room** (implemented): Study room booking\n",
+		},
+		"includes all statuses": {
+			specs: []types.SpecEntry{
+				{ID: "active-spec", Status: "active", Header: "Active one"},
+				{ID: "draft-spec", Status: "draft", Header: "Draft one"},
+				{ID: "implemented-spec", Status: "implemented", Header: "Done one"},
+				{ID: "superseded-spec", Status: "superseded", Header: "Dead one"},
+			},
+			want: "Existing Specs:\n\n- **active-spec** (active): Active one\n- **draft-spec** (draft): Draft one\n- **implemented-spec** (implemented): Done one\n- **superseded-spec** (superseded): Dead one\n",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := FormatSpecIndex(tc.specs)
+			r.Equal(tc.want, got)
+		})
+	}
 }
 
 func TestFindSpecsDir(t *testing.T) {

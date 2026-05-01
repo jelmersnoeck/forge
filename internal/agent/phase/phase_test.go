@@ -21,7 +21,6 @@ func TestPhaseDefinitions(t *testing.T) {
 			wantName:     "spec",
 			wantMaxTurns: 200,
 			wantDisallowed: []string{
-				"Edit",
 				"Agent", "AgentGet", "AgentList", "AgentStop",
 			},
 		},
@@ -74,7 +73,7 @@ func TestPhaseDefinitions(t *testing.T) {
 			wantName:     "plan",
 			wantMaxTurns: 150,
 			wantDisallowed: []string{
-				"Edit", "PRCreate",
+				"PRCreate",
 				"Agent", "AgentGet", "AgentList", "AgentStop",
 			},
 		},
@@ -154,6 +153,36 @@ func TestPromptForPhase(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSpecCreatorAndPlanner_EditAllowed(t *testing.T) {
+	r := require.New(t)
+
+	// Edit must be allowed for both spec creator and planner
+	// so they can update existing specs in place.
+	for _, phase := range []Phase{SpecCreator(), Planner()} {
+		r.NotContains(phase.DisallowedTools, "Edit",
+			"phase %q must allow Edit for spec dedup", phase.Name)
+	}
+}
+
+func TestSpecCreatorPrompt_ContainsDedupInstructions(t *testing.T) {
+	r := require.New(t)
+
+	prompt := PromptForPhase("spec")
+	r.Contains(prompt, "Spec Deduplication")
+	r.Contains(prompt, "Existing Specs")
+	r.Contains(prompt, "Edit tool")
+	r.Contains(prompt, "superseded")
+}
+
+func TestPlannerPrompt_ContainsDedupInstructions(t *testing.T) {
+	r := require.New(t)
+
+	prompt := PromptForPhase("plan")
+	r.Contains(prompt, "Spec Deduplication")
+	r.Contains(prompt, "Existing Specs")
+	r.Contains(prompt, "Edit tool")
 }
 
 func TestCoderPrompt_ContainsDocumentationSection(t *testing.T) {
