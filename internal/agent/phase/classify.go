@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -43,9 +43,15 @@ Respond with ONLY a JSON object: {"intent": "question"} or {"intent": "task"}`
 // ~1000 chars keeps us well within the ~200 input token budget.
 const maxClassifyPromptLen = 1000
 
-// maxStripInputLen caps input to stripCodeFences. Anything beyond this is
-// clearly not a well-formed short JSON response and is returned as-is.
+// maxStripInputLen caps input to stripCodeFences. The classifier requests
+// MaxTokens=32, so valid responses are tiny. 4096 is generous headroom;
+// anything beyond is clearly not a well-formed response and is returned as-is.
 const maxStripInputLen = 4096
+
+// Compile-time assertion: maxStripInputLen must be positive and bounded.
+// Prevents accidental edits from setting it to zero or something absurd.
+var _ [maxStripInputLen - 1]struct{}     // fails if <= 0
+var _ [1<<20 - maxStripInputLen]struct{} // fails if > 1 MiB
 
 // ClassifyIntent uses a lightweight LLM call to determine whether the user's
 // prompt is an informational question or an actionable task request.
@@ -65,17 +71,21 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 		if err == nil {
 			switch {
 			case i > 0:
-				log.Printf("[classify] succeeded on fallback model %s after %d failed attempt(s)", model, i)
+				slog.Info("classify: succeeded on fallback model",
+					"model", model, "failed_attempts", i)
 			default:
-				log.Printf("[classify] intent=%s model=%s", intent, model)
+				slog.Debug("classify: classified intent",
+					"intent", intent, "model", model)
 			}
 			return intent, nil
 		}
 		lastErr = err
-		log.Printf("[classify] model %s failed: %v", model, err)
+		slog.Warn("classify: model failed",
+			"model", model, "error", err)
 	}
 
-	log.Printf("[classify] all %d models failed — defaulting to task", len(types.LightweightModels))
+	slog.Error("classify: all models failed, defaulting to task",
+		"models_tried", len(types.LightweightModels))
 	return IntentTask, fmt.Errorf("all models failed: %w", lastErr)
 }
 
@@ -184,15 +194,9 @@ func stripCodeFences(s string) string {
 		inner = inner[idx+1:]
 	}
 
-	// Verify no stray ``` remain inside the content — if they do, the input
-	// isn't a simple wrapping fence and we should leave it alone.
+	// Verify no stray ``` remain inside the content. If they do, we can't
+	// safely distinguish structural fences from content — return unchanged.
 	if strings.Contains(inner, "```") {
-		// Fall back to the original behavior: strip first line, strip last ```.
-		// This handles the case where the content itself has backticks but
-		// the overall structure is still open-fence / content / close-fence.
-		//
-		// Actually, just return original stripped content — we can't safely
-		// determine which backticks are structural vs content.
 		return s
 	}
 
@@ -206,14 +210,16 @@ func parseIntent(raw string) (Intent, error) {
 
 	// Log when code fences were stripped — helps diagnose model behavior.
 	if stripped != strings.TrimSpace(raw) {
-		log.Printf("[classify] stripped code fences from LLM response: %q -> %q", raw, stripped)
+		slog.Info("classify: stripped code fences from LLM response",
+			"raw", raw, "stripped", stripped)
 	}
 
 	var result struct {
 		Intent string `json:"intent"`
 	}
 	if err := json.Unmarshal([]byte(stripped), &result); err != nil {
-		log.Printf("[classify] malformed LLM response (parse failed): %q", raw)
+		slog.Error("classify: malformed LLM response",
+			"reason", "parse_failed", "raw", raw, "error", err)
 		return IntentTask, fmt.Errorf("parse error: %w — raw: %q", err, raw)
 	}
 
@@ -223,10 +229,12 @@ func parseIntent(raw string) (Intent, error) {
 	case IntentTask:
 		return IntentTask, nil
 	case "":
-		log.Printf("[classify] malformed LLM response (missing intent field): %q", raw)
+		slog.Error("classify: malformed LLM response",
+			"reason", "missing_intent_field", "raw", raw)
 		return IntentTask, fmt.Errorf("missing intent field in response: %q", raw)
 	default:
-		log.Printf("[classify] malformed LLM response (unknown intent %q): %q", result.Intent, raw)
+		slog.Error("classify: malformed LLM response",
+			"reason", "unknown_intent", "intent", result.Intent, "raw", raw)
 		return IntentTask, fmt.Errorf("unknown intent %q", result.Intent)
 	}
 }
