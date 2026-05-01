@@ -43,6 +43,10 @@ Respond with ONLY a JSON object: {"intent": "question"} or {"intent": "task"}`
 // ~1000 chars keeps us well within the ~200 input token budget.
 const maxClassifyPromptLen = 1000
 
+// maxStripInputLen caps input to stripCodeFences. Anything beyond this is
+// clearly not a well-formed short JSON response and is returned as-is.
+const maxStripInputLen = 4096
+
 // ClassifyIntent uses a lightweight LLM call to determine whether the user's
 // prompt is an informational question or an actionable task request.
 // Returns (IntentTask, nil) for empty prompts.
@@ -145,37 +149,71 @@ func truncateAtWordBoundary(s string, maxLen int) string {
 
 // stripCodeFences removes markdown code fences that LLMs sometimes wrap around
 // JSON output, e.g. ```json\n{...}\n``` -> {...}
+//
+// Only strips when the input is a single fenced block: opening ``` at the start
+// and closing ``` at the end. If triple backticks appear in the middle (e.g.
+// inside JSON content), the input is returned unchanged to avoid corrupting data.
+// Inputs larger than maxStripInputLen are returned as-is.
 func stripCodeFences(s string) string {
 	s = strings.TrimSpace(s)
+
+	if len(s) > maxStripInputLen {
+		return s
+	}
+
 	if !strings.HasPrefix(s, "```") {
 		return s
 	}
 
-	// Strip opening fence line (```json, ```, etc.)
-	if idx := strings.Index(s, "\n"); idx != -1 {
-		s = s[idx+1:]
-	} else {
-		// No newline — strip the leading ``` directly.
-		s = strings.TrimPrefix(s, "```")
+	// Closing fence must be at the very end.
+	if !strings.HasSuffix(s, "```") {
+		// Opening fence but no closing fence — strip the opener and return.
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			return strings.TrimSpace(s[idx+1:])
+		}
+		return strings.TrimPrefix(s, "```")
 	}
 
-	// Strip closing fence
-	if idx := strings.LastIndex(s, "```"); idx != -1 {
-		s = s[:idx]
+	// Both opening and closing fences present. Find content between them.
+	// Opening fence: everything up to (and including) the first newline.
+	// Closing fence: the final ```.
+	inner := s[3 : len(s)-3] // strip leading and trailing ```
+
+	// Strip the language tag from the opening fence (e.g. "json\n").
+	if idx := strings.Index(inner, "\n"); idx != -1 {
+		inner = inner[idx+1:]
 	}
 
-	return strings.TrimSpace(s)
+	// Verify no stray ``` remain inside the content — if they do, the input
+	// isn't a simple wrapping fence and we should leave it alone.
+	if strings.Contains(inner, "```") {
+		// Fall back to the original behavior: strip first line, strip last ```.
+		// This handles the case where the content itself has backticks but
+		// the overall structure is still open-fence / content / close-fence.
+		//
+		// Actually, just return original stripped content — we can't safely
+		// determine which backticks are structural vs content.
+		return s
+	}
+
+	return strings.TrimSpace(inner)
 }
 
 // parseIntent extracts the intent from the LLM's JSON response.
 // Returns (IntentTask, err) on any parse failure.
 func parseIntent(raw string) (Intent, error) {
-	raw = stripCodeFences(raw)
+	stripped := stripCodeFences(raw)
+
+	// Log when code fences were stripped — helps diagnose model behavior.
+	if stripped != strings.TrimSpace(raw) {
+		log.Printf("[classify] stripped code fences from LLM response: %q -> %q", raw, stripped)
+	}
 
 	var result struct {
 		Intent string `json:"intent"`
 	}
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+	if err := json.Unmarshal([]byte(stripped), &result); err != nil {
+		log.Printf("[classify] malformed LLM response (parse failed): %q", raw)
 		return IntentTask, fmt.Errorf("parse error: %w — raw: %q", err, raw)
 	}
 
@@ -185,8 +223,10 @@ func parseIntent(raw string) (Intent, error) {
 	case IntentTask:
 		return IntentTask, nil
 	case "":
+		log.Printf("[classify] malformed LLM response (missing intent field): %q", raw)
 		return IntentTask, fmt.Errorf("missing intent field in response: %q", raw)
 	default:
+		log.Printf("[classify] malformed LLM response (unknown intent %q): %q", result.Intent, raw)
 		return IntentTask, fmt.Errorf("unknown intent %q", result.Intent)
 	}
 }

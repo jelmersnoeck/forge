@@ -3,6 +3,7 @@ package phase
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -346,6 +347,20 @@ func TestStripCodeFences(t *testing.T) {
 		"fence with no newline after opening": {
 			input: fence + `{"intent": "task"}` + fence,
 			want:  `{"intent": "task"}`,
+		},
+		"content with triple backticks returned as-is": {
+			// If ``` appears inside the JSON content, don't try to strip —
+			// we can't safely determine which backticks are structural.
+			input: fence + "json\n" + `{"code": "use ` + fence + ` for blocks"}` + "\n" + fence,
+			want:  fence + "json\n" + `{"code": "use ` + fence + ` for blocks"}` + "\n" + fence,
+		},
+		"only opening fence no closing": {
+			input: fence + "json\n" + `{"intent": "task"}`,
+			want:  `{"intent": "task"}`,
+		},
+		"oversized input returned as-is": {
+			input: fence + "json\n" + strings.Repeat("x", maxStripInputLen+1) + "\n" + fence,
+			want:  fence + "json\n" + strings.Repeat("x", maxStripInputLen+1) + "\n" + fence,
 		},
 	}
 
