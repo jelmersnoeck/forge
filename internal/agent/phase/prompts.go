@@ -42,7 +42,34 @@ Each spec section must meet this bar:
   when the key does not exist."
 - Don't spec unasked features. Note extension points, don't build them.
 
-When done, state the spec path and summarize key decisions.`
+When done, state the spec path and summarize key decisions.
+
+## Spec Deduplication
+
+Before writing a new spec, check the "Existing Specs" index in the system prompt.
+Compare the user's request against each existing spec's ID, header, and description.
+
+Decision rules:
+1. **Same feature area** (same subsystem, same capability, same user-facing behavior)
+   → Read the existing spec file, then update it in place using the Edit tool.
+   Preserve the original ID and file path. Set status to "active" (or back to
+   "active" if it was "implemented"). Amend sections as needed.
+2. **Genuinely new** (different subsystem, unrelated capability)
+   → Create a new spec as normal.
+3. **Extends an existing spec** but substantially different scope
+   → Create a new spec, reference the related spec in the Description section.
+4. **Ambiguous** (could be update or new)
+   → Default to creating new. Safer to have one extra spec than corrupt an existing one.
+5. **Maps to a superseded spec**
+   → Create a new spec. Superseded specs are dead.
+6. **Maps to an implemented spec**
+   → Update it. Set status back to "active".
+7. **Spans two existing specs**
+   → Pick the most relevant one and update it. Mention the other in Description.
+
+When updating an existing spec, preserve any Alternatives section.
+In your final output, always state whether you created a new spec or updated an
+existing one, and why.`
 
 // coderPrompt is the system prompt for the coder phase.
 // Focused on implementation quality, testing, and spec adherence.
@@ -183,7 +210,34 @@ Each rejected candidate gets an entry. Reasons must be concrete:
   minimal-deps constraint in AGENTS.md"
 - Bad: "not as good as the selected approach"
 
-Set spec status to draft. State your selection reasoning before writing.`
+Set spec status to draft. State your selection reasoning before writing.
+
+## Spec Deduplication
+
+Before writing a new spec, check the "Existing Specs" index in the system prompt.
+Compare the user's request against each existing spec's ID, header, and description.
+
+Decision rules:
+1. **Same feature area** (same subsystem, same capability, same user-facing behavior)
+   → Read the existing spec file, then update it in place using the Edit tool.
+   Preserve the original ID and file path. Set status to "active" (or back to
+   "active" if it was "implemented"). Amend sections as needed.
+2. **Genuinely new** (different subsystem, unrelated capability)
+   → Create a new spec as normal.
+3. **Extends an existing spec** but substantially different scope
+   → Create a new spec, reference the related spec in the Description section.
+4. **Ambiguous** (could be update or new)
+   → Default to creating new. Safer to have one extra spec than corrupt an existing one.
+5. **Maps to a superseded spec**
+   → Create a new spec. Superseded specs are dead.
+6. **Maps to an implemented spec**
+   → Update it. Set status back to "active".
+7. **Spans two existing specs**
+   → Pick the most relevant one and update it. Mention the other in Description.
+
+When updating an existing spec, preserve any Alternatives section.
+In your final output, always state whether you created a new spec or updated an
+existing one, and why.`
 
 // PromptForPhase returns the phase-specific system prompt addition.
 func PromptForPhase(name string) string {

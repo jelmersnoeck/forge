@@ -317,6 +317,8 @@ func TestAssemble_Specs(t *testing.T) {
 			{ID: "pillow-fort", Status: "draft", Header: "Blanket fort vs pillow fort warfare"},
 			{ID: "darkest-timeline", Status: "deprecated", Header: "Goatee-based timeline detection"},
 			{ID: "study-room-f", Status: "active", Header: "Study room scheduling and booking"},
+			{ID: "old-feature", Status: "implemented", Header: "Something already done"},
+			{ID: "dead-spec", Status: "superseded", Header: "Replaced by something better"},
 		},
 	}
 
@@ -324,15 +326,22 @@ func TestAssemble_Specs(t *testing.T) {
 	r.GreaterOrEqual(len(blocks), 2)
 
 	bundled := blocks[1].Text
-	r.Contains(bundled, "Active Specs:")
-	r.Contains(bundled, "paintball-defense")
-	r.Contains(bundled, "Campus-wide paintball defense system")
-	r.Contains(bundled, "study-room-f")
-	r.Contains(bundled, "Study room scheduling and booking")
+	r.Contains(bundled, "Existing Specs:")
 
-	// Draft and deprecated specs should NOT appear
-	r.NotContains(bundled, "pillow-fort")
-	r.NotContains(bundled, "darkest-timeline")
+	// All specs included regardless of status
+	r.Contains(bundled, "paintball-defense")
+	r.Contains(bundled, "pillow-fort")
+	r.Contains(bundled, "darkest-timeline")
+	r.Contains(bundled, "study-room-f")
+	r.Contains(bundled, "old-feature")
+	r.Contains(bundled, "dead-spec")
+
+	// Status is shown in parentheses
+	r.Contains(bundled, "(active)")
+	r.Contains(bundled, "(draft)")
+	r.Contains(bundled, "(deprecated)")
+	r.Contains(bundled, "(implemented)")
+	r.Contains(bundled, "(superseded)")
 }
 
 func TestAssemble_Specs_NoneActive(t *testing.T) {
@@ -345,6 +354,9 @@ func TestAssemble_Specs_NoneActive(t *testing.T) {
 	}
 
 	blocks := Assemble(bundle, "/greendale")
-	// Only base block, no bundled content block
-	r.Equal(1, len(blocks))
+	// Implemented specs still show in the index (for dedup purposes)
+	r.Equal(2, len(blocks))
+	r.Contains(blocks[1].Text, "Existing Specs:")
+	r.Contains(blocks[1].Text, "old-feature")
+	r.Contains(blocks[1].Text, "(implemented)")
 }

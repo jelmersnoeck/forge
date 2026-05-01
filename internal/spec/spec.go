@@ -26,9 +26,11 @@
 package spec
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/jelmersnoeck/forge/internal/config"
@@ -144,11 +146,12 @@ func LoadSpecs(dir string) ([]types.SpecEntry, error) {
 
 		content, _ := os.ReadFile(path)
 		specs = append(specs, types.SpecEntry{
-			Path:    path,
-			Content: string(content),
-			ID:      doc.ID,
-			Status:  doc.Status,
-			Header:  doc.Header,
+			Path:        path,
+			Content:     string(content),
+			ID:          doc.ID,
+			Status:      doc.Status,
+			Header:      doc.Header,
+			Description: doc.Description,
 		})
 	}
 
@@ -166,6 +169,28 @@ func FindSpecsDir(cwd string, cfg config.ForgeConfig) string {
 		return filepath.Join(cwd, cfg.SpecsDir)
 	}
 	return filepath.Join(cwd, DefaultSpecsDir)
+}
+
+// FormatSpecIndex produces a compact index of all specs for injection into
+// the system prompt. Sorted by ID for deterministic output / prompt caching.
+// Returns empty string when there are no specs.
+func FormatSpecIndex(specs []types.SpecEntry) string {
+	if len(specs) == 0 {
+		return ""
+	}
+
+	sorted := make([]types.SpecEntry, len(specs))
+	copy(sorted, specs)
+	slices.SortFunc(sorted, func(a, b types.SpecEntry) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	var sb strings.Builder
+	sb.WriteString("Existing Specs:\n\n")
+	for _, s := range sorted {
+		fmt.Fprintf(&sb, "- **%s** (%s): %s\n", s.ID, s.Status, s.Header)
+	}
+	return sb.String()
 }
 
 // parseFrontmatter extracts YAML frontmatter from markdown content.

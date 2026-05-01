@@ -29,10 +29,9 @@ type Result struct {
 func SpecCreator() Phase {
 	return Phase{
 		Name: "spec",
-		// Spec creator can read and explore, write specs, run read-only bash.
-		// No editing existing files, no sub-agents.
+		// Spec creator can read, explore, write new specs, and edit existing
+		// specs (for deduplication). No sub-agents.
 		DisallowedTools: []string{
-			"Edit",
 			"Agent", "AgentGet", "AgentList", "AgentStop",
 			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 			"QueueImmediate", "QueueOnComplete",
@@ -102,12 +101,12 @@ func Clarifier() Phase {
 }
 
 // Planner returns the planning agent phase configuration.
-// Can read and write specs, run read-only bash.
+// Can read, write new specs, and edit existing specs.
 func Planner() Phase {
 	return Phase{
 		Name: "plan",
 		DisallowedTools: []string{
-			"Edit", "PRCreate",
+			"PRCreate",
 			"Agent", "AgentGet", "AgentList", "AgentStop",
 			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 			"QueueImmediate", "QueueOnComplete",

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jelmersnoeck/forge/internal/runtime/loop"
 	"github.com/jelmersnoeck/forge/internal/runtime/session"
+	"github.com/jelmersnoeck/forge/internal/spec"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -492,15 +493,13 @@ func buildContextSummary(bundle types.ContextBundle) string {
 		}
 	}
 
-	// Include active spec summaries.
+	// Include all spec summaries (all statuses for dedup awareness).
 	if len(bundle.Specs) > 0 {
-		sb.WriteString("## Active Specs\n\n")
-		for _, spec := range bundle.Specs {
-			if spec.Status == "active" || spec.Status == "draft" {
-				fmt.Fprintf(&sb, "- **%s** (%s): %s\n", spec.ID, spec.Status, spec.Header)
-			}
+		specIndex := spec.FormatSpecIndex(bundle.Specs)
+		if specIndex != "" {
+			sb.WriteString(specIndex)
+			sb.WriteString("\n")
 		}
-		sb.WriteString("\n")
 	}
 
 	return sb.String()

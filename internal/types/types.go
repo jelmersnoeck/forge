@@ -325,11 +325,12 @@ type SpecDocument struct {
 
 // SpecEntry is a discovered spec for inclusion in the context bundle.
 type SpecEntry struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-	ID      string `json:"id"`
-	Status  string `json:"status"`
-	Header  string `json:"header"` // the 15-word summary
+	Path        string `json:"path"`
+	Content     string `json:"content"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	Header      string `json:"header"`      // the 15-word summary
+	Description string `json:"description"` // short description (2-4 sentences)
 }
 
 // MergedSettings is the merged result of user + project + local settings.

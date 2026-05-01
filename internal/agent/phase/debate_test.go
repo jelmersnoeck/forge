@@ -353,7 +353,27 @@ func TestBuildContextSummary(t *testing.T) {
 	r.Contains(summary, "Greendale rules")
 	r.NotContains(summary, "coder prompt") // phase-level shouldn't be included
 	r.Contains(summary, "paintball")
-	r.NotContains(summary, "old-spec") // implemented specs excluded
+}
+
+func TestBuildContextSummary_includesAllSpecStatuses(t *testing.T) {
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		Specs: []types.SpecEntry{
+			{ID: "active-spec", Status: "active", Header: "Active one"},
+			{ID: "draft-spec", Status: "draft", Header: "Draft one"},
+			{ID: "implemented-spec", Status: "implemented", Header: "Implemented one"},
+			{ID: "superseded-spec", Status: "superseded", Header: "Superseded one"},
+		},
+	}
+
+	summary := buildContextSummary(bundle)
+	// All specs should appear regardless of status (for dedup in planner)
+	r.Contains(summary, "active-spec")
+	r.Contains(summary, "draft-spec")
+	r.Contains(summary, "implemented-spec")
+	r.Contains(summary, "superseded-spec")
+	r.Contains(summary, "Existing Specs:")
 }
 
 func TestStripJSONFences(t *testing.T) {

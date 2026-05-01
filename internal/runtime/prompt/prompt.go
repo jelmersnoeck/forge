@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jelmersnoeck/forge/internal/spec"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
@@ -260,20 +261,11 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		hasContent = true
 	}
 
-	// Active specs
+	// Spec index — all specs regardless of status, for dedup awareness.
 	if len(bundle.Specs) > 0 {
-		var activeSpecs []string
-		for _, s := range bundle.Specs {
-			if s.Status == "active" {
-				activeSpecs = append(activeSpecs, fmt.Sprintf("- **%s**: %s", s.ID, s.Header))
-			}
-		}
-		if len(activeSpecs) > 0 {
-			bundledContent.WriteString("Active Specs:\n\n")
-			for _, line := range activeSpecs {
-				bundledContent.WriteString(line)
-				bundledContent.WriteString("\n")
-			}
+		specIndex := spec.FormatSpecIndex(bundle.Specs)
+		if specIndex != "" {
+			bundledContent.WriteString(specIndex)
 			bundledContent.WriteString("\n")
 			hasContent = true
 		}
