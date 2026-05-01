@@ -152,6 +152,62 @@ func TestRunSpecCreator_ReturnsHistoryID(t *testing.T) {
 	r.NotEmpty(result.HistoryID, "runSpecCreator should return a historyID for future resumption")
 }
 
+func TestOrchestratorResult_CoderHistoryID(t *testing.T) {
+	r := require.New(t)
+	prov := &textProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	opts.InitialPrompt = "Build the Dreamatorium simulator for Greendale"
+	opts.SpecPath = "/fake/spec.md" // skip spec creation to simplify
+
+	orch := NewSWEOrchestrator()
+	result, err := orch.Run(context.Background(), opts)
+	r.NoError(err)
+	r.Equal(IntentTask, result.Intent)
+	r.NotEmpty(result.CoderHistoryID, "OrchestratorResult should include coder's historyID")
+}
+
+func TestOrchestratorResult_SpecHistoryID_WithSpecPath(t *testing.T) {
+	r := require.New(t)
+	prov := &textProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	opts.InitialPrompt = "Fix the pillow fort structural integrity"
+	opts.SpecPath = "/fake/spec.md" // skip spec creation
+
+	orch := NewSWEOrchestrator()
+	result, err := orch.Run(context.Background(), opts)
+	r.NoError(err)
+	r.Empty(result.SpecHistoryID, "SpecHistoryID should be empty when --spec is provided")
+}
+
+func TestOrchestratorResult_CoderHistoryID_ResumeLoadsHistory(t *testing.T) {
+	// Verifies the returned CoderHistoryID can be used with loop.Resume
+	// and it loads the coder's conversation history.
+	r := require.New(t)
+	prov := &trackingProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	opts.InitialPrompt = "Build the study room reservation system"
+	opts.SpecPath = "/fake/spec.md"
+
+	orch := NewSWEOrchestrator()
+	result, err := orch.Run(context.Background(), opts)
+	r.NoError(err)
+	r.NotEmpty(result.CoderHistoryID)
+
+	// Now resume using the coder's historyID — this simulates a follow-up message.
+	newID, err := orch.runCoderResume(context.Background(), opts, result.CoderHistoryID, "Also add a paintball mode")
+	r.NoError(err)
+	r.Equal(result.CoderHistoryID, newID, "Resume should use the same historyID")
+
+	// The resume call should have loaded history (more messages than initial).
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Equal(2, len(counts), "expected 2 Chat calls (initial coder + resume)")
+	r.Greater(counts[1], counts[0], "Resume should load history")
+}
+
 func TestReviewerAlwaysFresh(t *testing.T) {
 	// This test verifies the reviewer doesn't get conversation history.
 	// We can't easily test runReviewerWithDiff without ANTHROPIC_API_KEY,
