@@ -151,7 +151,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string, error) {
 	qa := QA()
 	registry := opts.Registry.Filtered(qa.AllowedTools, qa.DisallowedTools)
-	bundle := injectPhasePrompt(opts.Bundle, qa.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, qa.Name)
 
 	loopOpts := loop.Options{
 		Provider:     opts.Provider,
@@ -401,7 +401,7 @@ func RunSinglePhase(ctx context.Context, opts OrchestratorOpts, phase Phase) err
 	}
 
 	// Inject phase-specific prompt into the context bundle.
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	loopOpts := loop.Options{
 		Provider:     opts.Provider,
@@ -422,7 +422,7 @@ func RunSinglePhase(ctx context.Context, opts OrchestratorOpts, phase Phase) err
 func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts) (Result, error) {
 	phase := SpecCreator()
 	registry := opts.Registry.Filtered(phase.AllowedTools, phase.DisallowedTools)
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	model := opts.Model
 	if phase.Model != "" {
@@ -458,7 +458,7 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 	prompt := buildCoderPrompt(specPath)
 
 	phase := Coder()
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	model := opts.Model
 	if phase.Model != "" {
@@ -489,7 +489,7 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 // runCoderResume resumes an existing coder conversation with a new message.
 func (o *Orchestrator) runCoderResume(ctx context.Context, opts OrchestratorOpts, historyID, message string) (string, error) {
 	phase := Coder()
-	bundle := injectPhasePrompt(opts.Bundle, phase.Name)
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
 
 	model := opts.Model
 	if phase.Model != "" {
@@ -661,9 +661,9 @@ func findLatestSpec(cwd string) string {
 	return latest
 }
 
-// injectPhasePrompt adds the phase-specific prompt to the context bundle
+// InjectPhasePrompt adds the phase-specific prompt to the context bundle
 // as an AgentsMD entry so it gets included in the system prompt.
-func injectPhasePrompt(bundle types.ContextBundle, phaseName string) types.ContextBundle {
+func InjectPhasePrompt(bundle types.ContextBundle, phaseName string) types.ContextBundle {
 	phasePrompt := PromptForPhase(phaseName)
 	if phasePrompt == "" {
 		return bundle
