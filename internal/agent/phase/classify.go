@@ -143,10 +143,34 @@ func truncateAtWordBoundary(s string, maxLen int) string {
 	return strings.TrimRightFunc(string(runes[:cut]), unicode.IsSpace) + "..."
 }
 
+// stripCodeFences removes markdown code fences that LLMs sometimes wrap around
+// JSON output, e.g. ```json\n{...}\n``` -> {...}
+func stripCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+
+	// Strip opening fence line (```json, ```, etc.)
+	if idx := strings.Index(s, "\n"); idx != -1 {
+		s = s[idx+1:]
+	} else {
+		// No newline — strip the leading ``` directly.
+		s = strings.TrimPrefix(s, "```")
+	}
+
+	// Strip closing fence
+	if idx := strings.LastIndex(s, "```"); idx != -1 {
+		s = s[:idx]
+	}
+
+	return strings.TrimSpace(s)
+}
+
 // parseIntent extracts the intent from the LLM's JSON response.
 // Returns (IntentTask, err) on any parse failure.
 func parseIntent(raw string) (Intent, error) {
-	raw = strings.TrimSpace(raw)
+	raw = stripCodeFences(raw)
 
 	var result struct {
 		Intent string `json:"intent"`

@@ -320,3 +320,65 @@ func TestLightweightModelsUsed(t *testing.T) {
 		r.NotEmpty(m, "model name must not be empty")
 	}
 }
+
+func TestStripCodeFences(t *testing.T) {
+	fence := "```"
+	tests := map[string]struct {
+		input string
+		want  string
+	}{
+		"no fences": {
+			input: `{"intent": "question"}`,
+			want:  `{"intent": "question"}`,
+		},
+		"json fence": {
+			input: fence + "json\n" + `{"intent": "question"}` + "\n" + fence,
+			want:  `{"intent": "question"}`,
+		},
+		"bare fence": {
+			input: fence + "\n" + `{"intent": "task"}` + "\n" + fence,
+			want:  `{"intent": "task"}`,
+		},
+		"fence with surrounding whitespace": {
+			input: "  " + fence + "json\n" + `{"intent": "question"}` + "\n" + fence + "  ",
+			want:  `{"intent": "question"}`,
+		},
+		"fence with no newline after opening": {
+			input: fence + `{"intent": "task"}` + fence,
+			want:  `{"intent": "task"}`,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, stripCodeFences(tc.input))
+		})
+	}
+}
+
+func TestParseIntentCodeFenced(t *testing.T) {
+	fence := "```"
+	tests := map[string]struct {
+		input string
+		want  Intent
+	}{
+		"json fence question": {
+			input: fence + "json\n" + `{"intent": "question"}` + "\n" + fence,
+			want:  IntentQuestion,
+		},
+		"bare fence task": {
+			input: fence + "\n" + `{"intent": "task"}` + "\n" + fence,
+			want:  IntentTask,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got, err := parseIntent(tc.input)
+			r.NoError(err)
+			r.Equal(tc.want, got)
+		})
+	}
+}
