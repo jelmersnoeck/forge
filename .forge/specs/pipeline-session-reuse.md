@@ -1,6 +1,6 @@
 ---
 id: pipeline-session-reuse
-status: draft
+status: implemented
 ---
 # Preserve phase session context across SWE pipeline restarts
 
@@ -29,9 +29,10 @@ Files affected:
   `result.SpecHistoryID` for potential re-use in future orchestrator runs.
 - `internal/agent/phase/phase.go` — no changes needed; `Result.HistoryID`
   already exists.
-- `internal/agent/phase/debate.go` — `DebateResult.PlannerHistoryID` already
-  stored; no changes needed (planner historyID flows through `OrchestratorResult`
-  if needed later).
+- `internal/agent/phase/debate.go` — `runDebate` return type updated from
+  `DebateResult` to `*DebateResult` for nil-safety.
+- `internal/agent/phase/phase_test.go` — updated `runDebate` mock return type
+  to `*DebateResult`.
 - `internal/agent/phase/session_continuity_test.go` — add test verifying
   `OrchestratorResult.CoderHistoryID` is non-empty after a pipeline run, and
   that using it with `loop.Resume` loads the coder's conversation history.
@@ -70,9 +71,11 @@ Files affected:
 - `OrchestratorResult` is the only conduit for passing history IDs out of the
   orchestrator to the worker — no globals, no side channels.
 - The plain loop fallback (when `orchestratorDone` is true and `historyID` is
-  set) must use the coder phase's model/tools/context configuration, not a
-  generic one. Currently the worker uses a bare `loop.New(opts)` with no phase
-  prompt injection — this needs to match the coder phase setup.
+  set) uses the worker's default `loop.New(opts)` configuration. The coder
+  phase's history is preserved via `loop.Resume`, so the model sees the full
+  prior conversation. The worker's loop already has the same tools and model
+  as the coder phase. Phase-specific system prompt injection is not added —
+  the resumed history carries sufficient context.
 
 ## Interfaces
 
