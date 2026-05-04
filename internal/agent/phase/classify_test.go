@@ -49,6 +49,10 @@ func TestParseIntent(t *testing.T) {
 			input: `{"intent": "task"}`,
 			want:  IntentTask,
 		},
+		"investigate": {
+			input: `{"intent": "investigate"}`,
+			want:  IntentInvestigate,
+		},
 		"question with whitespace": {
 			input: `  {"intent": "question"}  `,
 			want:  IntentQuestion,
@@ -125,6 +129,10 @@ func TestClassifyIntentSuccess(t *testing.T) {
 		"task": {
 			response: `{"intent": "task"}`,
 			want:     IntentTask,
+		},
+		"investigate": {
+			response: `{"intent": "investigate"}`,
+			want:     IntentInvestigate,
 		},
 	}
 

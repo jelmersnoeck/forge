@@ -8,7 +8,7 @@ import (
 
 // Phase configures a conversation loop for a specific purpose.
 type Phase struct {
-	Name            string   // "spec", "code", "review"
+	Name            string   // e.g. "spec", "code", "review", "investigate", "qa"
 	AllowedTools    []string // tools this phase can use (empty = all)
 	DisallowedTools []string // tools this phase cannot use
 	Model           string   // model override (empty = default)
@@ -46,6 +46,23 @@ func Coder() Phase {
 	return Phase{
 		Name:     "code",
 		MaxTurns: 0, // unlimited
+	}
+}
+
+// Investigate returns the investigation phase configuration.
+// Full exploration with tool access — no specs, no PRs, no sub-agents.
+func Investigate() Phase {
+	return Phase{
+		Name: "investigate",
+		DisallowedTools: []string{
+			"PRCreate",
+			"Agent", "AgentGet", "AgentList", "AgentStop",
+			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+			"QueueImmediate", "QueueOnComplete",
+			"UseMCPTool",
+			"Reflect",
+		},
+		MaxTurns: 200,
 	}
 }
 

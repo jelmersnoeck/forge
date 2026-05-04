@@ -42,6 +42,9 @@ type OrchestratorOpts struct {
 	// QAHistoryID, when set, resumes an existing Q&A conversation.
 	QAHistoryID string
 
+	// InvestigateHistoryID, when set, resumes an existing investigation conversation.
+	InvestigateHistoryID string
+
 	// PipelineHint controls whether to run the ideation pipeline.
 	// Values: "ideate" (always ideate), "code" (skip to coding),
 	// "auto" or "" (use complexity gate to decide).
@@ -55,6 +58,9 @@ type OrchestratorResult struct {
 	// QAHistoryID is set when Intent == IntentQuestion.
 	// The caller uses this to resume the Q&A loop on follow-up.
 	QAHistoryID string
+	// InvestigateHistoryID is set when Intent == IntentInvestigate.
+	// The caller uses this to resume the investigation loop on follow-up.
+	InvestigateHistoryID string
 	// CoderHistoryID is set after the SWE pipeline completes.
 	// The caller uses this to resume the coder conversation for follow-ups.
 	CoderHistoryID string
@@ -73,8 +79,9 @@ func NewSWEOrchestrator() *Orchestrator {
 // Run executes the SWE pipeline with intent classification.
 //
 // When no spec is provided, it first classifies the user's intent:
-//   - question → runs Q&A loop, returns result with QAHistoryID
-//   - task → runs full SWE pipeline (spec → code → review)
+//   - question    → runs Q&A loop, returns result with QAHistoryID
+//   - investigate → runs investigation loop, returns result with InvestigateHistoryID
+//   - task        → runs full SWE pipeline (spec → code → review)
 //
 // When SpecPath is set, classification is skipped (intent is unambiguously task).
 //
@@ -82,7 +89,8 @@ func NewSWEOrchestrator() *Orchestrator {
 //	    │
 //	    ▼
 //	┌───────────────┐
-//	│  Classify      │──▶ question? → Q&A loop → return
+//	│   Classify     │──▶ question?    → Q&A loop → return
+//	│                │──▶ investigate? → investigate loop → return
 //	└───────┬───────┘
 //	        │ task
 //	        ▼
@@ -131,15 +139,29 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 				QAHistoryID: historyID,
 			}, err
 		}
+
+		if intent == IntentInvestigate {
+			historyID, err := o.runInvestigate(ctx, opts)
+			return OrchestratorResult{
+				Intent:               IntentInvestigate,
+				InvestigateHistoryID: historyID,
+			}, err
+		}
 	}
 
-	// Task path: augment prompt with Q&A context if transitioning from questions.
-	if opts.QAHistoryID != "" {
+	// Task path: augment prompt with prior context if transitioning from Q&A or investigation.
+	switch {
+	case opts.InvestigateHistoryID != "":
+		augmented := "Based on our previous investigation, the user now wants to implement: " +
+			opts.InitialPrompt + ". Use the context from the investigation to inform the spec."
+		log.Printf("[orchestrator:%s] investigate→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
+		opts.InitialPrompt = augmented
+		opts.InvestigateHistoryID = ""
+	case opts.QAHistoryID != "":
 		augmented := "Based on our previous discussion, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the conversation to inform the spec."
 		log.Printf("[orchestrator:%s] Q&A→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
 		opts.InitialPrompt = augmented
-		// Clear QAHistoryID so the spec-creator starts a fresh loop.
 		opts.QAHistoryID = ""
 	}
 
@@ -149,11 +171,21 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 
 // runQA runs the Q&A conversation loop. Returns the history ID for resumption.
 func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string, error) {
-	qa := QA()
-	registry := opts.Registry.Filtered(qa.AllowedTools, qa.DisallowedTools)
-	bundle := InjectPhasePrompt(opts.Bundle, qa.Name)
+	return o.runConversationPhase(ctx, opts, QA(), opts.QAHistoryID)
+}
 
-	loopOpts := loop.Options{
+// runInvestigate runs the investigation conversation loop. Returns the history ID for resumption.
+func (o *Orchestrator) runInvestigate(ctx context.Context, opts OrchestratorOpts) (string, error) {
+	return o.runConversationPhase(ctx, opts, Investigate(), opts.InvestigateHistoryID)
+}
+
+// runConversationPhase runs a conversation loop for a given phase config,
+// resuming from historyID if non-empty. Returns the resulting history ID.
+func (o *Orchestrator) runConversationPhase(ctx context.Context, opts OrchestratorOpts, p Phase, historyID string) (string, error) {
+	registry := opts.Registry.Filtered(p.AllowedTools, p.DisallowedTools)
+	bundle := InjectPhasePrompt(opts.Bundle, p.Name)
+
+	l := loop.New(loop.Options{
 		Provider:     opts.Provider,
 		Tools:        registry,
 		Context:      bundle,
@@ -161,19 +193,16 @@ func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string
 		SessionStore: opts.SessionStore,
 		SessionID:    opts.SessionID,
 		Model:        opts.Model,
-		MaxTurns:     qa.MaxTurns,
+		MaxTurns:     p.MaxTurns,
 		AuditLogger:  opts.AuditLogger,
-	}
+	})
 
-	l := loop.New(loopOpts)
-
-	// Resume existing Q&A conversation or start fresh.
 	var err error
-	switch opts.QAHistoryID {
+	switch historyID {
 	case "":
 		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
 	default:
-		err = l.Resume(ctx, opts.QAHistoryID, opts.InitialPrompt, opts.Emit)
+		err = l.Resume(ctx, historyID, opts.InitialPrompt, opts.Emit)
 	}
 
 	return l.HistoryID(), err
