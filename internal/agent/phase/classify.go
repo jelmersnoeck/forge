@@ -16,8 +16,9 @@ import (
 type Intent string
 
 const (
-	IntentQuestion Intent = "question"
-	IntentTask     Intent = "task"
+	IntentQuestion    Intent = "question"
+	IntentTask        Intent = "task"
+	IntentInvestigate Intent = "investigate"
 )
 
 // classificationTimeout is the per-attempt timeout for classification.
@@ -25,19 +26,24 @@ const (
 const classificationTimeout = 2 * time.Second
 
 // classificationSystemPrompt is kept minimal to stay within ~200 input tokens.
-const classificationSystemPrompt = `Classify the user's message as either a question or a task.
+const classificationSystemPrompt = `Classify the user's message as question, investigate, or task.
 
-question: informational, exploratory, asking how something works, requesting an explanation.
+question: informational, asking how something works, requesting an explanation.
   Examples: "how does the caching work?", "what files handle MCP?", "explain the session lifecycle"
+
+investigate: active exploration, debugging, root-cause analysis, or deep understanding.
+  Examples: "dig into this issue", "figure out why X fails", "look into the test failures", "analyze the performance of Y", "understand the codebase structure and report back"
 
 task: actionable request to build, fix, change, implement, refactor, or modify something.
   Examples: "add a --verbose flag", "fix the nil pointer in worker.go", "implement retry logic"
 
-Ambiguous cases (could be either) default to task:
-  "the caching could be improved" → task
-  "this error handling seems wrong" → task
+Ambiguity rules:
+- question vs investigate → investigate
+- investigate vs task → investigate
+- Mixed intent with a change verb (fix, add, implement, refactor) → task
+  "dig into this and fix it" → task
 
-Respond with ONLY a JSON object: {"intent": "question"} or {"intent": "task"}`
+Respond with ONLY a JSON object: {"intent": "question"}, {"intent": "investigate"}, or {"intent": "task"}`
 
 // maxClassifyPromptLen caps the user prompt sent to the classifier.
 // ~1000 chars keeps us well within the ~200 input token budget.
@@ -229,6 +235,8 @@ func parseIntent(raw string) (Intent, error) {
 	switch Intent(result.Intent) {
 	case IntentQuestion:
 		return IntentQuestion, nil
+	case IntentInvestigate:
+		return IntentInvestigate, nil
 	case IntentTask:
 		return IntentTask, nil
 	case "":

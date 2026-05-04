@@ -42,6 +42,9 @@ type OrchestratorOpts struct {
 	// QAHistoryID, when set, resumes an existing Q&A conversation.
 	QAHistoryID string
 
+	// InvestigateHistoryID, when set, resumes an existing investigation conversation.
+	InvestigateHistoryID string
+
 	// PipelineHint controls whether to run the ideation pipeline.
 	// Values: "ideate" (always ideate), "code" (skip to coding),
 	// "auto" or "" (use complexity gate to decide).
@@ -55,6 +58,9 @@ type OrchestratorResult struct {
 	// QAHistoryID is set when Intent == IntentQuestion.
 	// The caller uses this to resume the Q&A loop on follow-up.
 	QAHistoryID string
+	// InvestigateHistoryID is set when Intent == IntentInvestigate.
+	// The caller uses this to resume the investigation loop on follow-up.
+	InvestigateHistoryID string
 	// CoderHistoryID is set after the SWE pipeline completes.
 	// The caller uses this to resume the coder conversation for follow-ups.
 	CoderHistoryID string
@@ -131,15 +137,29 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 				QAHistoryID: historyID,
 			}, err
 		}
+
+		if intent == IntentInvestigate {
+			historyID, err := o.runInvestigate(ctx, opts)
+			return OrchestratorResult{
+				Intent:               IntentInvestigate,
+				InvestigateHistoryID: historyID,
+			}, err
+		}
 	}
 
-	// Task path: augment prompt with Q&A context if transitioning from questions.
-	if opts.QAHistoryID != "" {
+	// Task path: augment prompt with prior context if transitioning from Q&A or investigation.
+	switch {
+	case opts.InvestigateHistoryID != "":
+		augmented := "Based on our previous investigation, the user now wants to implement: " +
+			opts.InitialPrompt + ". Use the context from the investigation to inform the spec."
+		log.Printf("[orchestrator:%s] investigate→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
+		opts.InitialPrompt = augmented
+		opts.InvestigateHistoryID = ""
+	case opts.QAHistoryID != "":
 		augmented := "Based on our previous discussion, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the conversation to inform the spec."
 		log.Printf("[orchestrator:%s] Q&A→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
 		opts.InitialPrompt = augmented
-		// Clear QAHistoryID so the spec-creator starts a fresh loop.
 		opts.QAHistoryID = ""
 	}
 
@@ -174,6 +194,38 @@ func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string
 		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
 	default:
 		err = l.Resume(ctx, opts.QAHistoryID, opts.InitialPrompt, opts.Emit)
+	}
+
+	return l.HistoryID(), err
+}
+
+// runInvestigate runs the investigation conversation loop. Returns the history ID for resumption.
+func (o *Orchestrator) runInvestigate(ctx context.Context, opts OrchestratorOpts) (string, error) {
+	inv := Investigate()
+	registry := opts.Registry.Filtered(inv.AllowedTools, inv.DisallowedTools)
+	bundle := InjectPhasePrompt(opts.Bundle, inv.Name)
+
+	loopOpts := loop.Options{
+		Provider:     opts.Provider,
+		Tools:        registry,
+		Context:      bundle,
+		CWD:          opts.CWD,
+		SessionStore: opts.SessionStore,
+		SessionID:    opts.SessionID,
+		Model:        opts.Model,
+		MaxTurns:     inv.MaxTurns,
+		AuditLogger:  opts.AuditLogger,
+	}
+
+	l := loop.New(loopOpts)
+
+	// Resume existing investigation or start fresh.
+	var err error
+	switch opts.InvestigateHistoryID {
+	case "":
+		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+	default:
+		err = l.Resume(ctx, opts.InvestigateHistoryID, opts.InitialPrompt, opts.Emit)
 	}
 
 	return l.HistoryID(), err

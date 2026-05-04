@@ -49,6 +49,23 @@ func Coder() Phase {
 	}
 }
 
+// Investigate returns the investigation phase configuration.
+// Full exploration with tool access — no specs, no PRs, no sub-agents.
+func Investigate() Phase {
+	return Phase{
+		Name: "investigate",
+		DisallowedTools: []string{
+			"PRCreate",
+			"Agent", "AgentGet", "AgentList", "AgentStop",
+			"TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+			"QueueImmediate", "QueueOnComplete",
+			"UseMCPTool",
+			"Reflect",
+		},
+		MaxTurns: 200,
+	}
+}
+
 // QA returns the Q&A phase configuration.
 // Read-only exploration — no file mutations, no agents.
 func QA() Phase {

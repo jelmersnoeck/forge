@@ -1035,6 +1035,8 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		switch event.Content {
 		case "question":
 			m.output = append(m.output, dimStyle.Render("  answering question..."))
+		case "investigate":
+			m.output = append(m.output, dimStyle.Render("  investigating..."))
 		}
 		// "task" is silent — the phase_start events provide the display.
 

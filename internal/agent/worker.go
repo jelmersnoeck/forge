@@ -112,6 +112,10 @@ func (w *Worker) Run(ctx context.Context) {
 	var qaHistoryID string
 	qaActive := false
 
+	// Investigation state: same lifecycle as Q&A but different tool set.
+	var investigateHistoryID string
+	investigateActive := false
+
 	var historyID string
 	for {
 		select {
@@ -187,18 +191,25 @@ func (w *Worker) Run(ctx context.Context) {
 		// Decide execution path: orchestrator, single phase, or plain loop.
 		useOrchestrator := !orchestratorDone && w.mode != ""
 		switch {
-		case (useOrchestrator || qaActive) && w.mode == "swe":
-			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID, pipelineHint)
+		case (useOrchestrator || qaActive || investigateActive) && w.mode == "swe":
+			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID, investigateHistoryID, pipelineHint)
 			runErr = err
 
 			switch result.Intent {
 			case phase.IntentQuestion:
 				qaHistoryID = result.QAHistoryID
 				qaActive = true
+				investigateActive = false
 				log.Printf("[agent:%s] state: Q&A active, historyID=%s", w.sessionID, qaHistoryID)
+			case phase.IntentInvestigate:
+				investigateHistoryID = result.InvestigateHistoryID
+				investigateActive = true
+				qaActive = false
+				log.Printf("[agent:%s] state: investigate active, historyID=%s", w.sessionID, investigateHistoryID)
 			default:
 				orchestratorDone = true
 				qaActive = false
+				investigateActive = false
 				if result.CoderHistoryID != "" {
 					historyID = result.CoderHistoryID
 				}
@@ -271,24 +282,26 @@ func (w *Worker) runOrchestrator(
 	model, prompt string,
 	emit func(types.OutboundEvent),
 	qaHistoryID string,
+	investigateHistoryID string,
 	pipelineHint string,
 ) (phase.OrchestratorResult, error) {
 	orch := phase.NewSWEOrchestrator()
 
 	opts := phase.OrchestratorOpts{
-		Provider:      prov,
-		Registry:      registry,
-		Bundle:        bundle,
-		CWD:           w.cwd,
-		SessionStore:  store,
-		SessionID:     w.sessionID,
-		Model:         model,
-		Emit:          emit,
-		AuditLogger:   &StdAuditLogger{},
-		InitialPrompt: prompt,
-		SpecPath:      w.specPath,
-		QAHistoryID:   qaHistoryID,
-		PipelineHint:  pipelineHint,
+		Provider:             prov,
+		Registry:             registry,
+		Bundle:               bundle,
+		CWD:                  w.cwd,
+		SessionStore:         store,
+		SessionID:            w.sessionID,
+		Model:                model,
+		Emit:                 emit,
+		AuditLogger:          &StdAuditLogger{},
+		InitialPrompt:        prompt,
+		SpecPath:             w.specPath,
+		QAHistoryID:          qaHistoryID,
+		InvestigateHistoryID: investigateHistoryID,
+		PipelineHint:         pipelineHint,
 	}
 
 	result, err := orch.Run(ctx, opts)

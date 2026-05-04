@@ -208,6 +208,81 @@ func TestOrchestratorResult_CoderHistoryID_ResumeLoadsHistory(t *testing.T) {
 	r.Greater(counts[1], counts[0], "Resume should load history")
 }
 
+func TestRunInvestigate_ReturnsHistoryID(t *testing.T) {
+	r := require.New(t)
+	prov := &textProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	opts.InitialPrompt = "Dig into why the study group meetings keep getting interrupted"
+	orch := NewSWEOrchestrator()
+
+	historyID, err := orch.runInvestigate(context.Background(), opts)
+	r.NoError(err)
+	r.NotEmpty(historyID, "runInvestigate should return a non-empty historyID")
+	r.Equal(int32(1), prov.calls.Load())
+}
+
+func TestRunInvestigate_Resume(t *testing.T) {
+	r := require.New(t)
+	prov := &trackingProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	opts.InitialPrompt = "Investigate the air conditioning annex conspiracy"
+	orch := NewSWEOrchestrator()
+
+	// First call: start investigation.
+	historyID, err := orch.runInvestigate(context.Background(), opts)
+	r.NoError(err)
+	r.NotEmpty(historyID)
+
+	// Second call: resume with stored historyID.
+	opts.InvestigateHistoryID = historyID
+	newHistoryID, err := orch.runInvestigate(context.Background(), opts)
+	r.NoError(err)
+	r.Equal(historyID, newHistoryID, "Resume should preserve the same historyID")
+
+	// Resume call should have more messages (loaded history).
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Equal(2, len(counts), "expected 2 Chat calls (initial + resume)")
+	r.Greater(counts[1], counts[0], "Resumed investigation should have more messages")
+}
+
+func TestOrchestratorResult_Investigate(t *testing.T) {
+	// When classification returns investigate, the orchestrator should return
+	// IntentInvestigate with a history ID (no SWE pipeline).
+	r := require.New(t)
+
+	// Provider that returns "investigate" for classification, then a text response for the loop.
+	classifyProv := &mockProvider{
+		responses: map[string][]types.ChatDelta{},
+	}
+	// Set up lightweight models to return investigate.
+	for _, m := range types.LightweightModels {
+		classifyProv.responses[m] = []types.ChatDelta{
+			{Type: "text_delta", Text: `{"intent": "investigate"}`},
+		}
+	}
+	// Also handle the main model for the investigation loop.
+	classifyProv.responses["test-model"] = []types.ChatDelta{
+		{Type: "text_delta", Text: "The blanket fort infrastructure shows signs of structural weakness..."},
+		{Type: "usage", Usage: &types.TokenUsage{InputTokens: 100, OutputTokens: 50}},
+		{Type: "message_stop", StopReason: "end_turn"},
+	}
+
+	opts := makeTestOrchestratorOpts(t, classifyProv)
+	opts.InitialPrompt = "Investigate why the blanket fort keeps collapsing"
+
+	orch := NewSWEOrchestrator()
+	result, err := orch.Run(context.Background(), opts)
+	r.NoError(err)
+	r.Equal(IntentInvestigate, result.Intent)
+	r.NotEmpty(result.InvestigateHistoryID, "Should return investigation historyID")
+	r.Empty(result.CoderHistoryID, "Should not have a coder historyID")
+	r.Empty(result.QAHistoryID, "Should not have a QA historyID")
+}
+
 func TestReviewerAlwaysFresh(t *testing.T) {
 	// This test verifies the reviewer doesn't get conversation history.
 	// We can't easily test runReviewerWithDiff without ANTHROPIC_API_KEY,
