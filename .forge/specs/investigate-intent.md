@@ -1,6 +1,6 @@
 ---
 id: investigate-intent
-status: draft
+status: implemented
 ---
 # Add investigation intent to classifier
 
