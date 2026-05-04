@@ -79,8 +79,9 @@ func NewSWEOrchestrator() *Orchestrator {
 // Run executes the SWE pipeline with intent classification.
 //
 // When no spec is provided, it first classifies the user's intent:
-//   - question → runs Q&A loop, returns result with QAHistoryID
-//   - task → runs full SWE pipeline (spec → code → review)
+//   - question    → runs Q&A loop, returns result with QAHistoryID
+//   - investigate → runs investigation loop, returns result with InvestigateHistoryID
+//   - task        → runs full SWE pipeline (spec → code → review)
 //
 // When SpecPath is set, classification is skipped (intent is unambiguously task).
 //
@@ -88,7 +89,8 @@ func NewSWEOrchestrator() *Orchestrator {
 //	    │
 //	    ▼
 //	┌───────────────┐
-//	│  Classify      │──▶ question? → Q&A loop → return
+//	│   Classify     │──▶ question?    → Q&A loop → return
+//	│                │──▶ investigate? → investigate loop → return
 //	└───────┬───────┘
 //	        │ task
 //	        ▼
@@ -169,43 +171,21 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 
 // runQA runs the Q&A conversation loop. Returns the history ID for resumption.
 func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string, error) {
-	qa := QA()
-	registry := opts.Registry.Filtered(qa.AllowedTools, qa.DisallowedTools)
-	bundle := InjectPhasePrompt(opts.Bundle, qa.Name)
-
-	loopOpts := loop.Options{
-		Provider:     opts.Provider,
-		Tools:        registry,
-		Context:      bundle,
-		CWD:          opts.CWD,
-		SessionStore: opts.SessionStore,
-		SessionID:    opts.SessionID,
-		Model:        opts.Model,
-		MaxTurns:     qa.MaxTurns,
-		AuditLogger:  opts.AuditLogger,
-	}
-
-	l := loop.New(loopOpts)
-
-	// Resume existing Q&A conversation or start fresh.
-	var err error
-	switch opts.QAHistoryID {
-	case "":
-		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
-	default:
-		err = l.Resume(ctx, opts.QAHistoryID, opts.InitialPrompt, opts.Emit)
-	}
-
-	return l.HistoryID(), err
+	return o.runConversationPhase(ctx, opts, QA(), opts.QAHistoryID)
 }
 
 // runInvestigate runs the investigation conversation loop. Returns the history ID for resumption.
 func (o *Orchestrator) runInvestigate(ctx context.Context, opts OrchestratorOpts) (string, error) {
-	inv := Investigate()
-	registry := opts.Registry.Filtered(inv.AllowedTools, inv.DisallowedTools)
-	bundle := InjectPhasePrompt(opts.Bundle, inv.Name)
+	return o.runConversationPhase(ctx, opts, Investigate(), opts.InvestigateHistoryID)
+}
 
-	loopOpts := loop.Options{
+// runConversationPhase runs a conversation loop for a given phase config,
+// resuming from historyID if non-empty. Returns the resulting history ID.
+func (o *Orchestrator) runConversationPhase(ctx context.Context, opts OrchestratorOpts, p Phase, historyID string) (string, error) {
+	registry := opts.Registry.Filtered(p.AllowedTools, p.DisallowedTools)
+	bundle := InjectPhasePrompt(opts.Bundle, p.Name)
+
+	l := loop.New(loop.Options{
 		Provider:     opts.Provider,
 		Tools:        registry,
 		Context:      bundle,
@@ -213,19 +193,16 @@ func (o *Orchestrator) runInvestigate(ctx context.Context, opts OrchestratorOpts
 		SessionStore: opts.SessionStore,
 		SessionID:    opts.SessionID,
 		Model:        opts.Model,
-		MaxTurns:     inv.MaxTurns,
+		MaxTurns:     p.MaxTurns,
 		AuditLogger:  opts.AuditLogger,
-	}
+	})
 
-	l := loop.New(loopOpts)
-
-	// Resume existing investigation or start fresh.
 	var err error
-	switch opts.InvestigateHistoryID {
+	switch historyID {
 	case "":
 		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
 	default:
-		err = l.Resume(ctx, opts.InvestigateHistoryID, opts.InitialPrompt, opts.Emit)
+		err = l.Resume(ctx, historyID, opts.InitialPrompt, opts.Emit)
 	}
 
 	return l.HistoryID(), err

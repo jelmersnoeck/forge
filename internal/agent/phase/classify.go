@@ -59,8 +59,8 @@ const maxStripInputLen = 4096
 var _ [maxStripInputLen - 1]struct{}     // fails if <= 0
 var _ [1<<20 - maxStripInputLen]struct{} // fails if > 1 MiB
 
-// ClassifyIntent uses a lightweight LLM call to determine whether the user's
-// prompt is an informational question or an actionable task request.
+// ClassifyIntent uses a lightweight LLM call to classify the user's prompt
+// as question, investigate, or task.
 // Returns (IntentTask, nil) for empty prompts.
 // Returns (IntentTask, err) on classification failure (safe default).
 // Tries each model in types.LightweightModels before giving up.

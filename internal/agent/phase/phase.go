@@ -8,7 +8,7 @@ import (
 
 // Phase configures a conversation loop for a specific purpose.
 type Phase struct {
-	Name            string   // "spec", "code", "review"
+	Name            string   // e.g. "spec", "code", "review", "investigate", "qa"
 	AllowedTools    []string // tools this phase can use (empty = all)
 	DisallowedTools []string // tools this phase cannot use
 	Model           string   // model override (empty = default)

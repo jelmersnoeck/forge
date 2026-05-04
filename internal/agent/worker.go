@@ -200,11 +200,13 @@ func (w *Worker) Run(ctx context.Context) {
 				qaHistoryID = result.QAHistoryID
 				qaActive = true
 				investigateActive = false
+				investigateHistoryID = ""
 				log.Printf("[agent:%s] state: Q&A active, historyID=%s", w.sessionID, qaHistoryID)
 			case phase.IntentInvestigate:
 				investigateHistoryID = result.InvestigateHistoryID
 				investigateActive = true
 				qaActive = false
+				qaHistoryID = ""
 				log.Printf("[agent:%s] state: investigate active, historyID=%s", w.sessionID, investigateHistoryID)
 			default:
 				orchestratorDone = true
