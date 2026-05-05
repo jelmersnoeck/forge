@@ -412,7 +412,16 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 		o.emitPhaseComplete(opts, "code", "fixes applied")
 	}
 
-	// Review → Fix loop complete.
+	// Review → Fix loop complete. Squash branch commits before PR creation.
+	squashResult := tools.SquashBranchCommits(ctx, opts.CWD)
+	if squashResult.Squashed {
+		o.emitPhaseEvent(opts, "squash",
+			fmt.Sprintf("squashed %d commits into 1", squashResult.CommitCount))
+	}
+	if squashResult.Error != nil {
+		log.Printf("[orchestrator:%s] squash warning: %v", opts.SessionID, squashResult.Error)
+	}
+
 	result.CoderHistoryID = coderHistoryID
 	return result, nil
 }
@@ -745,6 +754,16 @@ func (o *Orchestrator) emitPhaseHandoff(opts OrchestratorOpts, from, to string) 
 		SessionID: opts.SessionID,
 		Type:      "phase_handoff",
 		Content:   fmt.Sprintf("%s → %s", from, to),
+		Timestamp: time.Now().Unix(),
+	})
+}
+
+func (o *Orchestrator) emitPhaseEvent(opts OrchestratorOpts, eventType, content string) {
+	opts.Emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: opts.SessionID,
+		Type:      "phase_event",
+		Content:   fmt.Sprintf("%s: %s", eventType, content),
 		Timestamp: time.Now().Unix(),
 	})
 }
