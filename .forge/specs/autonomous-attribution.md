@@ -1,6 +1,6 @@
 ---
 id: autonomous-attribution
-status: draft
+status: implemented
 ---
 # Autonomous-agent attribution on commits and PRs
 
@@ -18,14 +18,18 @@ The principle: Forge does not own work. It acts on behalf of a user, and
 attribution must reflect that. The user is responsible for what lands.
 
 ## Context
-- `internal/runtime/session/` — session lifecycle, knows the session id and
-  any inherited "initiator" identity (human who started the session)
-- `internal/agent/phase/` — orchestrator phases that call git commit and PR
-  creation. Coder phase produces commits; finalize phase produces the PR.
-- `internal/runtime/context/` — where `AGENTS.md` is loaded; user/project
-  context lives here
-- `cmd/forge/config.go` (or wherever `forge config` is wired) — adds the new
-  config fields
+- `internal/attribution/` — new package with hook install/remove, env var
+  helpers, PR body attribution prefix, and types (CommitConfig, AttributionConfig, PRConfig)
+- `internal/config/user_config.go` — extended with CommitUserConfig,
+  PRUserConfig, AttributionEnabled types; new validKeys for all attribution
+  config fields; coAuthor validation
+- `internal/agent/worker.go` — setupAttribution/teardownAttribution lifecycle;
+  buildPRAttribution for PR creation
+- `internal/agent/phase/pr.go` — PRAttributionOpts threaded through EnsurePR
+  → createNewPR; attribution.PrependAttribution called before ghCreatePR
+- `internal/tools/bash.go` — SetBashExtraEnv + injection into cmd.Env
+- `internal/attribution/attribution_test.go` — tests for all attribution functions
+- `internal/config/user_config_test.go` — tests for new config keys
 - Existing config persistence: `~/.forge/config.toml` (per `forge config set`)
 
 ## Behavior
@@ -110,13 +114,9 @@ email if no match).
 - The hook must not break commits when run in a worktree without Forge
   context — guard it on the presence of the `FORGE_SESSION_ID` env var (or
   similar) that Forge sets when shelling out.
-- The co-author identity is fixed per-instance (Forge itself). It is NOT
-  derived from the human running the session. The human IS the author —
-  no trailer needed for them.
-- Don't override `user.name` / `user.email` or pass `--author=`. The author
-  must remain whatever the user's git environment says it is. Future work
-  (Keycard impersonation) will set `GIT_AUTHOR_*` env vars per session;
-  Forge already honors those because git does.
+- Don't write `commit.coAuthor` automatically — leave it as an explicit
+  opt-in via `forge config set`. (Future: read from session-initiator
+  metadata when the gateway propagates it; out of scope here.)
 - Don't touch the `Signed-off-by` trailer or DCO behavior.
 - Don't sign commits — signing is controlled by the user's git config, not
   by Forge.
@@ -124,45 +124,60 @@ email if no match).
 ## Interfaces
 
 ```go
-// internal/runtime/config/config.go (or wherever the typed config lives)
+// internal/attribution/attribution.go
 type CommitConfig struct {
-    Attribution CommitAttributionConfig
+    CoAuthor    string            // "Name <email>"
+    Attribution AttributionConfig
 }
 
-type CommitAttributionConfig struct {
-    Enabled     bool   // default true
-    CoAuthor    string // default "Forge <forge@noreply.invalid>"
+type AttributionConfig struct {
+    Enabled     bool   // default true — master switch for all trailers
     GeneratedBy string // default "forge"
 }
 
 type PRConfig struct {
-    Attribution PRAttributionConfig
+    Attribution AttributionConfig
 }
 
-type PRAttributionConfig struct {
-    Enabled bool // default true
-}
-```
-
-```go
-// internal/runtime/session/hooks.go (new file, or appropriate spot)
-// InstallCommitHook writes a prepare-commit-msg hook into the worktree's
-// .git/hooks dir. The hook reads FORGE_SESSION_ID, FORGE_COAUTHOR, and
-// FORGE_GENERATED_BY env vars and appends trailers to the commit message.
 func InstallCommitHook(worktreeDir string) error
-
-// EnvForCommit returns the env vars to inject when spawning the agent's
-// shell tool so the hook picks them up. Does NOT set GIT_AUTHOR_* —
-// the author identity is owned by the user's git environment, not Forge.
+func RemoveCommitHook(worktreeDir string) error
 func EnvForCommit(sessionID string, cfg CommitConfig) []string
+func PrependAttribution(body, sessionID, coAuthor string, enabled bool) string
 ```
 
 ```go
-// internal/agent/phase/finalize.go (existing deterministic PR step)
-// Modify the PR-body assembly path to prepend the attribution block when
-// pr.attribution.enabled is true. authorLogin is the GitHub login for the
-// commit author (best-effort; empty string → fall back to author email).
-func prependAttribution(body, sessionID, coAuthor, authorLogin, authorEmail string, enabled bool) string
+// internal/config/user_config.go
+type CommitUserConfig struct {
+    CoAuthor    string             `toml:"co_author"`
+    Attribution AttributionEnabled `toml:"attribution"`
+}
+
+type PRUserConfig struct {
+    Attribution AttributionEnabled `toml:"attribution"`
+}
+
+type AttributionEnabled struct {
+    Enabled     *bool  `toml:"enabled"`      // nil = default (true)
+    GeneratedBy string `toml:"generated_by"` // default "forge"
+}
+
+func (a AttributionEnabled) IsEnabled() bool // returns true if nil
+```
+
+```go
+// internal/agent/phase/pr.go
+type PRAttributionOpts struct {
+    SessionID string
+    CoAuthor  string
+    Enabled   bool
+}
+
+func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string, attr PRAttributionOpts) PRResult
+```
+
+```go
+// internal/tools/bash.go
+func SetBashExtraEnv(envs []string)
 ```
 
 ## Edge Cases
@@ -173,38 +188,36 @@ func prependAttribution(body, sessionID, coAuthor, authorLogin, authorEmail stri
 - **Commit made outside the agent's shell** (rare — e.g. a tool that uses
   go-git directly): trailers won't be added. Document this; out of scope to
   fix.
-- **`commit.attribution.coAuthor` malformed** (not "Name <email>" shape):
-  config set validates and rejects with a clear error.
+- **`commit.coAuthor` malformed** (not "Name <email>" shape): config set
+  validates and rejects with a clear error.
 - **Session id not yet available** (very early in session boot before id is
   assigned): hook is installed *after* the id is known, so this shouldn't
   arise. Defensive: if `FORGE_SESSION_ID` is empty when the hook runs, skip
-  the `Generated-by` line silently.
+  all trailers silently.
 - **Long commits / interactive rebase**: trailers go through
   `git interpret-trailers`, which handles all of these correctly.
 - **`commit.attribution.enabled = false`**: neither trailer is added. The
-  master switch gates both. If a user wants the co-author but not the
-  session-tracking trailer, they can set `commit.attribution.generatedBy=""`
-  to suppress only the `Generated-by` line.
+  master switch gates both. If a user wants only some trailers, they set
+  config values accordingly (e.g. empty `generatedBy` suppresses that line).
 
 ## Tests
-- `commit_hook_test.go`: golden tests on the hook script — given a commit
-  message, env vars set, output matches expected.
-- `prepend_attribution_test.go`: pure function, covers enabled/disabled,
-  with/without coauthor.
-- `config_test.go`: validate that
-  `forge config set commit.attribution.coAuthor "Foo"` (missing email)
-  returns an error.
-- Integration test (existing harness if any): run a finalize phase against a
-  scratch repo, assert the resulting commit (a) has author = the configured
-  git user (not Forge) and (b) carries `Co-authored-by: Forge ...` +
-  `Generated-by: forge session=...` trailers.
+- `internal/attribution/attribution_test.go`: tests for PrependAttribution
+  (enabled/disabled, with/without coauthor, empty body), InstallCommitHook
+  (fresh install, backup existing, backup collision error),
+  RemoveCommitHook (clean remove, restore backup), EnvForCommit (all set,
+  disabled, no coauthor), and two integration tests that create a real git
+  repo, install the hook, make a commit, and verify trailers are present
+  (or absent when env vars are empty).
+- `internal/config/user_config_test.go`: tests for commit.coAuthor
+  validation (valid, missing email, empty name), boolean fields
+  (commit.attribution.enabled, pr.attribution.enabled), generatedBy,
+  and attribution defaults (nil = true).
 
 ## Out of Scope
-- Per-session impersonation of the human initiator (setting `GIT_AUTHOR_*`
-  from gateway/session metadata). Today, the worktree's git config / env is
-  the source of truth for the author. When the Discord↔Forge bridge and
-  Keycard impersonation land, they'll inject `GIT_AUTHOR_NAME` /
-  `GIT_AUTHOR_EMAIL` per session — Forge needs no change to honor them.
-- Cryptographic signing — already handled by the user's git config
-  (`gpg.format = ssh`, etc.); Forge stays out of the way.
+- Reading the human initiator's identity from gateway/session metadata —
+  the bridge (Discord ↔ Forge) doesn't exist yet. When it does, it'll set
+  `commit.coAuthor` per session via a config-override mechanism (separate
+  spec).
+- Cryptographic signing — already handled by user's git config (`gpg.format
+  = ssh`, etc.); Forge stays out of the way.
 - A `Reviewed-by` trailer for the review phase — possible future addition.
