@@ -31,6 +31,15 @@ const (
 	bashWaitDelay = 5 * time.Second
 )
 
+// bashExtraEnv holds additional env vars injected by the worker (e.g., FORGE_SESSION_ID).
+var bashExtraEnv []string
+
+// SetBashExtraEnv configures additional environment variables for the bash tool.
+// Called during worker setup to inject attribution env vars (FORGE_SESSION_ID, etc.).
+func SetBashExtraEnv(envs []string) {
+	bashExtraEnv = envs
+}
+
 // interactiveCommands maps command names to their non-interactive alternatives or flags
 var interactiveCommands = map[string]string{
 	"vim":     "Use 'cat' to read or 'echo \"content\" > file' to write. For editing, use the Edit tool.",
@@ -128,6 +137,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		"EDITOR=true",
 		"VISUAL=true",
 	)
+	cmd.Env = append(cmd.Env, bashExtraEnv...)
 
 	// Pipe stdout/stderr so we can stream output and detect idle.
 	outReader, outWriter := io.Pipe()

@@ -194,4 +194,122 @@ func TestValidKeys(t *testing.T) {
 	keys := ValidKeys()
 	r.Contains(keys, "provider.default")
 	r.NotEmpty(keys["provider.default"])
+	r.Contains(keys, "commit.coAuthor")
+	r.Contains(keys, "commit.attribution.enabled")
+	r.Contains(keys, "commit.attribution.generatedBy")
+	r.Contains(keys, "pr.attribution.enabled")
+}
+
+func TestSetValue_commitCoAuthor(t *testing.T) {
+	tests := map[string]struct {
+		value   string
+		wantErr string
+	}{
+		"valid": {
+			value: "Troy Barnes <troy@greendale.edu>",
+		},
+		"missing email": {
+			value:   "Foo",
+			wantErr: "invalid co-author",
+		},
+		"empty name": {
+			value:   "<troy@greendale.edu>",
+			wantErr: "name part is empty",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			path := filepath.Join(t.TempDir(), "config.toml")
+
+			err := setValueAt(path, "commit.coAuthor", tc.value)
+			if tc.wantErr != "" {
+				r.Error(err)
+				r.Contains(err.Error(), tc.wantErr)
+				return
+			}
+
+			r.NoError(err)
+
+			got, err := getValueAt(path, "commit.coAuthor")
+			r.NoError(err)
+			r.Equal(tc.value, got)
+		})
+	}
+}
+
+func TestSetValue_commitAttributionEnabled(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	r.NoError(setValueAt(path, "commit.attribution.enabled", "false"))
+
+	got, err := getValueAt(path, "commit.attribution.enabled")
+	r.NoError(err)
+	r.Equal("false", got)
+}
+
+func TestSetValue_commitAttributionEnabled_invalidBool(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	err := setValueAt(path, "commit.attribution.enabled", "yes")
+	r.Error(err)
+	r.Contains(err.Error(), "must be")
+}
+
+func TestSetValue_commitAttributionGeneratedBy(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	r.NoError(setValueAt(path, "commit.attribution.generatedBy", "myforge"))
+
+	got, err := getValueAt(path, "commit.attribution.generatedBy")
+	r.NoError(err)
+	r.Equal("myforge", got)
+}
+
+func TestSetValue_prAttributionEnabled(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	r.NoError(setValueAt(path, "pr.attribution.enabled", "true"))
+
+	got, err := getValueAt(path, "pr.attribution.enabled")
+	r.NoError(err)
+	r.Equal("true", got)
+}
+
+func TestLoadUserConfig_attributionDefaults(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	cfg, err := loadUserConfigFrom(path)
+	r.NoError(err)
+
+	// Nil pointers mean "use default" (true)
+	r.Nil(cfg.Commit.Attribution.Enabled)
+	r.Nil(cfg.PR.Attribution.Enabled)
+	r.True(cfg.Commit.Attribution.IsEnabled())
+	r.True(cfg.PR.Attribution.IsEnabled())
+}
+
+func TestLoadUserConfig_attributionExplicitlyDisabled(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	content := `[commit.attribution]
+enabled = false
+
+[pr.attribution]
+enabled = false
+`
+	r.NoError(os.WriteFile(path, []byte(content), 0o644))
+
+	cfg, err := loadUserConfigFrom(path)
+	r.NoError(err)
+
+	r.False(cfg.Commit.Attribution.IsEnabled())
+	r.False(cfg.PR.Attribution.IsEnabled())
 }

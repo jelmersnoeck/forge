@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
+	"github.com/jelmersnoeck/forge/internal/attribution"
 	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/mcp"
 	"github.com/jelmersnoeck/forge/internal/review"
@@ -63,6 +64,11 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 	}
 	store := session.NewStore(w.sessionsDir)
+
+	// Set up commit attribution: install prepare-commit-msg hook and inject
+	// env vars into the bash tool so the hook can add trailers transparently.
+	w.setupAttribution()
+	defer w.teardownAttribution()
 
 	// Set up task manager with agent runner for sub-agent execution.
 	mgr := task.NewManager()
@@ -475,7 +481,10 @@ func (w *Worker) ensurePR(ctx context.Context, prov types.LLMProvider, specPath 
 	prCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	result := phase.EnsurePR(prCtx, prov, w.cwd, specPath)
+	// Build attribution opts from user config.
+	attr := w.buildPRAttribution()
+
+	result := phase.EnsurePR(prCtx, prov, w.cwd, specPath, attr)
 	if result.Error != nil {
 		log.Printf("[agent:%s] ensurePR: %v", w.sessionID, result.Error)
 		return
@@ -805,5 +814,72 @@ func (w *Worker) connectMCPServers(ctx context.Context, store *mcp.Store) {
 		}
 
 		log.Printf("[agent:%s] MCP server %q connected (lazy tools)", w.sessionID, name)
+	}
+}
+
+// setupAttribution loads user config and installs the prepare-commit-msg hook
+// + bash env vars for commit attribution trailers.
+func (w *Worker) setupAttribution() {
+	userCfg, err := config.LoadUserConfig()
+	if err != nil {
+		log.Printf("[agent:%s] attribution: failed to load user config: %v", w.sessionID, err)
+		return
+	}
+
+	// Build the attribution config from user config.
+	commitCfg := attribution.CommitConfig{
+		CoAuthor: userCfg.Commit.CoAuthor,
+		Attribution: attribution.AttributionConfig{
+			Enabled:     userCfg.Commit.Attribution.IsEnabled(),
+			GeneratedBy: userCfg.Commit.Attribution.GeneratedBy,
+		},
+	}
+
+	// Default GeneratedBy to "forge".
+	if commitCfg.Attribution.GeneratedBy == "" {
+		commitCfg.Attribution.GeneratedBy = "forge"
+	}
+
+	if !commitCfg.Attribution.Enabled {
+		log.Printf("[agent:%s] attribution: disabled by config", w.sessionID)
+		return
+	}
+
+	// Install the prepare-commit-msg hook.
+	if err := attribution.InstallCommitHook(w.cwd); err != nil {
+		log.Printf("[agent:%s] attribution: failed to install commit hook: %v", w.sessionID, err)
+		// Non-fatal — env vars still work for deterministic git calls.
+	}
+
+	// Inject env vars into the bash tool.
+	envs := attribution.EnvForCommit(w.sessionID, commitCfg)
+	tools.SetBashExtraEnv(envs)
+
+	log.Printf("[agent:%s] attribution: hook installed, %d env vars configured", w.sessionID, len(envs))
+}
+
+// teardownAttribution removes the Forge commit hook and clears bash env vars.
+func (w *Worker) teardownAttribution() {
+	if err := attribution.RemoveCommitHook(w.cwd); err != nil {
+		log.Printf("[agent:%s] attribution: failed to remove commit hook: %v", w.sessionID, err)
+	}
+	tools.SetBashExtraEnv(nil)
+}
+
+// buildPRAttribution loads user config and returns PR attribution options.
+func (w *Worker) buildPRAttribution() phase.PRAttributionOpts {
+	userCfg, err := config.LoadUserConfig()
+	if err != nil {
+		log.Printf("[agent:%s] ensurePR: failed to load user config: %v", w.sessionID, err)
+		// Default to enabled (spec says default is true).
+		return phase.PRAttributionOpts{
+			SessionID: w.sessionID,
+			Enabled:   true,
+		}
+	}
+	return phase.PRAttributionOpts{
+		SessionID: w.sessionID,
+		CoAuthor:  userCfg.Commit.CoAuthor,
+		Enabled:   userCfg.PR.Attribution.IsEnabled(),
 	}
 }
