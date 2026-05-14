@@ -6,11 +6,16 @@ status: draft
 
 ## Description
 Make it obvious — both to humans reading commits/PRs and to downstream tooling
-— that work produced inside a Forge session was authored by an autonomous
-agent acting on a human's behalf. Mirrors the established pattern of
-`Co-authored-by: Claude <noreply@anthropic.com>` that Claude Code uses, plus
-adds a Forge-specific `Generated-by` trailer that ties the commit to the
-session that produced it.
+— that work produced inside a Forge session was authored by a human and
+co-authored by Forge acting on that human's behalf. The human stays the
+**author** (their git identity, their `user.email`, their GitHub avatar on
+the commit); Forge is the **co-author** — same shape Claude Code uses with
+`Co-authored-by: Claude <noreply@anthropic.com>`. A Forge-specific
+`Generated-by` trailer additionally ties the commit back to the session that
+produced it.
+
+The principle: Forge does not own work. It acts on behalf of a user, and
+attribution must reflect that. The user is responsible for what lands.
 
 ## Context
 - `internal/runtime/session/` — session lifecycle, knows the session id and
@@ -25,18 +30,29 @@ session that produced it.
 
 ## Behavior
 
+### Author vs co-author — the model
+- **Author** = the human on whose behalf the session is running. Comes from
+  the git environment Forge inherits (`user.name` / `user.email`, or
+  `GIT_AUTHOR_*` env vars when the gateway/bridge injects them). Forge does
+  NOT override this.
+- **Co-author** = Forge itself, as a fixed identity. Appended as a trailer
+  to every commit so it's visible in `git log` and renders on GitHub.
+- The session-initiator (the human) needs no special trailer — they are
+  already the commit author.
+
 ### New config fields
 Persistent config (settable via `forge config set <key> <value>`):
 
-- `commit.coAuthor` — optional. String of shape `"Name <email>"`. When set,
-  every commit created in a Forge session has a trailer appended:
-  `Co-authored-by: <value>`. Intended for: the human who initiated the session
-  ("co-author" from the agent's perspective).
 - `commit.attribution.enabled` — bool, default `true`. Master switch. When
   `false`, no autonomous-attribution trailers are added regardless of other
   settings.
-- `commit.attribution.generatedBy` — optional string, default `"forge"`.
-  When `commit.attribution.enabled` is true, a trailer is appended:
+- `commit.attribution.coAuthor` — string, default
+  `"Forge <forge@noreply.invalid>"`. The fixed Forge identity appended as
+  `Co-authored-by: <value>` on every commit. Operators can override to brand
+  a self-hosted Forge instance (e.g. `"Forge (acme) <forge@acme.example>"`)
+  but the default is a single canonical value, NOT a user-specific one.
+- `commit.attribution.generatedBy` — string, default `"forge"`. When
+  attribution is enabled, a trailer is appended:
   `Generated-by: <generatedBy> session=<session-id>`.
 - `pr.attribution.enabled` — bool, default `true`. When true, the PR body
   produced by the deterministic PR-creation step is prefixed with an
@@ -46,13 +62,15 @@ Persistent config (settable via `forge config set <key> <value>`):
 - Trailers are appended to the commit message via git's standard trailer
   mechanism (`git interpret-trailers --in-place`) so they survive amend and
   squash.
+- The commit **author** is left alone — it comes from the user's git
+  config / `GIT_AUTHOR_*` env. Forge never writes `--author=...`.
 - Trailers are added at the END of the message, in this order:
-  1. `Co-authored-by: <commit.coAuthor>` (if set)
+  1. `Co-authored-by: <commit.attribution.coAuthor>`
   2. `Generated-by: <commit.attribution.generatedBy> session=<session-id>`
-     (if `commit.attribution.enabled` is true)
+- Both trailers are gated by `commit.attribution.enabled`. When the master
+  switch is off, neither is added.
 - If a trailer of the same key+value would be added twice (e.g. amending an
   existing Forge commit), git's trailer logic dedupes — leave it to git.
-- Trailers MUST NOT be added when `commit.attribution.enabled` is false.
 - The session id used is the current Forge session id (already tracked in
   the runtime). It is a stable id for the lifetime of the session.
 
@@ -61,16 +79,18 @@ When `pr.attribution.enabled` is true, the deterministic PR-creation step
 prepends this block to the body it would otherwise produce:
 
 ```
-> 🤖 This PR was opened by an autonomous Forge session.
+> 🤖 This PR was opened by a Forge session acting on behalf of @<author>.
 > Session: `<session-id>`
-> Co-authored by: <commit.coAuthor> *(if set)*
+> Co-authored by: <commit.attribution.coAuthor>
 
 ---
 
 <original PR body>
 ```
 
-If `commit.coAuthor` is not set, omit that line (still emit the block).
+`@<author>` is resolved from the GitHub login associated with the commit
+author email (best-effort via `gh api /search/users`; fall back to the bare
+email if no match).
 
 ### Where it plugs in
 - **Commit creation** is currently driven by the agent calling the Bash tool
@@ -90,9 +110,13 @@ If `commit.coAuthor` is not set, omit that line (still emit the block).
 - The hook must not break commits when run in a worktree without Forge
   context — guard it on the presence of the `FORGE_SESSION_ID` env var (or
   similar) that Forge sets when shelling out.
-- Don't write `commit.coAuthor` automatically — leave it as an explicit
-  opt-in via `forge config set`. (Future: read from session-initiator
-  metadata when the gateway propagates it; out of scope here.)
+- The co-author identity is fixed per-instance (Forge itself). It is NOT
+  derived from the human running the session. The human IS the author —
+  no trailer needed for them.
+- Don't override `user.name` / `user.email` or pass `--author=`. The author
+  must remain whatever the user's git environment says it is. Future work
+  (Keycard impersonation) will set `GIT_AUTHOR_*` env vars per session;
+  Forge already honors those because git does.
 - Don't touch the `Signed-off-by` trailer or DCO behavior.
 - Don't sign commits — signing is controlled by the user's git config, not
   by Forge.
@@ -102,17 +126,21 @@ If `commit.coAuthor` is not set, omit that line (still emit the block).
 ```go
 // internal/runtime/config/config.go (or wherever the typed config lives)
 type CommitConfig struct {
-    CoAuthor      string             // "Name <email>"
-    Attribution   AttributionConfig
+    Attribution CommitAttributionConfig
 }
 
-type AttributionConfig struct {
-    Enabled      bool   // default true
-    GeneratedBy  string // default "forge"
+type CommitAttributionConfig struct {
+    Enabled     bool   // default true
+    CoAuthor    string // default "Forge <forge@noreply.invalid>"
+    GeneratedBy string // default "forge"
 }
 
 type PRConfig struct {
-    Attribution AttributionConfig
+    Attribution PRAttributionConfig
+}
+
+type PRAttributionConfig struct {
+    Enabled bool // default true
 }
 ```
 
@@ -124,15 +152,17 @@ type PRConfig struct {
 func InstallCommitHook(worktreeDir string) error
 
 // EnvForCommit returns the env vars to inject when spawning the agent's
-// shell tool so the hook picks them up.
+// shell tool so the hook picks them up. Does NOT set GIT_AUTHOR_* —
+// the author identity is owned by the user's git environment, not Forge.
 func EnvForCommit(sessionID string, cfg CommitConfig) []string
 ```
 
 ```go
 // internal/agent/phase/finalize.go (existing deterministic PR step)
 // Modify the PR-body assembly path to prepend the attribution block when
-// pr.attribution.enabled is true.
-func prependAttribution(body string, sessionID string, coAuthor string, enabled bool) string
+// pr.attribution.enabled is true. authorLogin is the GitHub login for the
+// commit author (best-effort; empty string → fall back to author email).
+func prependAttribution(body, sessionID, coAuthor, authorLogin, authorEmail string, enabled bool) string
 ```
 
 ## Edge Cases
@@ -143,40 +173,38 @@ func prependAttribution(body string, sessionID string, coAuthor string, enabled 
 - **Commit made outside the agent's shell** (rare — e.g. a tool that uses
   go-git directly): trailers won't be added. Document this; out of scope to
   fix.
-- **`commit.coAuthor` malformed** (not "Name <email>" shape): config set
-  validates and rejects with a clear error.
+- **`commit.attribution.coAuthor` malformed** (not "Name <email>" shape):
+  config set validates and rejects with a clear error.
 - **Session id not yet available** (very early in session boot before id is
   assigned): hook is installed *after* the id is known, so this shouldn't
   arise. Defensive: if `FORGE_SESSION_ID` is empty when the hook runs, skip
   the `Generated-by` line silently.
 - **Long commits / interactive rebase**: trailers go through
   `git interpret-trailers`, which handles all of these correctly.
-- **`commit.attribution.enabled = false`** but a coauthor is set: still
-  honor `commit.coAuthor` (master switch only gates the `Generated-by`
-  trailer, not the coauthor — coauthor is independent and may be desired
-  separately).
-
-  *Note: re-reading the Behavior section above — both trailers are gated by
-  `commit.attribution.enabled` there. Resolve in implementation: master
-  switch gates BOTH. If user wants only coauthor, they unset `generatedBy`
-  to disable just that line. Keep the master switch simple.*
+- **`commit.attribution.enabled = false`**: neither trailer is added. The
+  master switch gates both. If a user wants the co-author but not the
+  session-tracking trailer, they can set `commit.attribution.generatedBy=""`
+  to suppress only the `Generated-by` line.
 
 ## Tests
 - `commit_hook_test.go`: golden tests on the hook script — given a commit
   message, env vars set, output matches expected.
 - `prepend_attribution_test.go`: pure function, covers enabled/disabled,
   with/without coauthor.
-- `config_test.go`: validate that `forge config set commit.coAuthor "Foo"`
-  (missing email) returns an error.
+- `config_test.go`: validate that
+  `forge config set commit.attribution.coAuthor "Foo"` (missing email)
+  returns an error.
 - Integration test (existing harness if any): run a finalize phase against a
-  scratch repo with `commit.coAuthor` set, assert the resulting commit has
-  the right trailers.
+  scratch repo, assert the resulting commit (a) has author = the configured
+  git user (not Forge) and (b) carries `Co-authored-by: Forge ...` +
+  `Generated-by: forge session=...` trailers.
 
 ## Out of Scope
-- Reading the human initiator's identity from gateway/session metadata —
-  the bridge (Discord ↔ Forge) doesn't exist yet. When it does, it'll set
-  `commit.coAuthor` per session via a config-override mechanism (separate
-  spec).
-- Cryptographic signing — already handled by user's git config (`gpg.format
-  = ssh`, etc.); Forge stays out of the way.
+- Per-session impersonation of the human initiator (setting `GIT_AUTHOR_*`
+  from gateway/session metadata). Today, the worktree's git config / env is
+  the source of truth for the author. When the Discord↔Forge bridge and
+  Keycard impersonation land, they'll inject `GIT_AUTHOR_NAME` /
+  `GIT_AUTHOR_EMAIL` per session — Forge needs no change to honor them.
+- Cryptographic signing — already handled by the user's git config
+  (`gpg.format = ssh`, etc.); Forge stays out of the way.
 - A `Reviewed-by` trailer for the review phase — possible future addition.
