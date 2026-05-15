@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jelmersnoeck/forge/internal/attribution"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -24,6 +25,13 @@ type PRResult struct {
 	Body            string              // generated description
 	Error           error               // nil on success
 	OperationErrors []*PROperationError // non-fatal operation failures during ensure
+}
+
+// PRAttributionOpts configures attribution for PR creation.
+type PRAttributionOpts struct {
+	SessionID string // Forge session ID
+	CoAuthor  string // "Name <email>" or ""
+	Enabled   bool   // whether to prepend attribution block
 }
 
 // prGenerationTimeout is the per-attempt timeout for title/body generation.
@@ -51,11 +59,11 @@ const maxDiffLen = 8000
 //
 // Deprecated: Use EnsurePR instead, which handles both creation and update.
 func CreatePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
-	return createNewPR(ctx, prov, cwd, specPath)
+	return createNewPR(ctx, prov, cwd, specPath, PRAttributionOpts{})
 }
 
 // createNewPR is the internal implementation for creating a new PR.
-func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
+func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath string, attr PRAttributionOpts) PRResult {
 	// Check preconditions.
 	ok, reason := shouldCreatePR(cwd)
 	if !ok {
@@ -120,6 +128,9 @@ func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath stri
 		log.Printf("[pr] generated description invalid (%v), using fallback", err)
 		_, body = fallbackPRContent(branch, commitLog, diffStat, specContent)
 	}
+
+	// Prepend attribution block to the PR body.
+	body = attribution.PrependAttribution(body, attr.SessionID, attr.CoAuthor, attr.Enabled)
 
 	// Create the PR via gh.
 	prURL, err := ghCreatePR(ctx, cwd, title, body, "")
@@ -435,7 +446,7 @@ func truncateForLog(s string, maxLen int) string {
 //	   │         │
 //	   ▼         ▼
 //	 PRResult  PRResult{URL: existing}
-func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string) PRResult {
+func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string, attr PRAttributionOpts) PRResult {
 	// Bail if context is already cancelled.
 	if ctx.Err() != nil {
 		return PRResult{Error: fmt.Errorf("skipped: %w", ctx.Err())}
@@ -453,7 +464,7 @@ func EnsurePR(ctx context.Context, prov types.LLMProvider, cwd, specPath string)
 	switch existing {
 	case "":
 		// No existing PR — create one via the full workflow.
-		return createNewPR(ctx, prov, cwd, specPath)
+		return createNewPR(ctx, prov, cwd, specPath, attr)
 
 	default:
 		// PR exists — push any new commits and return existing URL.
