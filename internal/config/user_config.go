@@ -22,9 +22,12 @@ type UserConfig struct {
 }
 
 // CommitUserConfig holds commit attribution settings.
+// Note: CoAuthor is nested under Attribution (not at top-level) to group all
+// attribution-related settings together in the TOML file under
+// [commit.attribution]. This differs from the attribution package's flat
+// CommitConfig which separates CoAuthor for API convenience.
 type CommitUserConfig struct {
-	CoAuthor    string              `toml:"co_author"`
-	Attribution AttributionEnabled  `toml:"attribution"`
+	Attribution CommitAttributionConfig `toml:"attribution"`
 }
 
 // PRUserConfig holds PR attribution settings.
@@ -36,6 +39,21 @@ type PRUserConfig struct {
 type AttributionEnabled struct {
 	Enabled     *bool  `toml:"enabled"`      // nil = default (true)
 	GeneratedBy string `toml:"generated_by"` // default "forge"
+}
+
+// CommitAttributionConfig extends AttributionEnabled with a CoAuthor field for commits.
+type CommitAttributionConfig struct {
+	Enabled     *bool  `toml:"enabled"`      // nil = default (true)
+	CoAuthor    string `toml:"co_author"`    // default "Forge <forge@noreply.invalid>"
+	GeneratedBy string `toml:"generated_by"` // default "forge"
+}
+
+// IsEnabled returns whether attribution is enabled, defaulting to true.
+func (a CommitAttributionConfig) IsEnabled() bool {
+	if a.Enabled == nil {
+		return true
+	}
+	return *a.Enabled
 }
 
 // IsEnabled returns whether attribution is enabled, defaulting to true.
@@ -56,11 +74,11 @@ var validProviders = []string{"anthropic", "claude-cli", "openai"}
 
 // validKeys maps dotted config keys to descriptions.
 var validKeys = map[string]string{
-	"provider.default":                "default LLM provider (anthropic, claude-cli, openai)",
-	"commit.coAuthor":                 "co-author trailer value (\"Name <email>\")",
-	"commit.attribution.enabled":      "enable commit attribution trailers (true/false, default: true)",
-	"commit.attribution.generatedBy":  "Generated-by prefix (default: forge)",
-	"pr.attribution.enabled":          "enable PR attribution block (true/false, default: true)",
+	"provider.default":               "default LLM provider (anthropic, claude-cli, openai)",
+	"commit.attribution.coAuthor":    "co-author trailer value (\"Name <email>\"), default: Forge <forge@noreply.invalid>",
+	"commit.attribution.enabled":     "enable commit attribution trailers (true/false, default: true)",
+	"commit.attribution.generatedBy": "Generated-by prefix (default: forge)",
+	"pr.attribution.enabled":         "enable PR attribution block (true/false, default: true)",
 }
 
 // ValidKeys returns the known configuration keys with descriptions.
@@ -163,8 +181,8 @@ func setValueAt(path, key, value string) error {
 	switch key {
 	case "provider.default":
 		cfg.Provider.Default = value
-	case "commit.coAuthor":
-		cfg.Commit.CoAuthor = value
+	case "commit.attribution.coAuthor":
+		cfg.Commit.Attribution.CoAuthor = value
 	case "commit.attribution.enabled":
 		b := value == "true"
 		cfg.Commit.Attribution.Enabled = &b
@@ -202,8 +220,8 @@ func getValueAt(path, key string) (string, error) {
 	switch key {
 	case "provider.default":
 		return cfg.Provider.Default, nil
-	case "commit.coAuthor":
-		return cfg.Commit.CoAuthor, nil
+	case "commit.attribution.coAuthor":
+		return cfg.Commit.Attribution.CoAuthor, nil
 	case "commit.attribution.enabled":
 		if cfg.Commit.Attribution.Enabled == nil {
 			return "", nil
@@ -243,8 +261,8 @@ func listValuesAt(path string) (map[string]string, error) {
 	}
 
 	result := map[string]string{
-		"provider.default": cfg.Provider.Default,
-		"commit.coAuthor":  cfg.Commit.CoAuthor,
+		"provider.default":               cfg.Provider.Default,
+		"commit.attribution.coAuthor":    cfg.Commit.Attribution.CoAuthor,
 		"commit.attribution.generatedBy": cfg.Commit.Attribution.GeneratedBy,
 	}
 
@@ -282,7 +300,7 @@ func validateValue(key, value string) error {
 		}
 		return fmt.Errorf("invalid provider %q; valid options: %s", value, strings.Join(validProviders, ", "))
 
-	case "commit.coAuthor":
+	case "commit.attribution.coAuthor":
 		return validateCoAuthor(value)
 
 	case "commit.attribution.enabled", "pr.attribution.enabled":
@@ -311,6 +329,16 @@ func validateCoAuthor(value string) error {
 	name := strings.TrimSpace(value[:ltIdx])
 	if name == "" {
 		return fmt.Errorf("invalid co-author %q; name part is empty", value)
+	}
+	// Email must contain '@' and a domain part.
+	email := value[ltIdx+1 : gtIdx]
+	atIdx := strings.Index(email, "@")
+	if atIdx < 1 || atIdx >= len(email)-1 {
+		return fmt.Errorf("invalid co-author %q; email must contain a valid address (user@domain)", value)
+	}
+	domain := email[atIdx+1:]
+	if !strings.Contains(domain, ".") && domain != "localhost" {
+		return fmt.Errorf("invalid co-author %q; email domain must contain a dot or be localhost", value)
 	}
 	return nil
 }

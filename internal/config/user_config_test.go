@@ -194,19 +194,22 @@ func TestValidKeys(t *testing.T) {
 	keys := ValidKeys()
 	r.Contains(keys, "provider.default")
 	r.NotEmpty(keys["provider.default"])
-	r.Contains(keys, "commit.coAuthor")
+	r.Contains(keys, "commit.attribution.coAuthor")
 	r.Contains(keys, "commit.attribution.enabled")
 	r.Contains(keys, "commit.attribution.generatedBy")
 	r.Contains(keys, "pr.attribution.enabled")
 }
 
-func TestSetValue_commitCoAuthor(t *testing.T) {
+func TestSetValue_commitAttributionCoAuthor(t *testing.T) {
 	tests := map[string]struct {
 		value   string
 		wantErr string
 	}{
 		"valid": {
 			value: "Troy Barnes <troy@greendale.edu>",
+		},
+		"valid with noreply": {
+			value: "Forge <forge@noreply.invalid>",
 		},
 		"missing email": {
 			value:   "Foo",
@@ -216,6 +219,25 @@ func TestSetValue_commitCoAuthor(t *testing.T) {
 			value:   "<troy@greendale.edu>",
 			wantErr: "name part is empty",
 		},
+		"no at sign in email": {
+			value:   "Troy Barnes <notanemail>",
+			wantErr: "email must contain a valid address",
+		},
+		"at sign at start": {
+			value:   "Troy Barnes <@greendale.edu>",
+			wantErr: "email must contain a valid address",
+		},
+		"at sign at end": {
+			value:   "Troy Barnes <troy@>",
+			wantErr: "email must contain a valid address",
+		},
+		"domain without dot": {
+			value:   "Troy Barnes <troy@nodot>",
+			wantErr: "email domain must contain a dot",
+		},
+		"localhost domain is valid": {
+			value: "Troy Barnes <troy@localhost>",
+		},
 	}
 
 	for name, tc := range tests {
@@ -223,7 +245,7 @@ func TestSetValue_commitCoAuthor(t *testing.T) {
 			r := require.New(t)
 			path := filepath.Join(t.TempDir(), "config.toml")
 
-			err := setValueAt(path, "commit.coAuthor", tc.value)
+			err := setValueAt(path, "commit.attribution.coAuthor", tc.value)
 			if tc.wantErr != "" {
 				r.Error(err)
 				r.Contains(err.Error(), tc.wantErr)
@@ -232,7 +254,7 @@ func TestSetValue_commitCoAuthor(t *testing.T) {
 
 			r.NoError(err)
 
-			got, err := getValueAt(path, "commit.coAuthor")
+			got, err := getValueAt(path, "commit.attribution.coAuthor")
 			r.NoError(err)
 			r.Equal(tc.value, got)
 		})

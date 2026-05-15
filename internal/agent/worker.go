@@ -828,11 +828,16 @@ func (w *Worker) setupAttribution() {
 
 	// Build the attribution config from user config.
 	commitCfg := attribution.CommitConfig{
-		CoAuthor: userCfg.Commit.CoAuthor,
+		CoAuthor: userCfg.Commit.Attribution.CoAuthor,
 		Attribution: attribution.AttributionConfig{
 			Enabled:     userCfg.Commit.Attribution.IsEnabled(),
 			GeneratedBy: userCfg.Commit.Attribution.GeneratedBy,
 		},
+	}
+
+	// Default CoAuthor to canonical Forge identity.
+	if commitCfg.CoAuthor == "" {
+		commitCfg.CoAuthor = "Forge <forge@noreply.invalid>"
 	}
 
 	// Default GeneratedBy to "forge".
@@ -846,8 +851,11 @@ func (w *Worker) setupAttribution() {
 	}
 
 	// Install the prepare-commit-msg hook.
+	hookInstalled := true
 	if err := attribution.InstallCommitHook(w.cwd); err != nil {
-		log.Printf("[agent:%s] attribution: failed to install commit hook: %v", w.sessionID, err)
+		hookInstalled = false
+		log.Printf("[agent:%s] WARNING attribution degraded: commit hook not installed: %v", w.sessionID, err)
+		log.Printf("[agent:%s] WARNING commits may lack Co-authored-by/Generated-by trailers", w.sessionID)
 		// Non-fatal — env vars still work for deterministic git calls.
 	}
 
@@ -855,7 +863,11 @@ func (w *Worker) setupAttribution() {
 	envs := attribution.EnvForCommit(w.sessionID, commitCfg)
 	tools.SetBashExtraEnv(envs)
 
-	log.Printf("[agent:%s] attribution: hook installed, %d env vars configured", w.sessionID, len(envs))
+	if hookInstalled {
+		log.Printf("[agent:%s] attribution: hook installed, %d env vars configured", w.sessionID, len(envs))
+	} else {
+		log.Printf("[agent:%s] attribution: env vars configured (%d), but hook missing — attribution partially degraded", w.sessionID, len(envs))
+	}
 }
 
 // teardownAttribution removes the Forge commit hook and clears bash env vars.
@@ -874,12 +886,19 @@ func (w *Worker) buildPRAttribution() phase.PRAttributionOpts {
 		// Default to enabled (spec says default is true).
 		return phase.PRAttributionOpts{
 			SessionID: w.sessionID,
+			CoAuthor:  "Forge <forge@noreply.invalid>",
 			Enabled:   true,
 		}
 	}
+
+	coAuthor := userCfg.Commit.Attribution.CoAuthor
+	if coAuthor == "" {
+		coAuthor = "Forge <forge@noreply.invalid>"
+	}
+
 	return phase.PRAttributionOpts{
 		SessionID: w.sessionID,
-		CoAuthor:  userCfg.Commit.CoAuthor,
+		CoAuthor:  coAuthor,
 		Enabled:   userCfg.PR.Attribution.IsEnabled(),
 	}
 }

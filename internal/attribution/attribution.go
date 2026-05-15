@@ -7,10 +7,14 @@
 package attribution
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // CommitConfig holds commit attribution settings.
@@ -50,18 +54,12 @@ if [ -z "$FORGE_SESSION_ID" ]; then
   exit 0
 fi
 
-ARGS=""
-
 if [ -n "$FORGE_COAUTHOR" ]; then
-  ARGS="$ARGS --trailer \"Co-authored-by: $FORGE_COAUTHOR\""
+  git interpret-trailers --in-place --trailer "Co-authored-by: $FORGE_COAUTHOR" "$COMMIT_MSG_FILE"
 fi
 
 if [ -n "$FORGE_GENERATED_BY" ]; then
-  ARGS="$ARGS --trailer \"Generated-by: $FORGE_GENERATED_BY session=$FORGE_SESSION_ID\""
-fi
-
-if [ -n "$ARGS" ]; then
-  eval git interpret-trailers --in-place $ARGS "$COMMIT_MSG_FILE"
+  git interpret-trailers --in-place --trailer "Generated-by: $FORGE_GENERATED_BY session=$FORGE_SESSION_ID" "$COMMIT_MSG_FILE"
 fi
 `
 
@@ -82,11 +80,14 @@ func InstallCommitHook(worktreeDir string) error {
 	if _, err := os.Stat(hookPath); err == nil {
 		// Hook exists — check if backup already exists.
 		if _, err := os.Stat(backupPath); err == nil {
-			return fmt.Errorf("prepare-commit-msg backup already exists at %s — not overwriting", backupPath)
-		}
-		// Back up the existing hook.
-		if err := os.Rename(hookPath, backupPath); err != nil {
-			return fmt.Errorf("backup existing hook: %w", err)
+			// Backup already exists. The original user hook is already saved.
+			// Just overwrite the current hook with ours — whether it's a stale
+			// forge hook or a user hook installed after our backup was created.
+		} else {
+			// No backup yet — back up the existing hook.
+			if err := os.Rename(hookPath, backupPath); err != nil {
+				return fmt.Errorf("backup existing hook: %w", err)
+			}
 		}
 	}
 
@@ -143,9 +144,11 @@ func EnvForCommit(sessionID string, cfg CommitConfig) []string {
 	var envs []string
 	envs = append(envs, "FORGE_SESSION_ID="+sessionID)
 
-	if cfg.CoAuthor != "" {
-		envs = append(envs, "FORGE_COAUTHOR="+cfg.CoAuthor)
+	coAuthor := cfg.CoAuthor
+	if coAuthor == "" {
+		coAuthor = "Forge <forge@noreply.invalid>"
 	}
+	envs = append(envs, "FORGE_COAUTHOR="+coAuthor)
 
 	generatedBy := cfg.Attribution.GeneratedBy
 	if generatedBy == "" {
@@ -158,19 +161,100 @@ func EnvForCommit(sessionID string, cfg CommitConfig) []string {
 
 // PrependAttribution prepends an attribution block to a PR body.
 // Returns body unchanged if enabled is false.
+//
+// The block format (from spec):
+//
+//	> 🤖 This PR was opened by a Forge session acting on behalf of @<author>.
+//	> Session: `<session-id>`
+//	> Co-authored by: <coAuthor>
+//
+// @<author> is resolved from the GitHub login associated with the commit
+// author email (best-effort; falls back to the bare email).
 func PrependAttribution(body, sessionID, coAuthor string, enabled bool) string {
 	if !enabled {
 		return body
 	}
 
+	author := resolveAuthor()
+
 	var b strings.Builder
-	b.WriteString("> 🤖 This PR was opened by an autonomous Forge session.\n")
-	b.WriteString(fmt.Sprintf("> Session: `%s`\n", sessionID))
+	fmt.Fprintf(&b, "> 🤖 This PR was opened by a Forge session acting on behalf of @%s.\n", author)
+	fmt.Fprintf(&b, "> Session: `%s`\n", sessionID)
 	if coAuthor != "" {
-		b.WriteString(fmt.Sprintf("> Co-authored by: %s\n", coAuthor))
+		fmt.Fprintf(&b, "> Co-authored by: %s\n", coAuthor)
 	}
 	b.WriteString("\n---\n\n")
 	b.WriteString(body)
 
 	return b.String()
+}
+
+// resolveAuthor attempts to resolve the current git user's GitHub login.
+// Falls back to git user.email, then "unknown".
+func resolveAuthor() string {
+	// Get the git author email.
+	email := gitConfigValue("user.email")
+	if email == "" {
+		return "unknown"
+	}
+
+	// Best-effort: try to resolve GitHub login via gh api.
+	if login := ghLoginForEmail(email); login != "" {
+		return login
+	}
+
+	return email
+}
+
+// gitConfigValue returns a git config value, or "" on error.
+func gitConfigValue(key string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "config", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ghLoginForEmail attempts to resolve a GitHub login from an email address
+// using `gh api /search/users`. Returns "" if not found or on error.
+//
+// Retries once (2 attempts total, 1s delay) to handle transient failures.
+// Each attempt has a 5s timeout. Failures are logged for diagnostics.
+func ghLoginForEmail(email string) string {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return ""
+	}
+
+	const maxAttempts = 2
+	const retryDelay = 1 * time.Second
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		out, err := exec.CommandContext(ctx, "gh", "api",
+			fmt.Sprintf("/search/users?q=%s+in:email", email),
+			"--jq", ".items[0].login",
+		).Output()
+		cancel()
+
+		if err != nil {
+			log.Printf("attribution: ghLoginForEmail(%q) attempt %d/%d failed: %v", email, attempt, maxAttempts, err)
+			if attempt < maxAttempts {
+				time.Sleep(retryDelay)
+			}
+			continue
+		}
+
+		login := strings.TrimSpace(string(out))
+		if login == "" || login == "null" {
+			log.Printf("attribution: ghLoginForEmail(%q) attempt %d/%d returned empty/null login", email, attempt, maxAttempts)
+			return ""
+		}
+		return login
+	}
+
+	log.Printf("attribution: ghLoginForEmail(%q) failed after %d attempts, falling back", email, maxAttempts)
+	return ""
 }

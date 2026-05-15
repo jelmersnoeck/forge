@@ -32,12 +32,31 @@ const (
 )
 
 // bashExtraEnv holds additional env vars injected by the worker (e.g., FORGE_SESSION_ID).
-var bashExtraEnv []string
+// Protected by bashExtraEnvMu for concurrent access.
+var (
+	bashExtraEnv   []string
+	bashExtraEnvMu sync.RWMutex
+)
 
 // SetBashExtraEnv configures additional environment variables for the bash tool.
 // Called during worker setup to inject attribution env vars (FORGE_SESSION_ID, etc.).
+// Safe for concurrent use.
 func SetBashExtraEnv(envs []string) {
+	bashExtraEnvMu.Lock()
+	defer bashExtraEnvMu.Unlock()
 	bashExtraEnv = envs
+}
+
+// getBashExtraEnv returns a copy of the extra env vars. Safe for concurrent use.
+func getBashExtraEnv() []string {
+	bashExtraEnvMu.RLock()
+	defer bashExtraEnvMu.RUnlock()
+	if bashExtraEnv == nil {
+		return nil
+	}
+	cp := make([]string, len(bashExtraEnv))
+	copy(cp, bashExtraEnv)
+	return cp
 }
 
 // interactiveCommands maps command names to their non-interactive alternatives or flags
@@ -137,7 +156,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		"EDITOR=true",
 		"VISUAL=true",
 	)
-	cmd.Env = append(cmd.Env, bashExtraEnv...)
+	cmd.Env = append(cmd.Env, getBashExtraEnv()...)
 
 	// Pipe stdout/stderr so we can stream output and detect idle.
 	outReader, outWriter := io.Pipe()
