@@ -31,10 +31,9 @@ through a unified binary with subcommands.
 ## Behavior
 - `forge` (no args) — interactive REPL; spawns agent subprocess on ephemeral port
 - `forge agent --port N` — run agent HTTP server on port N (0 = random)
-- `forge gateway` — session management gateway; spawns agents via `forge agent`
-- `forge gateway -daemon` — daemonized gateway mode with PID/log files
+- `forge gateway` — session management gateway (see `.forge/specs/gateway.md` for full details)
 - `forge stats` — cost analytics with daily/monthly/session breakdowns
-- `forge --gateway URL` — connect to remote gateway
+- `forge --gateway URL` — connect to remote gateway (see `.forge/specs/gateway.md`)
 - `forge --resume SESSION` — resume an existing session
 - `forge --skip-worktree` — disable git worktree isolation
 - Git worktree isolation: auto-creates `/tmp/forge/worktrees/<session>` with branch `jelmer/<session>`
@@ -48,13 +47,15 @@ through a unified binary with subcommands.
 ## Constraints
 - No public Go API — all packages under `internal/`
 - No platform-specific code in gateway — `source` is free-form, `metadata` is opaque
+  (see `.forge/specs/gateway.md` for gateway-specific constraints)
 - Model aliases from `~/.forge/settings.json` (e.g. `opus[1m]`) must be filtered;
   only values starting with `claude-` pass through to Anthropic API
 - `tool_result` blocks must immediately follow `tool_use` in message history
 - Deterministic tool schema ordering required for prompt cache stability
 - No mocks in tests — use real filesystem, real exec, real HTTP (httptest)
 - Agent binary path configurable via `FORGE_BIN` env var
-- Gateway loads `.env` from project root; explicit env vars take precedence
+- Gateway loads `.env` from CWD; explicit env vars take precedence
+  (see `.forge/specs/gateway.md` for env var details and daemon mechanics)
 - Specs default to `.forge/specs/` but configurable via `.forge/config.json` `specsDir`
 - Background tasks must have timeouts to prevent stuck commands
 
@@ -127,10 +128,13 @@ type SpecEntry struct {
 // GET  /events  (SSE)
 // POST /interrupt
 
-// Gateway HTTP endpoints
+// Gateway HTTP endpoints — see .forge/specs/gateway.md for full details
+// (request/response shapes, SSE relay, agent spawning, env vars)
 // POST /sessions
 // GET  /sessions/{id}
 // POST /sessions/{id}/messages
+// POST /sessions/{id}/review
+// POST /sessions/{id}/interrupt
 // GET  /sessions/{id}/events  (SSE)
 ```
 
