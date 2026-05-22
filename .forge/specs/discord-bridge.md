@@ -2,15 +2,22 @@
 id: discord-bridge
 status: active
 ---
-# Discord ↔ Forge bridge (Troy persona)
+# Discord ↔ Forge bridge
 
 ## Description
 A standalone, containerized service that connects a Discord server to a Forge
 gateway. Each Discord forum thread in a configured channel becomes one Forge
 session; each Forge SSE event becomes a Discord message (or reaction); each
-human reply in the thread becomes a Forge `POST /messages` call. The bot is
-Troy — Forge wearing a persona — so the channel reads like a normal coding
-conversation with a colleague.
+human reply in the thread becomes a Forge `POST /messages` call.
+
+The bridge is **persona-agnostic**. Persona (name + avatar) comes from the
+Discord bot application the operator supplies via `DISCORD_BOT_TOKEN` — set
+that in the Discord developer portal, not in the bridge. In this repo's
+reference deploy we use the persona **Troy** for Jelmer's instance, but
+that's a single configuration of a generic service. Anyone running their
+own bridge brings their own bot identity. Future work: optional
+`BRIDGE_BOT_NAME` / `BRIDGE_BOT_STATUS` env to override display name and
+presence text at runtime (not implemented in this PR).
 
 The bridge does not run *inside* Forge. It is a separate process that talks
 to Forge over its existing HTTP gateway API. This keeps Forge unaware of
@@ -47,20 +54,24 @@ builds and releases as a separate binary / container image.
 - **Discord forum channel model**: a parent channel with threads. The user
   starts a new thread = new task. Bot posts in the thread.
 - **OpenClaw bot account `pelton`** is already in the guild "Study Room F"
-  (id `1491267748632985700`); it's the same agent identity as me. The bridge
-  will use a SEPARATE bot identity (`troy`) so the personas don't collide.
+  (id `1491267748632985700`); it's the same agent identity as the operator's
+  main assistant. The bridge runs under a SEPARATE bot identity (whatever
+  persona the operator configures, e.g. `troy` for Jelmer's deploy) so the
+  personas don't collide.
 - **Build rule** (MEMORY.md): every agent I build runs in Docker.
 
 ## Behavior
 
 ### The bot identity
-- Bridge runs under a dedicated Discord bot application named **Troy** (or
-  `forge-bot` for non-personalized deploys).
-- Default avatar/banner ships in the repo so a fresh deploy looks right.
-- Status: `Watching: <N> sessions` (live count of active Forge sessions),
-  updated on session start/done.
-- Username/avatar overridable via env so self-hosted instances can re-brand
-  (`BRIDGE_BOT_NAME`, `BRIDGE_BOT_AVATAR_URL`).
+- Bridge runs under a Discord bot application supplied by the operator.
+  Name and avatar are configured in the Discord developer portal, not in
+  the bridge code. Jelmer's reference deploy uses `Troy`; the unbranded
+  default name in docs is `forge-bot`. No persona is hardcoded.
+- Presence string: `Watching: <N> sessions` (live count of active Forge
+  sessions, updated on session start/done).
+- Future work: optional `BRIDGE_BOT_NAME` and `BRIDGE_BOT_STATUS` env to
+  override display name and presence text at runtime, for operators who
+  want to swap personas without re-creating the Discord app.
 
 ### Channel topology
 - Bridge is configured for **one or more "Forge channels"** per guild:
@@ -240,9 +251,13 @@ Env (all required unless noted):
 - `DISCORD_GUILD_ID` (single guild for v1; multi-guild later)
 - `FORGE_GATEWAY_URL` — e.g. `http://forge-gateway:3000`
 - `BRIDGE_LISTEN_ADDR` (default `:8080`, for healthchecks + admin)
-- `BRIDGE_BOT_NAME` (optional override)
-- `BRIDGE_BOT_AVATAR_URL` (optional)
+- `BRIDGE_BOT_NAME` (future work — not wired yet; bot name comes from the
+  Discord app today)
+- `BRIDGE_BOT_AVATAR_URL` (future work — not wired yet)
 - `BRIDGE_SHOW_THINKING` (default `false`)
+- `BRIDGE_REVEAL_SESSION_ID` (default `false`; if true, pinned forge-meta
+  block is human-readable instead of fenced)
+- `BRIDGE_ADMIN_TOKEN` (optional; required to call admin POST endpoints)
 - `BRIDGE_LOG_LEVEL` (default `info`)
 
 Channel config (JSON file mounted at `/config/channels.json`, hot-reloaded
@@ -425,17 +440,18 @@ over and pin the gateway version it targets.
 1. Build the bridge in this repo under `cmd/forge-discord-bridge/`.
    New binary, new Dockerfile, new compose entry. Existing `forge` /
    `forge gateway` / `forge agent` binaries untouched.
-2. Create a new Discord application "Troy" (separate from `pelton`).
-   Required bot scopes: `bot`, `applications.commands`. Bot permissions:
-   `View Channels`, `Send Messages`, `Send Messages in Threads`, `Create
-   Public Threads`, `Manage Threads` (archive), `Add Reactions`, `Read
-   Message History`, `Embed Links`, `Attach Files`.
-3. Stage: deploy on the Mac mini via docker-compose alongside a local
-   Forge gateway. Test against a private channel in Study Room F.
+2. Operator creates a Discord application for their persona (Jelmer's deploy
+   uses `Troy`, separate from `pelton`). Required bot scopes: `bot`,
+   `applications.commands`. Bot permissions: `View Channels`,
+   `Send Messages`, `Send Messages in Threads`, `Create Public Threads`,
+   `Manage Threads` (archive), `Add Reactions`, `Read Message History`,
+   `Embed Links`, `Attach Files`.
+3. Stage: deploy via docker-compose alongside a local Forge gateway. Test
+   against a private channel in the operator's guild.
 4. Iterate on event-translation noise level until threads feel like
    conversation, not telemetry.
-5. Cut a `v0.1.0` tag once a Troy PR is opened, reviewed, and merged
-   *via the bridge end-to-end*.
+5. Cut a `v0.1.0` tag once a PR is opened, reviewed, and merged *via the
+   bridge end-to-end* — persona-agnostic dogfooding.
 
 ## Out of Scope
 - **No persistent store.** The bridge has no database. Trade-offs (duplicate
