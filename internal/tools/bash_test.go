@@ -2,9 +2,11 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -438,4 +440,50 @@ func TestCheckInteractiveCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSetBashExtraEnv_Concurrent verifies that SetBashExtraEnv and getBashExtraEnv
+// are safe to call concurrently. Run with -race to detect data races.
+func TestSetBashExtraEnv_Concurrent(t *testing.T) {
+	r := require.New(t)
+
+	const goroutines = 10
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2) // half writers, half readers
+
+	// Writers
+	for i := 0; i < goroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				SetBashExtraEnv([]string{
+					fmt.Sprintf("WRITER=%d", id),
+					fmt.Sprintf("ITER=%d", j),
+				})
+			}
+		}(i)
+	}
+
+	// Readers
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				env := getBashExtraEnv()
+				// env should be nil or a valid slice with 2 elements
+				if env != nil {
+					r.Len(env, 2, "getBashExtraEnv should return a consistent snapshot")
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// After all goroutines finish, the last write should be visible.
+	final := getBashExtraEnv()
+	r.NotNil(final, "should have env set after concurrent writes")
+	r.Len(final, 2)
 }

@@ -112,7 +112,8 @@ internal/
     bridge.go      bridges MCP tools into Forge's tool registry
     config.go      config loading (~/.forge/mcp.json)
     token_store.go persistent OAuth token storage
-  config/          forge-level configuration (.forge/config.json)
+  config/          forge-level configuration (.forge/config.json), user config (~/.forge/config.toml)
+  attribution/     commit trailer hooks and PR body attribution
   envutil/         shared .env file loading
   spec/            feature specification loader + parser
   types/           shared contracts (messages, events, tools, context, tasks)
@@ -293,6 +294,9 @@ POST   /interrupt                     interrupt current work
 - `WORKSPACE_DIR` — default working directory (default: /tmp/forge/workspace)
 - `SESSIONS_DIR` — JSONL session storage (default: /tmp/forge/sessions)
 - `FORGE_BIN` — path to forge binary (default: forge)
+- `FORGE_SESSION_ID` — set by the agent in bash tool env for commit hook attribution
+- `FORGE_COAUTHOR` — set by the agent in bash tool env for Co-authored-by trailer
+- `FORGE_GENERATED_BY` — set by the agent in bash tool env for Generated-by trailer
 
 ## Gotchas
 
