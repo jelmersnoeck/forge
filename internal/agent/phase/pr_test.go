@@ -51,7 +51,7 @@ func TestEnsurePR_ContextCancelledImmediate(t *testing.T) {
 	cancel()
 
 	// EnsurePR checks ctx.Err() first and bails.
-	result := EnsurePR(ctx, nil, t.TempDir(), "")
+	result := EnsurePR(ctx, nil, t.TempDir(), "", PRAttributionOpts{})
 	r.Error(result.Error)
 	r.Contains(result.Error.Error(), "skipped")
 }
