@@ -1,6 +1,6 @@
 ---
 id: gateway
-status: active
+status: implemented
 ---
 # Forge gateway: session management proxy for persistent agents
 
@@ -26,6 +26,8 @@ deleted).
 - `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata store (package-level globals)
 - `internal/types/types.go` — `SessionMeta`, `InboundMessage`, `OutboundEvent`
 - `internal/envutil/env.go` — `.env` loader (first-found wins, never overrides existing vars)
+- `internal/server/gateway/gateway_test.go` — unit tests for all HTTP handlers (fake backend, fake agent servers)
+- `internal/server/bus/bus_test.go` — unit tests for pub/sub, message queue, session store, concurrent access
 - `justfile` — `dev-gateway`, `dev-gateway-daemon`, `stop-gateway`, `tail-gateway`, `gateway-status` recipes
 
 ## Behavior
