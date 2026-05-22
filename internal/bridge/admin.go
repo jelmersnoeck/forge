@@ -59,9 +59,9 @@ func (a *AdminServer) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 
 func (a *AdminServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "# HELP bridge_active_sessions Number of active bridge sessions\n")
-	fmt.Fprintf(w, "# TYPE bridge_active_sessions gauge\n")
-	fmt.Fprintf(w, "bridge_active_sessions %d\n", a.bridge.ActiveSessionCount())
+	_, _ = fmt.Fprintf(w, "# HELP bridge_active_sessions Number of active bridge sessions\n")
+	_, _ = fmt.Fprintf(w, "# TYPE bridge_active_sessions gauge\n")
+	_, _ = fmt.Fprintf(w, "bridge_active_sessions %d\n", a.bridge.ActiveSessionCount())
 }
 
 func (a *AdminServer) handleListSessions(w http.ResponseWriter, _ *http.Request) {

@@ -14,10 +14,10 @@ type DiscordAction struct {
 	Type ActionType
 
 	// For post/edit
-	ThreadID  string
-	Content   string
-	Embed     *discordgo.MessageEmbed
-	Pin       bool
+	ThreadID string
+	Content  string
+	Embed    *discordgo.MessageEmbed
+	Pin      bool
 
 	// For reactions
 	MessageID string
@@ -28,7 +28,7 @@ type DiscordAction struct {
 type ActionType int
 
 const (
-	ActionPost          ActionType = iota
+	ActionPost ActionType = iota
 	ActionEdit
 	ActionEditEmbed
 	ActionReact

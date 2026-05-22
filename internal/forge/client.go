@@ -59,7 +59,7 @@ func (c *HTTPClient) CreateSession(ctx context.Context, cwd string, metadata map
 	if err != nil {
 		return "", fmt.Errorf("create session: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
@@ -93,7 +93,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, sessionID, text string) er
 	if err != nil {
 		return fmt.Errorf("send message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
@@ -113,7 +113,7 @@ func (c *HTTPClient) Interrupt(ctx context.Context, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("interrupt: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return nil
 }
 
@@ -134,14 +134,14 @@ func (c *HTTPClient) SubscribeEvents(ctx context.Context, sessionID string) (<-c
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("subscribe events: HTTP %d", resp.StatusCode)
 	}
 
 	ch := make(chan types.OutboundEvent, 64)
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		c.readSSE(ctx, resp.Body, ch)
 	}()
 
@@ -186,6 +186,6 @@ func (c *HTTPClient) Healthy(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }

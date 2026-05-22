@@ -54,7 +54,7 @@ func main() {
 		logger.Error("failed to connect to discord", "error", err)
 		os.Exit(1)
 	}
-	defer dc.Close()
+	defer func() { _ = dc.Close() }()
 
 	fc := forge.NewHTTPClient(forgeURL, logger)
 

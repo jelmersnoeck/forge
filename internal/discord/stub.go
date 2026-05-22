@@ -10,10 +10,10 @@ import (
 
 // StubClient is a test double for Client.
 type StubClient struct {
-	mu       sync.Mutex
-	Messages []StubMessage
-	Edits    []StubEdit
-	Embeds   []StubEmbedEdit
+	mu        sync.Mutex
+	Messages  []StubMessage
+	Edits     []StubEdit
+	Embeds    []StubEmbedEdit
 	Reactions []StubReaction
 	Removed   []StubReaction
 	Archives  []string

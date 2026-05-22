@@ -146,12 +146,12 @@ func (b *Bridge) onThreadCreate(ctx context.Context, evt discord.Event) error {
 
 	// Create Forge session
 	metadata := map[string]any{
-		"source":             "discord",
-		"discord.guildId":    evt.GuildID,
-		"discord.channelId":  evt.ChannelID,
-		"discord.threadId":   evt.ThreadID,
-		"discord.userId":     evt.UserID,
-		"discord.username":   evt.Username,
+		"source":            "discord",
+		"discord.guildId":   evt.GuildID,
+		"discord.channelId": evt.ChannelID,
+		"discord.threadId":  evt.ThreadID,
+		"discord.userId":    evt.UserID,
+		"discord.username":  evt.Username,
 	}
 
 	sessionID, err := b.forge.CreateSession(ctx, cc.RepoPath, metadata)
@@ -415,16 +415,15 @@ func (b *Bridge) handleSSEDisconnect(ctx context.Context, threadID, sessionID st
 
 	// Reconnect with backoff
 	backoff := time.Second
-	for i := 0; i < 5; i++ {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-
-		b.startSSERelay(ctx, threadID, sessionID)
+	// Wait before reconnecting (startSSERelay is async — it spawns a goroutine
+	// that will call handleSSEDisconnect again if the stream drops).
+	select {
+	case <-ctx.Done():
 		return
+	case <-time.After(backoff):
 	}
+
+	b.startSSERelay(ctx, threadID, sessionID)
 }
 
 func (b *Bridge) cancelRelay(threadID string) {

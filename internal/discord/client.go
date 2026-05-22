@@ -14,13 +14,13 @@ import (
 type EventType string
 
 const (
-	EventThreadCreate    EventType = "thread_create"
-	EventMessageCreate   EventType = "message_create"
-	EventReactionAdd     EventType = "reaction_add"
-	EventThreadUpdate    EventType = "thread_update"
-	EventGuildReady      EventType = "guild_ready"
-	EventDisconnect      EventType = "disconnect"
-	EventReconnect       EventType = "reconnect"
+	EventThreadCreate  EventType = "thread_create"
+	EventMessageCreate EventType = "message_create"
+	EventReactionAdd   EventType = "reaction_add"
+	EventThreadUpdate  EventType = "thread_update"
+	EventGuildReady    EventType = "guild_ready"
+	EventDisconnect    EventType = "disconnect"
+	EventReconnect     EventType = "reconnect"
 )
 
 // Event is a normalized Discord event for the bridge.
@@ -92,10 +92,10 @@ type Client interface {
 
 // LiveClient implements Client with a real Discord connection.
 type LiveClient struct {
-	session  *discordgo.Session
-	guildID  string
-	botID    string
-	logger   *slog.Logger
+	session *discordgo.Session
+	guildID string
+	botID   string
+	logger  *slog.Logger
 
 	mu       sync.Mutex
 	eventChs []chan Event

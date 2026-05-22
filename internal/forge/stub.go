@@ -10,9 +10,9 @@ import (
 
 // StubClient is a test double for Client.
 type StubClient struct {
-	mu       sync.Mutex
-	Sessions []StubSession
-	Messages []StubMsg
+	mu         sync.Mutex
+	Sessions   []StubSession
+	Messages   []StubMsg
 	Interrupts []string
 
 	sessionSeq int
