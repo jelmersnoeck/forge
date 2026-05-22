@@ -17,7 +17,7 @@ deleted).
 
 ## Context
 - `cmd/forge/main.go` — subcommand dispatch; `gateway` and deprecated `server` cases
-- `cmd/forge/gateway.go` — `runGateway()`: flag parsing, env loading, daemon mode, signal handling, `gateway.Start()`
+- `cmd/forge/gateway.go` — `runGateway()`: flag parsing, env loading, signal handling, `gateway.Start()`
 - `cmd/forge/cli.go` — `--gateway` and deprecated `--server` flags; `createSession()` helper
 - `internal/server/gateway/gateway.go` — HTTP routes, SSE relay from agent → bus → client
 - `internal/server/backend/backend.go` — `Backend` interface (`EnsureAgent`, `StopAgent`, `AgentAddress`, `Close`)
@@ -25,48 +25,29 @@ deleted).
 - `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata store (package-level globals)
 - `internal/types/types.go` — `SessionMeta`, `InboundMessage`, `OutboundEvent`
 - `internal/envutil/env.go` — `.env` loader (first-found wins, never overrides existing vars)
-- `justfile` — `dev-gateway`, `dev-gateway-daemon`, `stop-gateway`, `tail-gateway` recipes
+- `justfile` — `dev-gateway` recipe
 
 ## Behavior
 
 ### Subcommand
 
 - `forge gateway` — starts the gateway HTTP server in the foreground; blocks until killed.
-- `forge gateway -daemon` — forks into the background via re-exec pattern (see Daemon Mode).
 - `forge server` — deprecated alias; prints `note: 'forge server' is deprecated, use 'forge gateway'` to stderr, then runs `runGateway`.
 
-### Daemon mode
-
-Flags:
-- `-daemon` — enable background mode.
-- `-pid-file PATH` — override PID file location (default: `$SESSIONS_DIR/forge.pid`).
-- `-log-file PATH` — override log file location (default: `$SESSIONS_DIR/forge.log`).
-
-Mechanism:
-1. Parent resolves `pidFile` and `logFile` defaults from `$SESSIONS_DIR`.
-2. Parent creates directories for both files.
-3. Parent opens `logFile` (append mode, 0644).
-4. Parent re-execs itself with `exec.Command(exe)` — **no subcommand args** — setting env vars `FORGE_DAEMON_CHILD=1` and `FORGE_PID_FILE=<pidFile>`. Stdout/stderr redirect to the log file.
-5. Parent prints PID, log path, PID path, and a `kill` hint to stdout, then exits 0.
-6. **Drift note:** the child process receives no subcommand arguments, so `main()` dispatches to `runCLI` (interactive mode), not `runGateway`. See Drift section.
-
-When `FORGE_DAEMON_CHILD=1` is set, `runGateway` restores `pidFile` from `FORGE_PID_FILE` env var and writes the child's PID to it. The PID file is removed on clean exit or on SIGINT/SIGTERM.
-
-### Startup sequence (foreground)
+### Startup sequence
 
 1. Parse flags.
 2. `envutil.LoadEnv(".")` — loads `.env` from CWD (first found), falls back to executable dir. Existing env vars are never overridden.
 3. Resolve env vars: `GATEWAY_PORT` (default 3000), `GATEWAY_HOST` (default `0.0.0.0`), `WORKSPACE_DIR` (default `/tmp/forge/workspace`), `SESSIONS_DIR` (default `/tmp/forge/sessions`), `FORGE_BIN` (default `forge`).
 4. `os.MkdirAll` for workspace and sessions dirs.
-5. Write PID file if path is set (daemon child only).
-6. Create `TmuxBackend` with `forgeBin`, a random `gatewayID` (8-char UUID prefix), and `workspaceDir`.
-7. Register SIGINT/SIGTERM handler that calls `be.Close()`, removes PID file, and exits 0.
-8. Log startup info (gateway ID, workspace, sessions dir, forge bin).
-9. Call `gateway.Start(cfg)` which binds to `host:port` via `http.ListenAndServe`.
+5. Create `TmuxBackend` with `forgeBin`, a random `gatewayID` (8-char UUID prefix), and `workspaceDir`.
+6. Register SIGINT/SIGTERM handler that calls `be.Close()` and exits 0.
+7. Log startup info (gateway ID, workspace, sessions dir, forge bin).
+8. Call `gateway.Start(cfg)` which binds to `host:port` via `http.ListenAndServe`.
 
 ### Shutdown
 
-- On SIGINT/SIGTERM: calls `TmuxBackend.Close()` which kills all agent tmux windows and the tmux session, removes worktrees, then removes the PID file and exits.
+- On SIGINT/SIGTERM: calls `TmuxBackend.Close()` which kills all agent tmux windows and the tmux session, removes worktrees, then exits.
 - On `gateway.Start` error: calls `be.Close()`, logs, returns exit code 1.
 
 ### HTTP endpoints
@@ -168,10 +149,8 @@ The gateway does NOT start agents on session creation. Agents are lazy-started o
 | `GATEWAY_PORT` | `3000` | HTTP listen port |
 | `GATEWAY_HOST` | `0.0.0.0` | HTTP listen host |
 | `WORKSPACE_DIR` | `/tmp/forge/workspace` | Default workspace for agents |
-| `SESSIONS_DIR` | `/tmp/forge/sessions` | JSONL session storage; also default location for PID/log files |
+| `SESSIONS_DIR` | `/tmp/forge/sessions` | JSONL session storage |
 | `FORGE_BIN` | `forge` | Path to forge binary (resolved to absolute path by TmuxBackend) |
-| `FORGE_DAEMON_CHILD` | (unset) | Set to `1` by daemon parent to signal the child process |
-| `FORGE_PID_FILE` | (unset) | PID file path, passed from daemon parent to child via env |
 
 Precedence: explicit env vars > `.env` file values. `envutil.LoadEnv(".")` never overrides existing vars.
 
@@ -180,9 +159,6 @@ Precedence: explicit env vars > `.env` file values. `envutil.LoadEnv(".")` never
 | Recipe | Command | Description |
 |--------|---------|-------------|
 | `dev-gateway` | `./forge gateway` | Build + run gateway foreground |
-| `dev-gateway-daemon` | `./forge gateway -daemon` | Build + run gateway daemon |
-| `stop-gateway` | `kill $(cat /tmp/forge/sessions/forge.pid)` | Stop daemon gateway |
-| `tail-gateway` | `tail -f /tmp/forge/sessions/forge.log` | Tail daemon logs |
 
 All build recipes depend on `build` (which runs `go build -o forge ./cmd/forge`).
 
@@ -245,18 +221,15 @@ type SessionMeta struct {
 - SSE client disconnects — `r.Context().Done()` fires; `unsub()` removes channel from bus, closes it. No goroutine leak.
 - Multiple simultaneous messages to same session — `EnsureAgent` is idempotent (mutex-guarded). `startRelay` is idempotent (relay map check). Second message still forwarded; agent queues it.
 - Agent crashes mid-session — relay goroutine sees EOF on SSE stream, cleans up. Next message to that session will re-start the agent via `EnsureAgent` (agent map entry was removed by relay? No — relay only removes itself from `relays` map, not from `agents` map; the dead agent's cached address will be reused, and the forward will fail with 502).
-- Gateway receives SIGINT during active sessions — signal handler calls `be.Close()` which kills all tmux windows and the tmux session. PID file removed. Sessions are lost (in-memory only).
+- Gateway receives SIGINT during active sessions — signal handler calls `be.Close()` which kills all tmux windows and the tmux session. Sessions are lost (in-memory only).
 - `.env` file missing — `envutil.LoadEnv` silently continues; env vars use defaults.
 - `FORGE_BIN` points to nonexistent binary — `TmuxBackend` resolves path at creation; `EnsureAgent` will fail when tmux tries to run the command.
-- `stop-gateway` called when no PID file exists — justfile recipe prints "No PID file found" message.
 
 ## Compatibility
 - `forge server` dispatches to `runGateway` with a deprecation notice on stderr.
 - `--server URL` sets `gatewayFlag` with a deprecation notice on stderr; if both `--server` and `--gateway` are provided, `--gateway` takes precedence.
-- Old justfile recipes (`dev-server`, `dev-server-daemon`, etc.) no longer exist — removed during the rename. Only `dev-gateway*` recipes are present.
+- Old justfile recipes (`dev-server`, etc.) no longer exist — removed during the rename. Only `dev-gateway` recipe is present.
 
-## Drift
-
-**Daemon re-exec does not pass subcommand arguments.** `daemonize()` calls `exec.Command(exe)` with no arguments. The child process starts as `forge` with no args, which `main()` dispatches to `runCLI` (interactive mode), not `runGateway`. The `FORGE_DAEMON_CHILD=1` env var is set but never checked by `main()` or `runCLI`. This means `forge gateway -daemon` appears to work (parent prints PID and exits), but the child process runs the interactive TUI (which immediately fails or hangs since stdin is nil). **The daemon mode is broken.** Fix: the `daemonize()` function should pass `os.Args[1:]` to the child command, or `main()` should check `FORGE_DAEMON_CHILD` and route to `runGateway`.
+## Known Issues
 
 **Agent crash does not invalidate cached address.** When an agent process crashes, the `TmuxBackend.agents` map still holds the stale address. The next message forward will fail with a connection error (502 to client). The agent is not automatically restarted because `EnsureAgent` short-circuits on finding the cached entry. The relay goroutine cleans up from the `relays` map but does not remove the agent from the backend's `agents` map.

@@ -55,7 +55,7 @@ through a unified binary with subcommands.
 - No mocks in tests — use real filesystem, real exec, real HTTP (httptest)
 - Agent binary path configurable via `FORGE_BIN` env var
 - Gateway loads `.env` from CWD; explicit env vars take precedence
-  (see `.forge/specs/gateway.md` for env var details and daemon mechanics)
+  (see `.forge/specs/gateway.md` for env var details)
 - Specs default to `.forge/specs/` but configurable via `.forge/config.json` `specsDir`
 - Background tasks must have timeouts to prevent stuck commands
 
