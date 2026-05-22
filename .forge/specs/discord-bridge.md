@@ -6,7 +6,7 @@ status: active
 
 ## Description
 A standalone, containerized service that connects a Discord server to a Forge
-gateway. Each Discord forum thread in a configured channel becomes one Forge
+gateway. Each Discord thread in a configured text channel becomes one Forge
 session; each Forge SSE event becomes a Discord message (or reaction); each
 human reply in the thread becomes a Forge `POST /messages` call.
 
@@ -51,8 +51,11 @@ builds and releases as a separate binary / container image.
   `retry`, `usage`, `intent_classified`, `ideation_start`, `clarification_question`,
   `planning_start`, `staleness_warning`, `phase_error`, `pr_url`, `pr_monitor`,
   `task_status`.
-- **Discord forum channel model**: a parent channel with threads. The user
-  starts a new thread = new task. Bot posts in the thread.
+- **Discord text channel + threads model**: a regular text channel where the
+  user starts a new public thread off a message = new task. Bot posts in the
+  thread. Forum channels are explicitly out of scope for v1 (different UX
+  contract: starter post + tags + archive behavior); revisit later if there
+  is demand.
 - **OpenClaw bot account `pelton`** is already in the guild "Study Room F"
   (id `1491267748632985700`); it's the same agent identity as the operator's
   main assistant. The bridge runs under a SEPARATE bot identity (whatever
@@ -76,17 +79,18 @@ builds and releases as a separate binary / container image.
 ### Channel topology
 - Bridge is configured for **one or more "Forge channels"** per guild:
   - `forge-channel:1504550234661978343` (e.g. `#forge` in our server)
-- The Forge channel SHOULD be a **forum channel**. If it's a regular text
-  channel, the bridge still works but creates threads off the trigger message
-  instead.
-- Inside the configured channel, **every new thread = a new Forge session**.
+- The Forge channel MUST be a regular Discord **text channel** (type 0).
+  Forum channels are out of scope for v1.
+- Inside the configured channel, **every new public thread = a new Forge
+  session**. The thread is created off a trigger message; that message is
+  the "starter message" referred to throughout this spec.
 - Outside the configured channel, the bot ignores everything except direct
   pings (which get a helpful "use #forge to start a task" response).
 
 ### Starting a task
-1. Human creates a Discord thread in `#forge` with a title + body
-   (forum starter message). Title becomes the working name; body is the
-   initial prompt.
+1. Human sends a message in `#forge` (or another configured text channel)
+   and starts a thread off it. The thread name becomes the working title;
+   the starter message body is the initial prompt sent to Forge.
 2. Bridge detects new thread via Discord gateway event (`THREAD_CREATE`).
 3. Bridge calls Forge `POST /sessions` with:
    ```json
