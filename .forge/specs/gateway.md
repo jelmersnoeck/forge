@@ -1,6 +1,6 @@
 ---
 id: gateway
-status: active
+status: implemented
 ---
 # Forge gateway: session management proxy for persistent agents
 
@@ -17,7 +17,8 @@ deleted).
 
 ## Context
 - `cmd/forge/main.go` — subcommand dispatch; `gateway` and deprecated `server` cases
-- `cmd/forge/gateway.go` — `runGateway()`: flag parsing, env loading, signal handling, `gateway.Start()`
+- `cmd/forge/gateway.go` — `runGateway()`: flag parsing, env loading, daemon mode, signal handling, `gateway.Start()`
+- `cmd/forge/gateway_test.go` — unit tests for `buildChildArgs`, `resolveDaemonPath`, `checkPIDFile`, `appendIfMissing`, `writePIDFile`
 - `cmd/forge/cli.go` — `--gateway` and deprecated `--server` flags; `createSession()` helper
 - `internal/server/gateway/gateway.go` — HTTP routes, SSE relay from agent → bus → client
 - `internal/server/backend/backend.go` — `Backend` interface (`EnsureAgent`, `StopAgent`, `AgentAddress`, `Close`)
@@ -25,13 +26,16 @@ deleted).
 - `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata store (package-level globals)
 - `internal/types/types.go` — `SessionMeta`, `InboundMessage`, `OutboundEvent`
 - `internal/envutil/env.go` — `.env` loader (first-found wins, never overrides existing vars)
-- `justfile` — `dev-gateway` recipe
+- `internal/server/gateway/gateway_test.go` — unit tests for all HTTP handlers (fake backend, fake agent servers)
+- `internal/server/bus/bus_test.go` — unit tests for pub/sub, message queue, session store, concurrent access
+- `justfile` — `dev-gateway`, `dev-gateway-daemon`, `stop-gateway`, `tail-gateway`, `gateway-status` recipes
 
 ## Behavior
 
 ### Subcommand
 
 - `forge gateway` — starts the gateway HTTP server in the foreground; blocks until killed.
+- `forge gateway -daemon` — starts the gateway in the background; writes PID and log files, parent exits immediately.
 - `forge server` — deprecated alias; prints `note: 'forge server' is deprecated, use 'forge gateway'` to stderr, then runs `runGateway`.
 
 ### Startup sequence
@@ -151,14 +155,48 @@ The gateway does NOT start agents on session creation. Agents are lazy-started o
 | `WORKSPACE_DIR` | `/tmp/forge/workspace` | Default workspace for agents |
 | `SESSIONS_DIR` | `/tmp/forge/sessions` | JSONL session storage |
 | `FORGE_BIN` | `forge` | Path to forge binary (resolved to absolute path by TmuxBackend) |
+| `FORGE_RUN_DIR` | (unset) | Directory for daemon PID/log files; takes precedence over `SESSIONS_DIR` |
 
 Precedence: explicit env vars > `.env` file values. `envutil.LoadEnv(".")` never overrides existing vars.
+
+### Daemon mode
+
+`forge gateway -daemon` runs the gateway in the background.
+
+**Flags:**
+- `-daemon` — fork into background; parent prints PID/log paths and exits.
+- `-pid-file PATH` — explicit PID file path.
+- `-log-file PATH` — explicit log file path.
+
+**PID/log file resolution order:**
+1. `-pid-file PATH` / `-log-file PATH` flag if provided.
+2. `$FORGE_RUN_DIR/forge.pid` / `$FORGE_RUN_DIR/forge.log` if `FORGE_RUN_DIR` is set.
+3. `$SESSIONS_DIR/forge.pid` / `$SESSIONS_DIR/forge.log` as final fallback (default: `/tmp/forge/sessions`).
+
+**Re-exec mechanism (approach (a)):** The parent process calls `exec.Command(exe, childArgs...)` where `childArgs` is `os.Args[1:]` with `-daemon` stripped. This means the child sees `gateway -pid-file ... -log-file ...` and enters `runGateway` in foreground mode. The `FORGE_DAEMON_CHILD=1` env var is set on the child so the child knows to write a PID file even though `-pid-file` was injected rather than user-supplied.
+
+**PID file lifecycle:**
+1. Before forking, `checkPIDFile()` reads any existing PID file.
+2. If the file exists and the PID is alive (`syscall.Kill(pid, 0)`), abort with error: `gateway already running (pid <N>, see <path>)`.
+3. If the file exists but the PID is dead or the file is corrupt, remove the stale file and continue.
+4. The child writes the PID file after startup.
+5. On clean exit (SIGINT/SIGTERM) or `gateway.Start` error, the PID file is removed via `defer` and signal handler.
+
+**Log file:** Opened in append mode (`O_CREATE|O_WRONLY|O_APPEND`). Log rotation is the user's responsibility (e.g., `logrotate`). Not built in.
+
+**Parent directories:** Both PID file and log file directories are created with `os.MkdirAll` if they don't exist.
 
 ### Justfile recipes
 
 | Recipe | Command | Description |
 |--------|---------|-------------|
 | `dev-gateway` | `./forge gateway` | Build + run gateway foreground |
+| `dev-gateway-daemon` | `./forge gateway -daemon` | Build + run gateway daemon |
+| `stop-gateway` | `kill $(cat <pidFile>)` | Stop daemon gateway |
+| `tail-gateway` | `tail -f <logFile>` | Tail daemon logs |
+| `gateway-status` | print PID/status/log | Show daemon status |
+
+The `stop-gateway`, `tail-gateway`, and `gateway-status` recipes resolve paths using the same `FORGE_RUN_DIR > SESSIONS_DIR > /tmp/forge/sessions` fallback chain via justfile variables.
 
 All build recipes depend on `build` (which runs `go build -o forge ./cmd/forge`).
 
@@ -224,6 +262,10 @@ type SessionMeta struct {
 - Gateway receives SIGINT during active sessions — signal handler calls `be.Close()` which kills all tmux windows and the tmux session. Sessions are lost (in-memory only).
 - `.env` file missing — `envutil.LoadEnv` silently continues; env vars use defaults.
 - `FORGE_BIN` points to nonexistent binary — `TmuxBackend` resolves path at creation; `EnsureAgent` will fail when tmux tries to run the command.
+- Stale PID file from crash — `checkPIDFile()` detects the dead PID via `syscall.Kill(pid, 0)`, removes the file, and proceeds with a new daemon.
+- PID file in non-existent directory — `os.MkdirAll(filepath.Dir(pidFile))` creates parent dirs before writing.
+- Corrupt PID file (non-numeric content) — detected by `strconv.Atoi` failure; file is removed and startup proceeds.
+- Log file rotation — deferred to the user (logrotate, etc.). The daemon opens the log in append mode.
 
 ## Compatibility
 - `forge server` dispatches to `runGateway` with a deprecation notice on stderr.

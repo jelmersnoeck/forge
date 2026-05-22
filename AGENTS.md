@@ -145,6 +145,7 @@ just dev-gateway         # build + run gateway (foreground)
 just dev-gateway-daemon  # build + run gateway daemon
 just stop-gateway        # stop daemon gateway
 just tail-gateway        # tail daemon gateway logs
+just gateway-status      # show daemon status (PID, alive/dead, log path)
 just test               # go test ./...
 just vet                # go vet ./...
 just clean              # remove binaries
