@@ -11,7 +11,27 @@ behind Tailscale.
    `api_key`). The build script extracts it automatically.
 2. **Discord bot application** — create via
    <https://discord.com/developers/applications>, copy the bot token.
-3. **Secrets file** at `~/.openclaw/workspace/secrets/discord-bridge.env`:
+   Under **Settings → Bot → Privileged Gateway Intents**, enable
+   **Message Content Intent** — without it the bridge receives empty
+   message bodies and cannot read user directives in threads.
+3. **Discord bot token** — two options:
+
+   **A) Manual** (simplest): paste the token directly into
+   `~/.openclaw/workspace/secrets/discord-bridge.env` as
+   `DISCORD_BOT_TOKEN=...`.
+
+   **B) Keycard-brokered** (preferred when available):
+   ```bash
+   source ~/.openclaw/workspace/secrets/keycard.env
+   curl -s -X POST "$KEYCARD_ZONE_URL/oauth/2/token" \
+     -u "$KEYCARD_CLIENT_ID:$KEYCARD_CLIENT_SECRET" \
+     -d "grant_type=client_credentials&resource=discord:<bot-name>"
+   ```
+   Extract the `access_token` field from the JSON response and write it
+   into `discord-bridge.env` as `DISCORD_BOT_TOKEN`. Phase 2 will move
+   this fetch into the bridge itself at boot.
+
+4. **Secrets file** at `~/.openclaw/workspace/secrets/discord-bridge.env`:
    ```
    DISCORD_BOT_TOKEN=...
    DISCORD_GUILD_ID=1491267748632985700

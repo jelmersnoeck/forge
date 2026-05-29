@@ -111,7 +111,8 @@ func NewLiveClient(token, guildID string, logger *slog.Logger) (*LiveClient, err
 
 	s.Identify.Intents = discordgo.IntentsGuildMessages |
 		discordgo.IntentsGuildMessageReactions |
-		discordgo.IntentsGuilds
+		discordgo.IntentsGuilds |
+		discordgo.IntentsMessageContent
 
 	c := &LiveClient{
 		session: s,

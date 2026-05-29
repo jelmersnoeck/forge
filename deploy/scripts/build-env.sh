@@ -24,23 +24,38 @@ err() { echo "error: $*" >&2; exit 1; }
 [ -r "$DISCORD_SECRETS" ] || err "discord secrets not readable at $DISCORD_SECRETS — create it with DISCORD_BOT_TOKEN and DISCORD_GUILD_ID"
 
 # Extract the api_key from the first profile of type=api_key under anthropic.
+# Supports two schemas:
+#   Current (dict):  {"profiles": {"anthropic:default": {"provider":"anthropic","type":"api_key","key":"sk-..."}}}
+#   Legacy  (list):  {"profiles": [{"provider":"anthropic","type":"api_key","apiKey":"sk-..."}]}
 ANTHROPIC_API_KEY="$(python3 - "$AUTH_PROFILES" <<'PY'
 import json, sys
 with open(sys.argv[1]) as fh:
     data = json.load(fh)
-profiles = data.get("profiles", [])
-for p in profiles:
-    if p.get("provider") != "anthropic":
-        continue
-    if p.get("type") == "api_key" and p.get("apiKey"):
-        print(p["apiKey"])
-        sys.exit(0)
-    # Fall through to credentials.apiKey shape used in older profiles
-    creds = p.get("credentials") or {}
-    if creds.get("apiKey"):
-        print(creds["apiKey"])
-        sys.exit(0)
-sys.exit("no anthropic api_key profile found")
+profiles = data.get("profiles", {})
+
+# Current schema: profiles is a dict keyed by profile id.
+if isinstance(profiles, dict):
+    for pid, p in profiles.items():
+        if p.get("provider") != "anthropic":
+            continue
+        if p.get("type") == "api_key" and p.get("key"):
+            print(p["key"])
+            sys.exit(0)
+
+# Legacy schema: profiles is a list of objects with apiKey field.
+if isinstance(profiles, list):
+    for p in profiles:
+        if p.get("provider") != "anthropic":
+            continue
+        if p.get("type") == "api_key" and p.get("apiKey"):
+            print(p["apiKey"])
+            sys.exit(0)
+        creds = p.get("credentials") or {}
+        if creds.get("apiKey"):
+            print(creds["apiKey"])
+            sys.exit(0)
+
+sys.exit("no anthropic api_key profile found in " + sys.argv[1])
 PY
 )"
 
