@@ -26,7 +26,6 @@ func setupBridge(t *testing.T) (*Bridge, *discord.StubClient, *forge.StubClient)
 		Channels: []ChannelConfig{
 			{
 				ChannelID:         "channel-1",
-				RepoPath:          "/code/forge",
 				DefaultBaseBranch: "main",
 			},
 		},
@@ -55,7 +54,8 @@ func TestBridge_ThreadCreate_CreatesSession(t *testing.T) {
 	// Forge session created
 	sessions := fc.GetSessions()
 	require.Len(t, sessions, 1)
-	require.Equal(t, "/code/forge", sessions[0].CWD)
+	// Bridge always passes empty cwd; gateway picks its own WORKSPACE_DIR.
+	require.Equal(t, "", sessions[0].CWD)
 	require.Equal(t, "discord", sessions[0].Metadata["source"])
 
 	// In-memory mapping created

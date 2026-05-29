@@ -11,3 +11,4 @@ forge-agent
 worktrees/
 .forge-session
 forge-discord-bridge
+deploy/.env

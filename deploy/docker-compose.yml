@@ -1,29 +1,42 @@
-version: "3.9"
-
 services:
   forge-gateway:
     build:
       context: ..
       dockerfile: Dockerfile
+    image: forge-gateway:latest
+    container_name: forge-gateway
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set, run scripts/build-env.sh}
       - GATEWAY_PORT=3000
       - GATEWAY_HOST=0.0.0.0
-      - WORKSPACE_DIR=/tmp/forge/workspace
-      - SESSIONS_DIR=/tmp/forge/sessions
+      - WORKSPACE_DIR=/workspace
+      - SESSIONS_DIR=/sessions
     ports:
       - "3000:3000"
     volumes:
-      - forge-sessions:/tmp/forge/sessions
-      - forge-workspace:/tmp/forge/workspace
+      # Host repo directory. The gateway operates inside this single repo.
+      # Multi-repo (≥1 channel ↔ ≥1 repo) is out of scope for v1 — run
+      # additional gateway instances on different ports for that case.
+      - ${FORGE_WORKSPACE_DIR:?FORGE_WORKSPACE_DIR must point to the host repo dir, e.g. /Users/you/code/forge}:/workspace
+      - forge-sessions:/sessions
+    restart: unless-stopped
+    labels:
+      dashboard.enable: "true"
+      dashboard.name: "Forge gateway"
+      dashboard.description: "Forge agent gateway API (port 3000)"
+      dashboard.icon: "⚒️"
+      dashboard.category: "Forge"
+      dashboard.port: "3000"
 
   discord-bridge:
     build:
       context: ..
       dockerfile: Dockerfile.bridge
+    image: forge-discord-bridge:latest
+    container_name: forge-discord-bridge
     environment:
-      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:?DISCORD_BOT_TOKEN must be set}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID:?DISCORD_GUILD_ID must be set}
       - FORGE_GATEWAY_URL=http://forge-gateway:3000
       - BRIDGE_LISTEN_ADDR=:8080
       - BRIDGE_CHANNELS_PATH=/config/channels.json
@@ -31,14 +44,26 @@ services:
       - BRIDGE_SHOW_THINKING=${BRIDGE_SHOW_THINKING:-false}
       - BRIDGE_REVEAL_SESSION_ID=${BRIDGE_REVEAL_SESSION_ID:-false}
       - BRIDGE_ADMIN_TOKEN=${BRIDGE_ADMIN_TOKEN:-}
+      - BRIDGE_BOT_NAME=${BRIDGE_BOT_NAME:-forge-bot}
+      - BRIDGE_BOT_STATUS=${BRIDGE_BOT_STATUS:-}
     ports:
-      - "8080:8080"
+      # Admin port 8087 on host (8080 inside container).
+      # Host 8080 is taken by spray-wall.
+      - "8087:8080"
     volumes:
       - ./channels.json:/config/channels.json:ro
+      - forge-bridge-data:/data
     depends_on:
       - forge-gateway
     restart: unless-stopped
+    labels:
+      dashboard.enable: "true"
+      dashboard.name: "Forge Discord bridge"
+      dashboard.description: "Discord ↔ Forge bridge admin (port 8087)"
+      dashboard.icon: "🌉"
+      dashboard.category: "Forge"
+      dashboard.port: "8087"
 
 volumes:
   forge-sessions:
-  forge-workspace:
+  forge-bridge-data:

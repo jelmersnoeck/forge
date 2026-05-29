@@ -139,8 +139,7 @@ func (b *Bridge) onThreadCreate(ctx context.Context, evt discord.Event) error {
 		return nil
 	}
 
-	cc := b.cfg.GetChannelConfig(evt.ChannelID)
-	if cc == nil {
+	if b.cfg.GetChannelConfig(evt.ChannelID) == nil {
 		return nil
 	}
 
@@ -154,7 +153,9 @@ func (b *Bridge) onThreadCreate(ctx context.Context, evt discord.Event) error {
 		"discord.username":  evt.Username,
 	}
 
-	sessionID, err := b.forge.CreateSession(ctx, cc.RepoPath, metadata)
+	// cwd is empty: the gateway uses its WORKSPACE_DIR, so the bridge image
+	// stays portable and never needs to know host paths.
+	sessionID, err := b.forge.CreateSession(ctx, "", metadata)
 	if err != nil {
 		b.logger.Error("failed to create forge session", "error", err)
 		_, _ = b.discord.PostMessage(ctx, evt.ThreadID,

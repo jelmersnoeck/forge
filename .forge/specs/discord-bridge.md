@@ -271,13 +271,16 @@ on SIGHUP):
   "channels": [
     {
       "channelId": "1504550234661978343",
-      "repoPath": "/code/forge",
       "defaultBaseBranch": "main",
       "allowedUserIds": null
     }
   ]
 }
 ```
+
+The bridge never carries a host filesystem path. The gateway controls where
+work happens via its own `WORKSPACE_DIR`. This keeps the bridge image
+portable across operator machines.
 - `allowedUserIds: null` (or missing) → anyone in the channel can start a task.
 - `allowedUserIds: [...]` → only listed Discord user ids can start a task.
   Others get a polite refusal and a 🚫 reaction.

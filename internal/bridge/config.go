@@ -10,9 +10,12 @@ import (
 )
 
 // ChannelConfig describes a single configured Forge channel.
+//
+// The bridge never tells the gateway where to do work on disk — that is
+// controlled by the gateway's WORKSPACE_DIR. The bridge only carries channel
+// identity, default base branch, and an optional user allowlist.
 type ChannelConfig struct {
 	ChannelID         string   `json:"channelId"`
-	RepoPath          string   `json:"repoPath"`
 	DefaultBaseBranch string   `json:"defaultBaseBranch"`
 	AllowedUserIDs    []string `json:"allowedUserIds"`
 }
