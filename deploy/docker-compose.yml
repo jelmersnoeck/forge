@@ -11,6 +11,12 @@ services:
       - GATEWAY_HOST=0.0.0.0
       - WORKSPACE_DIR=/workspace
       - SESSIONS_DIR=/sessions
+      # FORGE_BIN tells the tmux backend where the forge binary lives. The
+      # default is set in the image (Dockerfile) so this line is informational
+      # / overridable. DO NOT remove without also dropping the Dockerfile ENV;
+      # the bare "forge" default tripped EnsureAgent through filepath.Abs and
+      # tried to exec /forge (see 2026-06-11 incident).
+      - FORGE_BIN=${FORGE_BIN:-/usr/local/bin/forge}
     ports:
       - "3000:3000"
     volumes:
