@@ -29,15 +29,36 @@ type Client interface {
 type HTTPClient struct {
 	baseURL    string
 	httpClient *http.Client
-	logger     *slog.Logger
+	// sseClient is a long-lived client for SSE subscriptions. It shares a
+	// connection pool across all sessions and has no overall request timeout
+	// (SSE streams are long-lived by definition). We keep it as a struct field
+	// instead of constructing one per call so we don't leak a fresh
+	// http.Transport (and its socket pool) on every reconnect attempt — that
+	// was the root cause of the 17k-TCP-conn incident on 2026-06-11.
+	sseClient *http.Client
+	logger    *slog.Logger
 }
 
 // NewHTTPClient creates a Forge gateway client.
 func NewHTTPClient(baseURL string, logger *slog.Logger) *HTTPClient {
+	sseTransport := &http.Transport{
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+		// Aggressive keep-alive: SSE connections are long-lived but when they
+		// drop we want the idle ones cleaned up promptly, not lingering for
+		// the OS default (~2h on macOS).
+		DisableKeepAlives: false,
+	}
 	return &HTTPClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		},
+		sseClient: &http.Client{
+			Transport: sseTransport,
+			// No Timeout — SSE streams are long-lived. The request-level ctx
+			// passed to SubscribeEvents handles cancellation.
 		},
 		logger: logger,
 	}
@@ -126,9 +147,10 @@ func (c *HTTPClient) SubscribeEvents(ctx context.Context, sessionID string) (<-c
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
-	// Use a client with no timeout for SSE streaming
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Reuse the long-lived SSE client (shared transport, shared connection
+	// pool). DO NOT construct a fresh http.Client here — see comment on
+	// HTTPClient.sseClient.
+	resp, err := c.sseClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("subscribe events: %w", err)
 	}

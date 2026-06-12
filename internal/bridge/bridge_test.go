@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jelmersnoeck/forge/internal/discord"
 	"github.com/jelmersnoeck/forge/internal/forge"
@@ -275,6 +276,80 @@ func TestBridge_ThreadUpdate_Archived_DropsSession(t *testing.T) {
 
 	require.NotEmpty(t, fc.GetInterrupts())
 	require.Empty(t, b.sessions.GetByThread("thread-1"))
+}
+
+// TestBridge_OnForgeEvent_DoneDoesNotDeleteSession is a regression test for
+// the bug fixed on 2026-06-12: the bridge used to interpret evt.Type=="done"
+// as a session terminator, deleting the thread→session mapping after every
+// turn. That silently dropped every subsequent message in the thread (the
+// "void" incident). "done" is a TURN terminator emitted by the runtime loop
+// when the agent stops calling tools; the session itself remains alive.
+func TestBridge_OnForgeEvent_DoneDoesNotDeleteSession(t *testing.T) {
+	b, _, _ := setupBridge(t)
+	ctx := context.Background()
+
+	b.sessions.Set("thread-1", "session-1")
+	b.mu.Lock()
+	b.translators["thread-1"] = NewTranslator("thread-1", "", "session-1", false, false)
+	b.mu.Unlock()
+
+	doneEvt := types.OutboundEvent{ID: "evt-1", Type: "done"}
+	require.NoError(t, b.OnForgeEvent(ctx, "thread-1", doneEvt))
+
+	// The mapping must remain so follow-up user messages still route to
+	// this session. Only 🛑 reaction and thread archival should delete it.
+	require.Equal(t, "session-1", b.sessions.GetByThread("thread-1"),
+		"done event must not delete thread→session mapping (see 2026-06-12 incident)")
+}
+
+// TestSseBackoffFor_Schedule pins the exponential backoff schedule so we
+// don't accidentally regress to a flat 1s reconnect loop (the 2026-06-11
+// 17k-TCP-connection incident).
+func TestSseBackoffFor_Schedule(t *testing.T) {
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, time.Second},
+		{1, time.Second},
+		{2, 2 * time.Second},
+		{3, 4 * time.Second},
+		{4, 8 * time.Second},
+		{5, 16 * time.Second},
+		{6, sseBackoffMax},
+		{7, sseBackoffMax},
+		{100, sseBackoffMax}, // guard against overflow
+	}
+	for _, tc := range cases {
+		got := sseBackoffFor(tc.attempt)
+		require.Equal(t, tc.want, got, "sseBackoffFor(%d)", tc.attempt)
+	}
+}
+
+// TestBridge_OnForgeEvent_ResetsReconnectAttempts confirms that a successful
+// event delivery clears the per-thread reconnect counter so a stretch of
+// healthy traffic doesn't accidentally exhaust the sseMaxReconnectAttempts
+// budget over the session's lifetime.
+func TestBridge_OnForgeEvent_ResetsReconnectAttempts(t *testing.T) {
+	b, _, _ := setupBridge(t)
+	ctx := context.Background()
+
+	b.sessions.Set("thread-1", "session-1")
+	b.mu.Lock()
+	b.translators["thread-1"] = NewTranslator("thread-1", "", "session-1", false, false)
+	b.reconnectAttempts["thread-1"] = 3
+	b.reconnectLastErr["thread-1"] = "transient"
+	b.mu.Unlock()
+
+	evt := types.OutboundEvent{ID: "evt-1", Type: "text", Content: "hi"}
+	require.NoError(t, b.OnForgeEvent(ctx, "thread-1", evt))
+
+	b.mu.Lock()
+	_, hasAttempts := b.reconnectAttempts["thread-1"]
+	_, hasErr := b.reconnectLastErr["thread-1"]
+	b.mu.Unlock()
+	require.False(t, hasAttempts, "successful event must clear reconnectAttempts")
+	require.False(t, hasErr, "successful event must clear reconnectLastErr")
 }
 
 // SetChannelsForTest is a test helper on Config.

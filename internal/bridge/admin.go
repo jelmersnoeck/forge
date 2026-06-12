@@ -62,6 +62,17 @@ func (a *AdminServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(w, "# HELP bridge_active_sessions Number of active bridge sessions\n")
 	_, _ = fmt.Fprintf(w, "# TYPE bridge_active_sessions gauge\n")
 	_, _ = fmt.Fprintf(w, "bridge_active_sessions %d\n", a.bridge.ActiveSessionCount())
+
+	reconnecting := a.bridge.ReconnectingThreads()
+	_, _ = fmt.Fprintf(w, "# HELP bridge_sse_reconnecting_threads Number of threads currently retrying SSE reconnect\n")
+	_, _ = fmt.Fprintf(w, "# TYPE bridge_sse_reconnecting_threads gauge\n")
+	_, _ = fmt.Fprintf(w, "bridge_sse_reconnecting_threads %d\n", len(reconnecting))
+
+	_, _ = fmt.Fprintf(w, "# HELP bridge_sse_reconnect_attempts Current SSE reconnect attempt count per thread (resets on success)\n")
+	_, _ = fmt.Fprintf(w, "# TYPE bridge_sse_reconnect_attempts gauge\n")
+	for threadID, attempts := range reconnecting {
+		_, _ = fmt.Fprintf(w, "bridge_sse_reconnect_attempts{thread=%q} %d\n", threadID, attempts)
+	}
 }
 
 func (a *AdminServer) handleListSessions(w http.ResponseWriter, _ *http.Request) {

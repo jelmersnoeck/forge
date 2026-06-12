@@ -27,20 +27,55 @@ type Bridge struct {
 	mu          sync.Mutex
 	translators map[string]*Translator
 	cancelFns   map[string]context.CancelFunc
+
+	// SSE reconnect tracking, keyed by threadID. Reset to 0 on any successful
+	// event delivery (see OnForgeEvent). Incremented on each disconnect.
+	// Capped at sseMaxReconnectAttempts — after that we declare the relay
+	// dead and stop reconnecting.
+	reconnectAttempts map[string]int
+	reconnectLastErr  map[string]string // for /metrics surfacing
+}
+
+const (
+	// sseMaxReconnectAttempts is the maximum number of consecutive failed
+	// reconnect attempts before we declare the SSE relay dead and stop
+	// reconnecting. With the backoff schedule below this is ~5 minutes of
+	// trying before giving up.
+	sseMaxReconnectAttempts = 10
+
+	// sseBackoffInitial is the first reconnect delay. Doubles each attempt.
+	sseBackoffInitial = time.Second
+	// sseBackoffMax caps the exponential backoff.
+	sseBackoffMax = 30 * time.Second
+)
+
+// sseBackoffFor returns the backoff duration for the given attempt number
+// (1-indexed). Schedule: 1s, 2s, 4s, 8s, 16s, 30s (cap).
+func sseBackoffFor(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	d := sseBackoffInitial << (attempt - 1)
+	if d <= 0 || d > sseBackoffMax {
+		return sseBackoffMax
+	}
+	return d
 }
 
 // New creates a new Bridge.
 func New(f forge.Client, d discord.Client, cfg *Config, logger *slog.Logger) *Bridge {
 	return &Bridge{
-		forge:       f,
-		discord:     d,
-		cfg:         cfg,
-		logger:      logger,
-		sessions:    NewSessionMap(),
-		dedup:       NewEventDedup(),
-		outbox:      NewRetryQueue(logger),
-		translators: make(map[string]*Translator),
-		cancelFns:   make(map[string]context.CancelFunc),
+		forge:             f,
+		discord:           d,
+		cfg:               cfg,
+		logger:            logger,
+		sessions:          NewSessionMap(),
+		dedup:             NewEventDedup(),
+		outbox:            NewRetryQueue(logger),
+		translators:       make(map[string]*Translator),
+		cancelFns:         make(map[string]context.CancelFunc),
+		reconnectAttempts: make(map[string]int),
+		reconnectLastErr:  make(map[string]string),
 	}
 }
 
@@ -274,6 +309,15 @@ func (b *Bridge) OnForgeEvent(ctx context.Context, threadID string, evt types.Ou
 		return nil
 	}
 
+	// Successful event delivery resets the SSE reconnect counter for this
+	// thread. The relay is healthy.
+	b.mu.Lock()
+	if _, tracked := b.reconnectAttempts[threadID]; tracked {
+		delete(b.reconnectAttempts, threadID)
+		delete(b.reconnectLastErr, threadID)
+	}
+	b.mu.Unlock()
+
 	// Idempotency check via ring buffer
 	if evt.ID != "" {
 		if b.dedup.Seen(sessionID, evt.ID) {
@@ -316,13 +360,21 @@ func (b *Bridge) OnForgeEvent(ctx context.Context, threadID string, evt types.Ou
 		b.dedup.Record(sessionID, evt.ID)
 	}
 
-	// Handle session completion
-	if evt.Type == "done" {
-		b.cancelRelay(threadID)
-		b.sessions.Delete(threadID)
-		b.dedup.Drop(sessionID)
-		b.updateStatus()
-	}
+	// IMPORTANT: "done" is a TURN terminator, not a SESSION terminator. The
+	// runtime loop emits a done event after every assistant turn that has no
+	// tool_use (i.e., the agent stopped calling tools and is awaiting the next
+	// user message). The SSE stream stays open, the agent stays alive, and the
+	// session is reusable for follow-up messages.
+	//
+	// Treating "done" as session-terminal here was the bug that caused the
+	// thread→session mapping to be deleted after the very first phase of
+	// every Forge run — silently dropping every subsequent message in the
+	// thread. (See incident 2026-06-12: ~9 hours of @Troy mentions routed into
+	// the void after spec-phase completion.)
+	//
+	// Session→thread mappings are now cleaned up only via explicit user
+	// actions: the 🛑 reaction (onReactionAdd) or thread archival
+	// (onThreadUpdate). Both already call sessions.Delete + cancelRelay.
 
 	return nil
 }
@@ -364,9 +416,17 @@ func (b *Bridge) startSSERelay(ctx context.Context, threadID, sessionID string) 
 	subCtx, cancel := context.WithCancel(ctx)
 
 	b.mu.Lock()
-	tr := NewTranslator(threadID, "", sessionID,
-		b.cfg.ShowThinking, b.cfg.RevealSessionID)
-	b.translators[threadID] = tr
+	// Preserve any existing translator state for this thread. We used to
+	// blindly construct a new Translator on every (re)connect, which wiped
+	// in-flight batching state. On a transient disconnect we want to keep
+	// what we have.
+	tr, ok := b.translators[threadID]
+	if !ok {
+		tr = NewTranslator(threadID, "", sessionID,
+			b.cfg.ShowThinking, b.cfg.RevealSessionID)
+		b.translators[threadID] = tr
+	}
+	_ = tr // silence unused if struct fields evolve
 	b.cancelFns[threadID] = cancel
 	b.mu.Unlock()
 
@@ -377,6 +437,9 @@ func (b *Bridge) startSSERelay(ctx context.Context, threadID, sessionID string) 
 		if err != nil {
 			b.logger.Error("failed to subscribe to forge events",
 				"session", sessionID, "error", err)
+			// Treat subscribe failure as a disconnect so we backoff and retry
+			// rather than silently leaking the relay slot.
+			b.handleSSEDisconnect(ctx, threadID, sessionID, err)
 			return
 		}
 
@@ -384,7 +447,7 @@ func (b *Bridge) startSSERelay(ctx context.Context, threadID, sessionID string) 
 			select {
 			case evt, ok := <-events:
 				if !ok {
-					b.handleSSEDisconnect(ctx, threadID, sessionID)
+					b.handleSSEDisconnect(ctx, threadID, sessionID, nil)
 					return
 				}
 				if err := b.OnForgeEvent(subCtx, threadID, evt); err != nil {
@@ -398,15 +461,56 @@ func (b *Bridge) startSSERelay(ctx context.Context, threadID, sessionID string) 
 	}()
 }
 
-func (b *Bridge) handleSSEDisconnect(ctx context.Context, threadID, sessionID string) {
+func (b *Bridge) handleSSEDisconnect(ctx context.Context, threadID, sessionID string, cause error) {
+	// If the thread→session mapping is gone, the relay is intentionally dead
+	// (🛑, archive, etc.). Stop reconnecting.
 	if b.sessions.GetByThread(threadID) == "" {
+		b.mu.Lock()
+		delete(b.reconnectAttempts, threadID)
+		delete(b.reconnectLastErr, threadID)
+		b.mu.Unlock()
 		return
 	}
 
-	b.logger.Warn("SSE disconnected, attempting reconnect",
-		"session", sessionID, "thread", threadID)
+	// Increment attempt counter and check the cap.
+	b.mu.Lock()
+	b.reconnectAttempts[threadID]++
+	attempt := b.reconnectAttempts[threadID]
+	if cause != nil {
+		b.reconnectLastErr[threadID] = cause.Error()
+	}
+	b.mu.Unlock()
 
-	// Post warning reaction
+	if attempt > sseMaxReconnectAttempts {
+		b.logger.Error("SSE relay declared dead after max reconnect attempts — stopping retries",
+			"session", sessionID,
+			"thread", threadID,
+			"attempts", attempt,
+			"last_error", b.reconnectLastErr[threadID])
+		// Tear down the relay slot but DO NOT delete the session mapping —
+		// the session may still be revivable via /sessions/{id}/messages,
+		// and a future bridge restart will pick it up from the pinned
+		// forge-meta. We just stop spinning sockets at it.
+		b.cancelRelay(threadID)
+		b.mu.Lock()
+		delete(b.reconnectAttempts, threadID)
+		delete(b.reconnectLastErr, threadID)
+		b.mu.Unlock()
+		// Best-effort warning post to the thread so it isn't a silent death.
+		_, _ = b.discord.PostMessage(ctx, threadID,
+			"⚠️ Forge event stream lost (max reconnect attempts exceeded). "+
+				"This session is no longer being relayed. Restart the bridge or open a new thread to recover.")
+		return
+	}
+
+	backoff := sseBackoffFor(attempt)
+	b.logger.Warn("SSE disconnected, attempting reconnect",
+		"session", sessionID,
+		"thread", threadID,
+		"attempt", attempt,
+		"backoff", backoff)
+
+	// Post warning reaction (best effort).
 	b.mu.Lock()
 	tr, ok := b.translators[threadID]
 	b.mu.Unlock()
@@ -414,10 +518,6 @@ func (b *Bridge) handleSSEDisconnect(ctx context.Context, threadID, sessionID st
 		_ = b.discord.AddReaction(ctx, threadID, tr.lastBotMsgID, "⚠️")
 	}
 
-	// Reconnect with backoff
-	backoff := time.Second
-	// Wait before reconnecting (startSSERelay is async — it spawns a goroutine
-	// that will call handleSSEDisconnect again if the stream drops).
 	select {
 	case <-ctx.Done():
 		return
@@ -435,6 +535,8 @@ func (b *Bridge) cancelRelay(threadID string) {
 		delete(b.cancelFns, threadID)
 	}
 	delete(b.translators, threadID)
+	delete(b.reconnectAttempts, threadID)
+	delete(b.reconnectLastErr, threadID)
 }
 
 func (b *Bridge) updateStatus() {
@@ -446,4 +548,17 @@ func (b *Bridge) updateStatus() {
 // ActiveSessionCount returns the number of active sessions.
 func (b *Bridge) ActiveSessionCount() int {
 	return b.sessions.Len()
+}
+
+// ReconnectingThreads returns a snapshot of threadID→current-attempt-count
+// for any thread whose SSE relay is currently in backoff/retry. Used by the
+// admin /metrics endpoint to surface relay health.
+func (b *Bridge) ReconnectingThreads() map[string]int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make(map[string]int, len(b.reconnectAttempts))
+	for k, v := range b.reconnectAttempts {
+		out[k] = v
+	}
+	return out
 }
