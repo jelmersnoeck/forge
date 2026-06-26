@@ -227,6 +227,7 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req types.ChatRequest) (<-
 func (p *ClaudeCLIProvider) buildArgs(req types.ChatRequest, prompt string) []string {
 	args := []string{
 		"-p",
+		"--verbose",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
 		"--dangerously-skip-permissions",

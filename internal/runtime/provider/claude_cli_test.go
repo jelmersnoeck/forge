@@ -244,6 +244,7 @@ func TestBuildArgs(t *testing.T) {
 			prompt: "hello",
 			wantArgs: []string{
 				"-p",
+				"--verbose",
 				"--output-format", "stream-json",
 				"--include-partial-messages",
 				"--dangerously-skip-permissions",
@@ -262,6 +263,7 @@ func TestBuildArgs(t *testing.T) {
 			prompt: "what's up",
 			wantArgs: []string{
 				"-p",
+				"--verbose",
 				"--output-format", "stream-json",
 				"--include-partial-messages",
 				"--dangerously-skip-permissions",
@@ -276,6 +278,7 @@ func TestBuildArgs(t *testing.T) {
 			sessionID: "session-greendale-123",
 			wantArgs: []string{
 				"-p",
+				"--verbose",
 				"--output-format", "stream-json",
 				"--include-partial-messages",
 				"--dangerously-skip-permissions",
@@ -289,6 +292,7 @@ func TestBuildArgs(t *testing.T) {
 			prompt: "hey",
 			wantArgs: []string{
 				"-p",
+				"--verbose",
 				"--output-format", "stream-json",
 				"--include-partial-messages",
 				"--dangerously-skip-permissions",
