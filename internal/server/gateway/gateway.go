@@ -215,16 +215,6 @@ func relayBackoff(attempt int) time.Duration {
 	return d
 }
 
-// stopRelay cancels and cleans up the relay for a session.
-func stopRelay(sessionID string) {
-	relaysMu.Lock()
-	entry, ok := relays[sessionID]
-	if ok {
-		entry.cancel()
-	}
-	relaysMu.Unlock()
-}
-
 func isDataLine(line string) bool {
 	return len(line) > 6 && line[:6] == "data: "
 }

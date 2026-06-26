@@ -136,7 +136,7 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		var emit func(types.OutboundEvent)
-		turnToolsUsed := false  // reset each turn; tracks whether any tool_use event fired
+		turnToolsUsed := false   // reset each turn; tracks whether any tool_use event fired
 		turnInterrupted := false // set when turn context is cancelled by interrupt
 		emit = func(event types.OutboundEvent) {
 			if event.ID == "" {
