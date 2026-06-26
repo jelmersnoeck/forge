@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -58,7 +59,7 @@ func TestPostMessages_Accepted(t *testing.T) {
 	require.Equal(t, "queued", body["status"])
 
 	// The message should be in the hub queue.
-	msg := hub.PullMessage()
+	msg, _ := hub.PullMessage(context.Background())
 	require.Equal(t, "Have you ever heard of the Darkest Timeline?", msg.Text)
 	require.Equal(t, "Abed Nadir", msg.User)
 	require.Equal(t, "dreamatorium", msg.Source)
@@ -102,7 +103,7 @@ func TestPostMessages_Defaults(t *testing.T) {
 
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	msg := hub.PullMessage()
+	msg, _ := hub.PullMessage(context.Background())
 	require.Equal(t, "anonymous", msg.User)
 	require.Equal(t, "api", msg.Source)
 }

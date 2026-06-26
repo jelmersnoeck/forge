@@ -163,7 +163,7 @@ func TestPRMonitor_IdleWhenWaiting(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		hub.PullMessage()
+		hub.PullMessage(context.Background())
 	}()
 
 	// Give the goroutine time to register as a waiter.
@@ -258,7 +258,7 @@ func TestPRMonitor_InjectsFixMessage(t *testing.T) {
 		Source: "pr_monitor",
 	})
 
-	msg := hub.PullMessage()
+	msg, _ := hub.PullMessage(context.Background())
 	r.Equal("pr_monitor", msg.Source)
 	r.Contains(msg.Text, "CI checks are failing")
 }

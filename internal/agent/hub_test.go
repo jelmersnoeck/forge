@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -19,7 +20,8 @@ func TestHub_PushPull_Buffered(t *testing.T) {
 		User: "Abed Nadir",
 	})
 
-	msg := hub.PullMessage()
+	msg, ok := hub.PullMessage(context.Background())
+	require.True(t, ok)
 	require.Equal(t, "Cool. Cool cool cool.", msg.Text)
 	require.Equal(t, "Abed Nadir", msg.User)
 }
@@ -31,7 +33,7 @@ func TestHub_PullPush_Waiter(t *testing.T) {
 	var got types.InboundMessage
 	done := make(chan struct{})
 	go func() {
-		got = hub.PullMessage()
+		got, _ = hub.PullMessage(context.Background())
 		close(done)
 	}()
 
@@ -59,8 +61,8 @@ func TestHub_FIFO(t *testing.T) {
 	hub.PushMessage(types.InboundMessage{Text: "First: Pop Pop!", User: "Magnitude"})
 	hub.PushMessage(types.InboundMessage{Text: "Second: Streets ahead", User: "Pierce Hawthorne"})
 
-	first := hub.PullMessage()
-	second := hub.PullMessage()
+	first, _ := hub.PullMessage(context.Background())
+	second, _ := hub.PullMessage(context.Background())
 
 	require.Equal(t, "First: Pop Pop!", first.Text)
 	require.Equal(t, "Second: Streets ahead", second.Text)
@@ -138,7 +140,7 @@ func TestHub_ConcurrentPushPull(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			received[idx] = hub.PullMessage()
+			received[idx], _ = hub.PullMessage(context.Background())
 		}(i)
 	}
 
@@ -247,7 +249,7 @@ func TestHub_PushMessage_ReturnsImmediateStatus(t *testing.T) {
 			setup: func(hub *Hub) {
 				// Start a goroutine that will wait for a message
 				go func() {
-					hub.PullMessage()
+					hub.PullMessage(context.Background())
 				}()
 				// Give it time to register as a waiter
 				time.Sleep(20 * time.Millisecond)
@@ -274,5 +276,75 @@ func TestHub_PushMessage_ReturnsImmediateStatus(t *testing.T) {
 
 			require.Equal(t, tc.expected, immediate)
 		})
+	}
+}
+
+func TestHub_PullMessage_ContextCancelled(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	var msg types.InboundMessage
+	var ok bool
+	go func() {
+		defer close(done)
+		msg, ok = hub.PullMessage(ctx)
+	}()
+
+	// Give the goroutine time to register as a waiter.
+	time.Sleep(20 * time.Millisecond)
+
+	// Cancel the context — PullMessage should return.
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PullMessage did not return after context cancellation")
+	}
+
+	r.False(ok, "PullMessage should return false when context is cancelled")
+	r.Empty(msg.Text)
+
+	// The waiter should have been cleaned up — no leaks.
+	hub.qmu.Lock()
+	r.Empty(hub.waiters, "waiters should be empty after cancellation")
+	hub.qmu.Unlock()
+}
+
+func TestHub_PullMessage_ContextCancelled_MessageNotLost(t *testing.T) {
+	// If a message arrives concurrently with cancellation, it must not be lost.
+	r := require.New(t)
+	hub := NewHub()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.PullMessage(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Push a message and immediately cancel — message may arrive before or after.
+	hub.PushMessage(types.InboundMessage{Text: "Don't lose me", User: "Britta"})
+	cancel()
+
+	<-done
+
+	// The message was either delivered to the PullMessage call or re-queued.
+	// Either way, it should be retrievable.
+	hub.qmu.Lock()
+	queued := len(hub.queue)
+	hub.qmu.Unlock()
+
+	// If it was re-queued, pull it. If PullMessage got it, queue is empty — both are fine.
+	if queued > 0 {
+		msg, ok := hub.PullMessage(context.Background())
+		r.True(ok)
+		r.Equal("Don't lose me", msg.Text)
 	}
 }

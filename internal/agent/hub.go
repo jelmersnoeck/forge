@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"log"
 	"sync"
 
@@ -60,21 +61,46 @@ func (h *Hub) PushMessage(msg types.InboundMessage) bool {
 	return false
 }
 
-// PullMessage blocks until a message is available.
-func (h *Hub) PullMessage() types.InboundMessage {
+// PullMessage blocks until a message is available or the context is cancelled.
+// Returns the message and true, or a zero value and false if the context was cancelled.
+func (h *Hub) PullMessage(ctx context.Context) (types.InboundMessage, bool) {
 	h.qmu.Lock()
 	if len(h.queue) > 0 {
 		msg := h.queue[0]
 		h.queue = h.queue[1:]
 		h.qmu.Unlock()
-		return msg
+		return msg, true
 	}
 
 	ch := make(chan types.InboundMessage, 1)
 	h.waiters = append(h.waiters, ch)
 	h.qmu.Unlock()
 
-	return <-ch
+	select {
+	case msg := <-ch:
+		return msg, true
+	case <-ctx.Done():
+		// Remove our waiter so it doesn't leak. If a message was delivered
+		// concurrently, drain it so the sender isn't blocked.
+		h.qmu.Lock()
+		for i, w := range h.waiters {
+			if w == ch {
+				h.waiters = append(h.waiters[:i], h.waiters[i+1:]...)
+				break
+			}
+		}
+		h.qmu.Unlock()
+
+		// Drain any message that arrived between the select and lock.
+		select {
+		case msg := <-ch:
+			// Re-queue so it's not lost.
+			h.PushMessage(msg)
+		default:
+		}
+
+		return types.InboundMessage{}, false
+	}
 }
 
 // PublishEvent sends an event to all subscribers.

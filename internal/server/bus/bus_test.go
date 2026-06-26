@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -142,7 +143,7 @@ func TestPushPullMessage(t *testing.T) {
 	var got types.InboundMessage
 	done := make(chan struct{})
 	go func() {
-		got = PullMessage("push-pull")
+		got, _ = PullMessage(context.Background(), "push-pull")
 		close(done)
 	}()
 
@@ -162,7 +163,7 @@ func TestPullMessage_BlocksUntilPush(t *testing.T) {
 	done := make(chan struct{})
 
 	go func() {
-		got = PullMessage("blocking-test")
+		got, _ = PullMessage(context.Background(), "blocking-test")
 		close(done)
 	}()
 

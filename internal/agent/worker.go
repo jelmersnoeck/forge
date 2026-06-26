@@ -124,14 +124,11 @@ func (w *Worker) Run(ctx context.Context) {
 
 	var historyID string
 	for {
-		select {
-		case <-ctx.Done():
+		msg, ok := w.hub.PullMessage(ctx)
+		if !ok {
 			log.Printf("[agent:%s] worker stopped", w.sessionID)
 			return
-		default:
 		}
-
-		msg := w.hub.PullMessage()
 		if len(msg.Text) > 100 {
 			log.Printf("[agent:%s] <- %s...", w.sessionID, msg.Text[:100])
 		} else {
@@ -139,7 +136,8 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		var emit func(types.OutboundEvent)
-		turnToolsUsed := false // reset each turn; tracks whether any tool_use event fired
+		turnToolsUsed := false   // reset each turn; tracks whether any tool_use event fired
+		turnInterrupted := false // set when turn context is cancelled by interrupt
 		emit = func(event types.OutboundEvent) {
 			if event.ID == "" {
 				event.ID = uuid.New().String()
@@ -165,7 +163,9 @@ func (w *Worker) Run(ctx context.Context) {
 				// Before done event, execute completion queue
 				w.executeCompletionQueue(ctx, registry, historyID, emit)
 				// Deterministic PR ensure step — runs before done reaches CLI.
-				if turnToolsUsed {
+				// Skip when the turn was interrupted: the user pressed Ctrl+C,
+				// so spending up to 30s on PR operations would feel stuck.
+				if turnToolsUsed && !turnInterrupted {
 					w.ensurePR(ctx, prov, w.specPath, emit)
 				}
 			}
@@ -269,6 +269,7 @@ func (w *Worker) Run(ctx context.Context) {
 			// Distinguish interrupts from real errors.
 			switch turnCtx.Err() {
 			case context.Canceled:
+				turnInterrupted = true
 				emit(types.OutboundEvent{Type: "interrupted"})
 			default:
 				emit(types.OutboundEvent{Type: "error", Content: runErr.Error()})
@@ -314,8 +315,12 @@ func (w *Worker) runOrchestrator(
 
 	result, err := orch.Run(ctx, opts)
 
-	// Emit done so the CLI returns to prompt.
-	emit(types.OutboundEvent{Type: "done"})
+	// Only emit done on success. On error (including interrupts), the
+	// caller emits interrupted/error + done — emitting here too would
+	// cause a double done that confuses the CLI's working state.
+	if err == nil {
+		emit(types.OutboundEvent{Type: "done"})
+	}
 	return result, err
 }
 
@@ -363,7 +368,9 @@ func (w *Worker) runSinglePhase(
 			Timestamp: time.Now().Unix(),
 		})
 		err := phase.RunReviewOnly(ctx, opts)
-		emit(types.OutboundEvent{Type: "done"})
+		if err == nil {
+			emit(types.OutboundEvent{Type: "done"})
+		}
 		return err
 	}
 
@@ -391,15 +398,16 @@ func (w *Worker) runSinglePhase(
 
 	err := phase.RunSinglePhase(ctx, opts, p)
 
-	emit(types.OutboundEvent{
-		ID:        uuid.New().String(),
-		SessionID: w.sessionID,
-		Type:      "phase_complete",
-		Content:   p.Name,
-		Timestamp: time.Now().Unix(),
-	})
-
-	emit(types.OutboundEvent{Type: "done"})
+	if err == nil {
+		emit(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: w.sessionID,
+			Type:      "phase_complete",
+			Content:   p.Name,
+			Timestamp: time.Now().Unix(),
+		})
+		emit(types.OutboundEvent{Type: "done"})
+	}
 	return err
 }
 
