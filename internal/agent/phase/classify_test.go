@@ -53,6 +53,10 @@ func TestParseIntent(t *testing.T) {
 			input: `{"intent": "investigate"}`,
 			want:  IntentInvestigate,
 		},
+		"review": {
+			input: `{"intent": "review"}`,
+			want:  IntentReview,
+		},
 		"question with whitespace": {
 			input: `  {"intent": "question"}  `,
 			want:  IntentQuestion,
@@ -133,6 +137,10 @@ func TestClassifyIntentSuccess(t *testing.T) {
 		"investigate": {
 			response: `{"intent": "investigate"}`,
 			want:     IntentInvestigate,
+		},
+		"review": {
+			response: `{"intent": "review"}`,
+			want:     IntentReview,
 		},
 	}
 
@@ -257,15 +265,19 @@ func TestClassifyIntentPromptTruncation(t *testing.T) {
 	r.LessOrEqual(len([]rune(capturedPrompt)), maxClassifyPromptLen+3) // +3 for "..."
 }
 
-// promptCapturingProvider wraps a provider and captures the user message.
+// promptCapturingProvider wraps a provider and captures the user and system messages.
 type promptCapturingProvider struct {
 	inner          *mockProvider
 	capturedPrompt *string
+	capturedSystem *string
 }
 
 func (p *promptCapturingProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
-	if len(req.Messages) > 0 && len(req.Messages[0].Content) > 0 {
+	if p.capturedPrompt != nil && len(req.Messages) > 0 && len(req.Messages[0].Content) > 0 {
 		*p.capturedPrompt = req.Messages[0].Content[0].Text
+	}
+	if p.capturedSystem != nil && len(req.System) > 0 {
+		*p.capturedSystem = req.System[0].Text
 	}
 	return p.inner.Chat(ctx, req)
 }
@@ -404,4 +416,217 @@ func TestParseIntentCodeFenced(t *testing.T) {
 			r.Equal(tc.want, got)
 		})
 	}
+}
+
+func TestParseClassification(t *testing.T) {
+	specs := []types.SpecEntry{
+		{ID: "paintball", Status: "active", Header: "Annual paintball game"},
+		{ID: "study-group", Status: "draft", Header: "Study group management"},
+	}
+
+	tests := map[string]struct {
+		input   string
+		specs   []types.SpecEntry
+		want    Classification
+		wantErr bool
+	}{
+		"task with small size": {
+			input: `{"intent":"task","size":"small","spec_match":""}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeSmall},
+		},
+		"task with standard size": {
+			input: `{"intent":"task","size":"standard","spec_match":""}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeStandard},
+		},
+		"task with large size": {
+			input: `{"intent":"task","size":"large","spec_match":""}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeLarge},
+		},
+		"task with valid spec_match": {
+			input: `{"intent":"task","size":"standard","spec_match":"paintball"}`,
+			specs: specs,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeStandard, SpecMatch: "paintball"},
+		},
+		"task with invalid spec_match is cleared": {
+			input: `{"intent":"task","size":"standard","spec_match":"nonexistent"}`,
+			specs: specs,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeStandard},
+		},
+		"question ignores size and spec_match": {
+			input: `{"intent":"question","size":"large","spec_match":"paintball"}`,
+			specs: specs,
+			want:  Classification{Intent: IntentQuestion},
+		},
+		"investigate ignores size and spec_match": {
+			input: `{"intent":"investigate","size":"small","spec_match":"study-group"}`,
+			specs: specs,
+			want:  Classification{Intent: IntentInvestigate},
+		},
+		"review ignores size and spec_match": {
+			input: `{"intent":"review","size":"standard","spec_match":""}`,
+			want:  Classification{Intent: IntentReview},
+		},
+		"unknown size defaults to standard": {
+			input: `{"intent":"task","size":"humongous","spec_match":""}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeStandard},
+		},
+		"empty size defaults to standard": {
+			input: `{"intent":"task","size":"","spec_match":""}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeStandard},
+		},
+		"missing size defaults to standard": {
+			input: `{"intent":"task"}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeStandard},
+		},
+		"unknown intent defaults to task": {
+			input: `{"intent":"greendale","size":"small","spec_match":""}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeSmall},
+		},
+		"malformed JSON defaults to task/standard": {
+			input:   `not json at all`,
+			want:    Classification{Intent: IntentTask, Size: TaskSizeStandard},
+			wantErr: true,
+		},
+		"empty string defaults to task/standard": {
+			input:   ``,
+			want:    Classification{Intent: IntentTask, Size: TaskSizeStandard},
+			wantErr: true,
+		},
+		"missing intent field defaults to task/standard": {
+			input:   `{"size":"small"}`,
+			want:    Classification{Intent: IntentTask, Size: TaskSizeStandard},
+			wantErr: true,
+		},
+		"extra fields ignored": {
+			input: `{"intent":"task","size":"small","spec_match":"","confidence":0.9}`,
+			want:  Classification{Intent: IntentTask, Size: TaskSizeSmall},
+		},
+		"code fenced JSON": {
+			input: "```json\n" + `{"intent":"task","size":"large","spec_match":""}` + "\n```",
+			want:  Classification{Intent: IntentTask, Size: TaskSizeLarge},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got, err := parseClassification(tc.input, tc.specs)
+			r.Equal(tc.want, got)
+			if tc.wantErr {
+				r.Error(err)
+			} else {
+				r.NoError(err)
+			}
+		})
+	}
+}
+
+func TestClassifySuccess(t *testing.T) {
+	tests := map[string]struct {
+		response string
+		want     Classification
+	}{
+		"task small": {
+			response: `{"intent":"task","size":"small","spec_match":""}`,
+			want:     Classification{Intent: IntentTask, Size: TaskSizeSmall},
+		},
+		"question": {
+			response: `{"intent":"question","size":"","spec_match":""}`,
+			want:     Classification{Intent: IntentQuestion},
+		},
+		"review": {
+			response: `{"intent":"review","size":"","spec_match":""}`,
+			want:     Classification{Intent: IntentReview},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			prov := &mockProvider{
+				responses: map[string][]types.ChatDelta{
+					types.LightweightModels[0]: {
+						{Type: "text_delta", Text: tc.response},
+					},
+				},
+			}
+
+			got, err := Classify(t.Context(), prov, "some prompt", nil)
+			r.NoError(err)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestClassifyWithSpecs(t *testing.T) {
+	r := require.New(t)
+
+	specs := []types.SpecEntry{
+		{ID: "paintball", Status: "active", Header: "Annual paintball game"},
+	}
+
+	var capturedSystem string
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{
+			types.LightweightModels[0]: {
+				{Type: "text_delta", Text: `{"intent":"task","size":"standard","spec_match":"paintball"}`},
+			},
+		},
+	}
+
+	wrappedProv := &promptCapturingProvider{
+		inner:          prov,
+		capturedSystem: &capturedSystem,
+	}
+
+	got, err := Classify(t.Context(), wrappedProv, "update the paintball scoring", specs)
+	r.NoError(err)
+	r.Equal(IntentTask, got.Intent)
+	r.Equal(TaskSizeStandard, got.Size)
+	r.Equal("paintball", got.SpecMatch)
+	// The system prompt should contain the spec index.
+	r.Contains(capturedSystem, "paintball")
+	r.Contains(capturedSystem, "Existing Specs:")
+}
+
+func TestClassifySpecMatchValidation(t *testing.T) {
+	r := require.New(t)
+
+	specs := []types.SpecEntry{
+		{ID: "paintball", Status: "active", Header: "Annual paintball game"},
+	}
+
+	// Provider returns a spec_match that doesn't exist in the provided specs.
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{
+			types.LightweightModels[0]: {
+				{Type: "text_delta", Text: `{"intent":"task","size":"standard","spec_match":"nonexistent"}`},
+			},
+		},
+	}
+
+	got, err := Classify(t.Context(), prov, "do something", specs)
+	r.NoError(err)
+	r.Equal(IntentTask, got.Intent)
+	r.Empty(got.SpecMatch, "invalid spec_match should be cleared")
+}
+
+func TestClassifyEmptyPrompt(t *testing.T) {
+	r := require.New(t)
+	got, err := Classify(t.Context(), nil, "", nil)
+	r.NoError(err)
+	r.Equal(Classification{Intent: IntentTask, Size: TaskSizeStandard}, got)
+}
+
+func TestClassifyAllModelsFail(t *testing.T) {
+	r := require.New(t)
+
+	prov := &mockProvider{
+		responses: map[string][]types.ChatDelta{},
+	}
+
+	got, err := Classify(t.Context(), prov, "add a verbose flag", nil)
+	r.Equal(Classification{Intent: IntentTask, Size: TaskSizeStandard}, got)
+	r.Error(err)
+	r.Contains(err.Error(), "all models failed")
 }

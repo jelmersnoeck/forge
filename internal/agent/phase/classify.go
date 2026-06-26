@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/jelmersnoeck/forge/internal/spec"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
@@ -19,31 +20,53 @@ const (
 	IntentQuestion    Intent = "question"
 	IntentTask        Intent = "task"
 	IntentInvestigate Intent = "investigate"
+	IntentReview      Intent = "review"
 )
+
+// TaskSize indicates the estimated scope of a task intent.
+type TaskSize string
+
+const (
+	TaskSizeSmall    TaskSize = "small"    // typo fix, one-liner, config tweak
+	TaskSizeStandard TaskSize = "standard" // normal feature, multi-file bugfix
+	TaskSizeLarge    TaskSize = "large"    // new subsystem, major refactor
+)
+
+// Classification is the full result of classifying a user prompt.
+type Classification struct {
+	Intent    Intent
+	Size      TaskSize // only meaningful when Intent == IntentTask
+	SpecMatch string   // matched spec ID, empty if none; only for IntentTask
+}
 
 // classificationTimeout is the per-attempt timeout for classification.
 // Kept tight: spec targets <500ms, but network jitter needs a buffer.
 const classificationTimeout = 2 * time.Second
 
-// classificationSystemPrompt is kept minimal to stay within ~200 input tokens.
-const classificationSystemPrompt = `Classify the user's message as question, investigate, or task.
+// classificationSystemPromptTmpl is a template that accepts the spec index.
+// The %s placeholder is replaced with the output of spec.FormatSpecIndex(specs)
+// at runtime, or an empty string if no specs exist.
+const classificationSystemPromptTmpl = `Classify the user's message.
 
-question: informational, asking how something works, requesting an explanation.
-  Examples: "how does the caching work?", "what files handle MCP?", "explain the session lifecycle"
-
-investigate: active exploration, debugging, root-cause analysis, or deep understanding.
-  Examples: "dig into this issue", "figure out why X fails", "look into the test failures", "analyze the performance of Y", "understand the codebase structure and report back"
-
-task: actionable request to build, fix, change, implement, refactor, or modify something.
-  Examples: "add a --verbose flag", "fix the nil pointer in worker.go", "implement retry logic"
+Intents:
+- question: informational, asking how something works, requesting an explanation.
+- investigate: active exploration, debugging, root-cause analysis.
+- review: asking to review existing changes, a diff, PR, or branch.
+- task: actionable request to build, fix, change, implement, refactor.
 
 Ambiguity rules:
 - question vs investigate → investigate
 - investigate vs task → investigate
-- Mixed intent with a change verb (fix, add, implement, refactor) → task
-  "dig into this and fix it" → task
+- Mixed intent with change verb (fix, add, implement, refactor) → task
+- "review my changes" / "review this PR" / "check the diff" → review
 
-Respond with ONLY a JSON object: {"intent": "question"}, {"intent": "investigate"}, or {"intent": "task"}`
+For task intent only, also determine:
+- size: small (typo, one-liner, config change, single-file fix), standard (feature, bugfix, multi-file), large (new subsystem, cross-cutting refactor, major feature)
+- spec_match: if the task clearly maps to an existing spec below, return its ID. Otherwise empty string.
+
+%s
+
+Respond with ONLY JSON: {"intent":"...","size":"...","spec_match":"..."}`
 
 // maxClassifyPromptLen caps the user prompt sent to the classifier.
 // ~1000 chars keeps us well within the ~200 input token budget.
@@ -60,53 +83,78 @@ var _ [maxStripInputLen - 1]struct{}     // fails if <= 0
 var _ [1<<20 - maxStripInputLen]struct{} // fails if > 1 MiB
 
 // ClassifyIntent uses a lightweight LLM call to classify the user's prompt
-// as question, investigate, or task.
+// as question, investigate, review, or task.
 // Returns (IntentTask, nil) for empty prompts.
 // Returns (IntentTask, err) on classification failure (safe default).
 // Tries each model in types.LightweightModels before giving up.
+// Preserved for backward compatibility — delegates to Classify.
 func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string) (Intent, error) {
+	c, err := Classify(ctx, provider, prompt, nil)
+	return c.Intent, err
+}
+
+// Classify uses a lightweight LLM call to classify the user's prompt,
+// returning intent, task size, and an optional spec match.
+// The specs parameter is used to populate the system prompt with the spec
+// index so the classifier can match tasks to existing specs.
+// Returns (Classification{IntentTask, TaskSizeStandard, ""}, nil) for empty prompts.
+// Returns (Classification{IntentTask, TaskSizeStandard, ""}, err) on failure (safe default).
+func Classify(ctx context.Context, provider types.LLMProvider, prompt string, specs []types.SpecEntry) (Classification, error) {
+	defaultClassification := Classification{Intent: IntentTask, Size: TaskSizeStandard}
+
 	if strings.TrimSpace(prompt) == "" {
-		return IntentTask, nil
+		return defaultClassification, nil
 	}
 
 	classifyPrompt := truncateAtWordBoundary(prompt, maxClassifyPromptLen)
+	systemPrompt := buildClassificationPrompt(specs)
 
 	var lastErr error
 	for i, model := range types.LightweightModels {
-		intent, err := classifyWithModel(ctx, provider, model, classifyPrompt)
+		c, err := classifyFullWithModel(ctx, provider, model, systemPrompt, classifyPrompt, specs)
 		if err == nil {
 			switch {
 			case i > 0:
 				slog.Info("classify: succeeded on fallback model",
 					"model", model, "failed_attempts", i)
 			default:
-				slog.Debug("classify: classified intent",
-					"intent", intent, "model", model)
+				slog.Debug("classify: classified",
+					"intent", c.Intent, "size", c.Size,
+					"spec_match", c.SpecMatch, "model", model)
 			}
-			return intent, nil
+			return c, nil
 		}
 		lastErr = err
 		slog.Warn("classify: model failed",
 			"model", model, "error", err)
 	}
 
-	slog.Error("classify: all models failed, defaulting to task",
+	slog.Error("classify: all models failed, defaulting to task/standard",
 		"models_tried", len(types.LightweightModels))
 	if lastErr == nil {
-		return IntentTask, fmt.Errorf("all models failed (no models configured)")
+		return defaultClassification, fmt.Errorf("all models failed (no models configured)")
 	}
-	return IntentTask, fmt.Errorf("all models failed: %w", lastErr)
+	return defaultClassification, fmt.Errorf("all models failed: %w", lastErr)
 }
 
-// classifyWithModel runs a single classification attempt against a specific model.
-func classifyWithModel(ctx context.Context, provider types.LLMProvider, model, prompt string) (Intent, error) {
+// buildClassificationPrompt constructs the system prompt with optional spec index.
+func buildClassificationPrompt(specs []types.SpecEntry) string {
+	specIndex := spec.FormatSpecIndex(specs)
+	return fmt.Sprintf(classificationSystemPromptTmpl, specIndex)
+}
+
+// classifyFullWithModel runs a single classification attempt against a specific model,
+// returning the full Classification.
+func classifyFullWithModel(ctx context.Context, provider types.LLMProvider, model, systemPrompt, prompt string, specs []types.SpecEntry) (Classification, error) {
+	defaultClassification := Classification{Intent: IntentTask, Size: TaskSizeStandard}
+
 	classifyCtx, cancel := context.WithTimeout(ctx, classificationTimeout)
 	defer cancel()
 
 	req := types.ChatRequest{
 		Model: model,
 		System: []types.SystemBlock{
-			{Type: "text", Text: classificationSystemPrompt},
+			{Type: "text", Text: systemPrompt},
 		},
 		Messages: []types.ChatMessage{
 			{
@@ -116,13 +164,13 @@ func classifyWithModel(ctx context.Context, provider types.LLMProvider, model, p
 				},
 			},
 		},
-		MaxTokens: 32,
+		MaxTokens: 64,
 		Stream:    true,
 	}
 
 	deltaChan, err := provider.Chat(classifyCtx, req)
 	if err != nil {
-		return IntentTask, fmt.Errorf("provider.Chat: %w", err)
+		return defaultClassification, fmt.Errorf("provider.Chat: %w", err)
 	}
 
 	// Drain deltas and collect text.
@@ -132,15 +180,15 @@ func classifyWithModel(ctx context.Context, provider types.LLMProvider, model, p
 		case "text_delta":
 			text.WriteString(delta.Text)
 		case "error":
-			return IntentTask, fmt.Errorf("stream error: %s", delta.Text)
+			return defaultClassification, fmt.Errorf("stream error: %s", delta.Text)
 		}
 	}
 
-	intent, err := parseIntent(text.String())
+	c, err := parseClassification(text.String(), specs)
 	if err != nil {
-		return IntentTask, err
+		return defaultClassification, err
 	}
-	return intent, nil
+	return c, nil
 }
 
 // truncateAtWordBoundary truncates s to at most maxLen runes, cutting at
@@ -239,6 +287,8 @@ func parseIntent(raw string) (Intent, error) {
 		return IntentInvestigate, nil
 	case IntentTask:
 		return IntentTask, nil
+	case IntentReview:
+		return IntentReview, nil
 	case "":
 		slog.Error("classify: malformed LLM response",
 			"reason", "missing_intent_field", "raw", raw)
@@ -248,4 +298,88 @@ func parseIntent(raw string) (Intent, error) {
 			"reason", "unknown_intent", "intent", result.Intent, "raw", raw)
 		return IntentTask, fmt.Errorf("unknown intent %q", result.Intent)
 	}
+}
+
+// parseClassification extracts the full classification from the LLM's JSON response.
+// Returns (Classification{IntentTask, TaskSizeStandard, ""}, err) on parse failure.
+func parseClassification(raw string, specs []types.SpecEntry) (Classification, error) {
+	defaultClassification := Classification{Intent: IntentTask, Size: TaskSizeStandard}
+
+	stripped := stripCodeFences(raw)
+
+	if stripped != strings.TrimSpace(raw) {
+		slog.Info("classify: stripped code fences from LLM response",
+			"raw", raw, "stripped", stripped)
+	}
+
+	var result struct {
+		Intent    string `json:"intent"`
+		Size      string `json:"size"`
+		SpecMatch string `json:"spec_match"`
+	}
+	if err := json.Unmarshal([]byte(stripped), &result); err != nil {
+		slog.Error("classify: malformed LLM response",
+			"reason", "parse_failed", "raw", raw, "error", err)
+		return defaultClassification, fmt.Errorf("parse error: %w — raw: %q", err, raw)
+	}
+
+	// Validate intent (4 values; unknown → IntentTask).
+	var intent Intent
+	switch Intent(result.Intent) {
+	case IntentQuestion:
+		intent = IntentQuestion
+	case IntentInvestigate:
+		intent = IntentInvestigate
+	case IntentReview:
+		intent = IntentReview
+	case IntentTask:
+		intent = IntentTask
+	case "":
+		slog.Error("classify: malformed LLM response",
+			"reason", "missing_intent_field", "raw", raw)
+		return defaultClassification, fmt.Errorf("missing intent field in response: %q", raw)
+	default:
+		slog.Warn("classify: unknown intent, defaulting to task",
+			"intent", result.Intent, "raw", raw)
+		intent = IntentTask
+	}
+
+	c := Classification{Intent: intent}
+
+	// For non-task intents, ignore size and spec_match.
+	if intent != IntentTask {
+		return c, nil
+	}
+
+	// Validate size for task intents.
+	switch TaskSize(result.Size) {
+	case TaskSizeSmall:
+		c.Size = TaskSizeSmall
+	case TaskSizeLarge:
+		c.Size = TaskSizeLarge
+	case TaskSizeStandard:
+		c.Size = TaskSizeStandard
+	default:
+		// Unknown or empty → standard.
+		c.Size = TaskSizeStandard
+	}
+
+	// Validate spec_match against provided specs.
+	if result.SpecMatch != "" {
+		valid := false
+		for _, s := range specs {
+			if s.ID == result.SpecMatch {
+				valid = true
+				break
+			}
+		}
+		if valid {
+			c.SpecMatch = result.SpecMatch
+		} else {
+			slog.Info("classify: spec_match not found in provided specs, clearing",
+				"spec_match", result.SpecMatch)
+		}
+	}
+
+	return c, nil
 }

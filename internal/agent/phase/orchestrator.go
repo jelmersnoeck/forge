@@ -81,7 +81,8 @@ func NewSWEOrchestrator() *Orchestrator {
 // When no spec is provided, it first classifies the user's intent:
 //   - question    → runs Q&A loop, returns result with QAHistoryID
 //   - investigate → runs investigation loop, returns result with InvestigateHistoryID
-//   - task        → runs full SWE pipeline (spec → code → review)
+//   - review      → runs review only, returns result with IntentReview
+//   - task        → runs SWE pipeline (routing depends on task size)
 //
 // When SpecPath is set, classification is skipped (intent is unambiguously task).
 //
@@ -91,30 +92,25 @@ func NewSWEOrchestrator() *Orchestrator {
 //	┌───────────────┐
 //	│   Classify     │──▶ question?    → Q&A loop → return
 //	│                │──▶ investigate? → investigate loop → return
+//	│                │──▶ review?      → review only → return
 //	└───────┬───────┘
 //	        │ task
 //	        ▼
-//	┌─────────────┐
-//	│ Spec Creator │──▶ .forge/specs/<id>.md
-//	└──────┬──────┘
-//	       │
-//	       ▼
-//	┌─────────────┐
-//	│    Coder     │──▶ implementation
-//	└──────┬──────┘
-//	       │
-//	       ▼
-//	┌─────────────┐     ┌──────────┐
-//	│   Reviewer   │──▶ │ findings │──▶ back to Coder (max 5×, resets on criticals)
-//	└─────────────┘     └──────────┘
+//	┌─────────────────────────────────────────────┐
+//	│  small  → direct code (no spec, no review)  │
+//	│  standard → spec → code → review            │
+//	│  large  → ideate → spec → code → review     │
+//	└─────────────────────────────────────────────┘
 func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error) {
 	specPath := opts.SpecPath
 
 	// Classify intent (skip if spec is provided — that's unambiguously a task).
+	var classification Classification
 	if specPath == "" {
-		intent, err := ClassifyIntent(ctx, opts.Provider, opts.InitialPrompt)
+		var err error
+		classification, err = Classify(ctx, opts.Provider, opts.InitialPrompt, opts.Bundle.Specs)
 		if err != nil {
-			log.Printf("[orchestrator:%s] classification error (defaulting to task): %v", opts.SessionID, err)
+			log.Printf("[orchestrator:%s] classification error (defaulting to task/standard): %v", opts.SessionID, err)
 			opts.Emit(types.OutboundEvent{
 				ID:        uuid.New().String(),
 				SessionID: opts.SessionID,
@@ -128,11 +124,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 			ID:        uuid.New().String(),
 			SessionID: opts.SessionID,
 			Type:      "intent_classified",
-			Content:   string(intent),
+			Content:   fmt.Sprintf(`{"intent":"%s","size":"%s","spec_match":"%s"}`, classification.Intent, classification.Size, classification.SpecMatch),
 			Timestamp: time.Now().UnixMilli(),
 		})
 
-		if intent == IntentQuestion {
+		if classification.Intent == IntentQuestion {
 			historyID, err := o.runQA(ctx, opts)
 			return OrchestratorResult{
 				Intent:      IntentQuestion,
@@ -140,12 +136,18 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 			}, err
 		}
 
-		if intent == IntentInvestigate {
+		if classification.Intent == IntentInvestigate {
 			historyID, err := o.runInvestigate(ctx, opts)
 			return OrchestratorResult{
 				Intent:               IntentInvestigate,
 				InvestigateHistoryID: historyID,
 			}, err
+		}
+
+		if classification.Intent == IntentReview {
+			o.emitPhaseStart(opts, "review")
+			_, err := o.runReviewer(ctx, opts, opts.SpecPath)
+			return OrchestratorResult{Intent: IntentReview}, err
 		}
 	}
 
@@ -165,8 +167,22 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 		opts.QAHistoryID = ""
 	}
 
-	// Run full SWE pipeline.
-	return o.runSWEPipeline(ctx, opts, specPath)
+	// Spec match injection: hint the spec-creator to update an existing spec.
+	if classification.SpecMatch != "" && specPath == "" {
+		for _, s := range opts.Bundle.Specs {
+			if s.ID == classification.SpecMatch {
+				opts.InitialPrompt += fmt.Sprintf(
+					"\n\n[Classifier matched existing spec %q (%s) — update it rather than creating a new one.]",
+					s.ID, s.Path,
+				)
+				log.Printf("[orchestrator:%s] injected spec match hint: %s (%s)", opts.SessionID, s.ID, s.Path)
+				break
+			}
+		}
+	}
+
+	// Run SWE pipeline with classification for size-based routing.
+	return o.runSWEPipeline(ctx, opts, specPath, classification)
 }
 
 // runQA runs the Q&A conversation loop. Returns the history ID for resumption.
@@ -208,14 +224,21 @@ func (o *Orchestrator) runConversationPhase(ctx context.Context, opts Orchestrat
 	return l.HistoryID(), err
 }
 
-// runSWEPipeline runs the full spec → code → review pipeline.
-func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) (OrchestratorResult, error) {
+// runSWEPipeline runs the SWE pipeline with size-based routing.
+func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string, classification Classification) (OrchestratorResult, error) {
 	result := OrchestratorResult{Intent: IntentTask}
+
+	// Size-based routing: small tasks skip spec and review entirely.
+	skipSpec, useIdeation := resolveTaskPipeline(opts.PipelineHint, classification.Size)
+	if skipSpec && specPath == "" {
+		// Small task path: direct code, no spec, no review.
+		coderHistoryID, err := o.runCoderDirect(ctx, opts)
+		result.CoderHistoryID = coderHistoryID
+		return result, err
+	}
 
 	// Phase 1: Spec Creation (skipped if spec already provided)
 	if specPath == "" {
-		useIdeation := shouldIdeate(opts.PipelineHint)
-
 		switch useIdeation {
 		case true:
 			// Full ideation pipeline: ideate → clarify → plan
@@ -524,6 +547,42 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 	return l.HistoryID(), nil
 }
 
+// runCoderDirect runs the coder phase directly with the user's prompt,
+// bypassing spec creation and review. Used for small tasks.
+func (o *Orchestrator) runCoderDirect(ctx context.Context, opts OrchestratorOpts) (string, error) {
+	o.emitPhaseStart(opts, "code")
+
+	phase := Coder()
+	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
+
+	model := opts.Model
+	if phase.Model != "" {
+		model = phase.Model
+	}
+
+	loopOpts := loop.Options{
+		Provider:     opts.Provider,
+		Tools:        opts.Registry, // coder gets all tools
+		Context:      bundle,
+		CWD:          opts.CWD,
+		SessionStore: opts.SessionStore,
+		SessionID:    opts.SessionID,
+		Model:        model,
+		MaxTurns:     phase.MaxTurns,
+		AuditLogger:  opts.AuditLogger,
+	}
+
+	l := loop.New(loopOpts)
+	if err := l.Send(ctx, opts.InitialPrompt, opts.Emit); err != nil {
+		log.Printf("[orchestrator:%s] coder direct Send failed (historyID=%s, promptLen=%d): %v",
+			opts.SessionID, l.HistoryID(), len(opts.InitialPrompt), err)
+		return l.HistoryID(), err
+	}
+
+	o.emitPhaseComplete(opts, "code", "implementation complete")
+	return l.HistoryID(), nil
+}
+
 // runCoderResume resumes an existing coder conversation with a new message.
 func (o *Orchestrator) runCoderResume(ctx context.Context, opts OrchestratorOpts, historyID, message string) (string, error) {
 	phase := Coder()
@@ -819,21 +878,28 @@ func detectDefaultBranchSafe(cwd string) string {
 	return "main"
 }
 
-// shouldIdeate determines whether to run the ideation pipeline.
+// resolveTaskPipeline determines the pipeline path based on hint and task size.
+// Returns (skipSpec, useIdeation).
 //
-//	"ideate" → always ideate
-//	"code"   → never ideate
-//	"auto"/""→ use complexity gate (for now: default to single-agent spec creator)
-func shouldIdeate(hint string) bool {
+//	hint "ideate" → always ideate (skipSpec=false, useIdeation=true)
+//	hint "code"   → skip spec entirely (skipSpec=true, useIdeation=false)
+//	otherwise, size decides:
+//	  small    → skip spec (skipSpec=true, useIdeation=false)
+//	  large    → ideate (skipSpec=false, useIdeation=true)
+//	  standard → normal pipeline (skipSpec=false, useIdeation=false)
+func resolveTaskPipeline(hint string, size TaskSize) (skipSpec bool, useIdeation bool) {
 	switch hint {
 	case "ideate":
-		return true
+		return false, true
 	case "code":
-		return false
+		return true, false
+	}
+	switch size {
+	case TaskSizeSmall:
+		return true, false
+	case TaskSizeLarge:
+		return false, true
 	default:
-		// "auto" or empty: complexity gate decides.
-		// For now, default to false (single-agent spec creator) until
-		// the complexity gate is implemented in a separate spec.
-		return false
+		return false, false
 	}
 }
