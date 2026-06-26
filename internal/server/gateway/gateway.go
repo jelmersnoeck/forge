@@ -9,10 +9,12 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -90,22 +92,49 @@ func handleGetSession(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(meta)
 }
 
+// relayEntry tracks an active SSE relay including its cancel function.
+type relayEntry struct {
+	cancel context.CancelFunc
+}
+
 // relays tracks active SSE relay goroutines per session so we don't
 // start duplicates.
 var (
-	relays   = make(map[string]struct{})
+	relays   = make(map[string]*relayEntry)
 	relaysMu sync.Mutex
 )
 
+// sseClient is shared across relays with timeouts that prevent hanging
+// on dead connections. The ResponseHeaderTimeout catches the initial
+// connect; the transport's DialContext timeout covers DNS/TCP.
+var sseClient = &http.Client{
+	Timeout: 0, // no overall timeout — SSE streams are long-lived
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 10 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 10 * time.Second,
+		IdleConnTimeout:       0, // keep SSE connection open
+	},
+}
+
+const (
+	relayReconnectBase = 1 * time.Second
+	relayReconnectMax  = 30 * time.Second
+	relayMaxRetries    = 10
+)
+
 // startRelay connects to an agent's /events SSE endpoint and republishes
-// events via the server bus so CLI clients see them.
+// events via the server bus so CLI clients see them. Automatically
+// reconnects on transient failures with exponential backoff.
 func startRelay(sessionID, agentAddr string) {
 	relaysMu.Lock()
 	if _, ok := relays[sessionID]; ok {
 		relaysMu.Unlock()
 		return
 	}
-	relays[sessionID] = struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	relays[sessionID] = &relayEntry{cancel: cancel}
 	relaysMu.Unlock()
 
 	go func() {
@@ -115,33 +144,85 @@ func startRelay(sessionID, agentAddr string) {
 			relaysMu.Unlock()
 		}()
 
-		url := fmt.Sprintf("http://%s/events", agentAddr)
-		resp, err := http.Get(url)
-		if err != nil {
-			log.Printf("[relay:%s] connect error: %v", sessionID, err)
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			// SSE data lines start with "data: "
-			if !isDataLine(line) {
-				continue
+		retries := 0
+		for {
+			err := relayOnce(ctx, sessionID, agentAddr)
+			if ctx.Err() != nil {
+				log.Printf("[relay:%s] stopped", sessionID)
+				return
 			}
-			jsonData := line[6:] // strip "data: " prefix
-
-			var event types.OutboundEvent
-			if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
-				continue
+			retries++
+			if retries > relayMaxRetries {
+				log.Printf("[relay:%s] giving up after %d retries: %v", sessionID, relayMaxRetries, err)
+				return
 			}
-			bus.PublishEvent(sessionID, event)
-		}
-		if err := scanner.Err(); err != nil {
-			log.Printf("[relay:%s] read error: %v", sessionID, err)
+			delay := relayBackoff(retries)
+			log.Printf("[relay:%s] connection lost (%v), reconnecting in %s (attempt %d/%d)",
+				sessionID, err, delay, retries, relayMaxRetries)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
+}
+
+// relayOnce runs a single SSE connection. Returns when the connection
+// drops or the context is cancelled.
+func relayOnce(ctx context.Context, sessionID, agentAddr string) error {
+	url := fmt.Sprintf("http://%s/events", agentAddr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+
+	resp, err := sseClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !isDataLine(line) {
+			continue
+		}
+		jsonData := line[6:] // strip "data: " prefix
+
+		var event types.OutboundEvent
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			continue
+		}
+		bus.PublishEvent(sessionID, event)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	return fmt.Errorf("stream closed by server")
+}
+
+// relayBackoff returns the delay before the n-th reconnection attempt.
+func relayBackoff(attempt int) time.Duration {
+	d := relayReconnectBase
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d > relayReconnectMax {
+			return relayReconnectMax
+		}
+	}
+	return d
+}
+
+// stopRelay cancels and cleans up the relay for a session.
+func stopRelay(sessionID string) {
+	relaysMu.Lock()
+	entry, ok := relays[sessionID]
+	if ok {
+		entry.cancel()
+	}
+	relaysMu.Unlock()
 }
 
 func isDataLine(line string) bool {

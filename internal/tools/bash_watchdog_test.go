@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -227,14 +226,13 @@ func TestBashIdleWatchdogFires(t *testing.T) {
 	output := result.Content[0].Text
 	r.Contains(output, "Dean Pelton", "captured output should be present")
 	r.Contains(output, "no new output", "should mention idle detection")
-	r.Contains(output, "still running", "should say process is running")
+	r.Contains(output, "was killed", "should say process was killed")
 	r.Contains(output, "Process diagnostics", "should include diagnostics")
 
 	// Should have returned in ~30-35s, not 120s.
 	r.Less(elapsed, 50*time.Second,
 		"should return after idle timeout (~30s), not hard timeout (120s)")
 
-	// Verify it mentions the PID for the LLM to use.
-	r.True(strings.Contains(output, "PID:") || strings.Contains(output, "kill"),
-		"should provide PID or kill instructions")
+	// Verify it mentions the PID.
+	r.Contains(output, "PID:", "should provide PID")
 }

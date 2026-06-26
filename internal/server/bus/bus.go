@@ -11,6 +11,7 @@
 package bus
 
 import (
+	"context"
 	"sync"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -23,12 +24,10 @@ var (
 	}{m: make(map[string]*types.SessionMeta)}
 
 	queues = struct {
-		sync.Mutex
 		m map[string][]types.InboundMessage
 	}{m: make(map[string][]types.InboundMessage)}
 
 	waiters = struct {
-		sync.Mutex
 		m map[string][]chan types.InboundMessage
 	}{m: make(map[string][]chan types.InboundMessage)}
 
@@ -57,40 +56,65 @@ func SetSession(meta *types.SessionMeta) {
 	sessions.m[meta.SessionID] = meta
 }
 
+// msgMu serialises queue and waiter operations to prevent the TOCTOU race
+// where PushMessage releases waiters before locking queues and a concurrent
+// PullMessage misses the message.
+var msgMu sync.Mutex
+
 // PushMessage enqueues a message for a session's worker.
 func PushMessage(sessionID string, msg types.InboundMessage) {
-	waiters.Lock()
+	msgMu.Lock()
 	if ws, ok := waiters.m[sessionID]; ok && len(ws) > 0 {
 		ch := ws[0]
 		waiters.m[sessionID] = ws[1:]
-		waiters.Unlock()
+		msgMu.Unlock()
 		ch <- msg
 		return
 	}
-	waiters.Unlock()
-
-	queues.Lock()
-	defer queues.Unlock()
 	queues.m[sessionID] = append(queues.m[sessionID], msg)
+	msgMu.Unlock()
 }
 
-// PullMessage blocks until a message is available for the session.
-func PullMessage(sessionID string) types.InboundMessage {
-	queues.Lock()
+// PullMessage blocks until a message is available for the session or the
+// context is cancelled. Returns the message and true, or a zero value and
+// false if the context was cancelled.
+func PullMessage(ctx context.Context, sessionID string) (types.InboundMessage, bool) {
+	msgMu.Lock()
 	if q, ok := queues.m[sessionID]; ok && len(q) > 0 {
 		msg := q[0]
 		queues.m[sessionID] = q[1:]
-		queues.Unlock()
-		return msg
+		msgMu.Unlock()
+		return msg, true
 	}
-	queues.Unlock()
 
 	ch := make(chan types.InboundMessage, 1)
-	waiters.Lock()
 	waiters.m[sessionID] = append(waiters.m[sessionID], ch)
-	waiters.Unlock()
+	msgMu.Unlock()
 
-	return <-ch
+	select {
+	case msg := <-ch:
+		return msg, true
+	case <-ctx.Done():
+		// Remove our waiter so it doesn't leak.
+		msgMu.Lock()
+		ws := waiters.m[sessionID]
+		for i, w := range ws {
+			if w == ch {
+				waiters.m[sessionID] = append(ws[:i], ws[i+1:]...)
+				break
+			}
+		}
+		msgMu.Unlock()
+
+		// Drain any message that arrived between the select and lock.
+		select {
+		case msg := <-ch:
+			PushMessage(sessionID, msg)
+		default:
+		}
+
+		return types.InboundMessage{}, false
+	}
 }
 
 // PublishEvent sends an event to all subscribers for a session.
