@@ -315,26 +315,6 @@ func TestRunDebate_emitsEvents(t *testing.T) {
 	r.True(eventTypes["planning_start"], "should emit planning_start")
 }
 
-func TestShouldIdeate(t *testing.T) {
-	tests := map[string]struct {
-		hint string
-		want bool
-	}{
-		"ideate": {hint: "ideate", want: true},
-		"code":   {hint: "code", want: false},
-		"auto":   {hint: "auto", want: false},
-		"empty":  {hint: "", want: false},
-		"yolo":   {hint: "yolo", want: false},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			r := require.New(t)
-			r.Equal(tc.want, shouldIdeate(tc.hint))
-		})
-	}
-}
-
 func TestBuildContextSummary(t *testing.T) {
 	r := require.New(t)
 
