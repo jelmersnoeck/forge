@@ -22,8 +22,9 @@ const (
 )
 
 // classificationTimeout is the per-attempt timeout for classification.
-// Kept tight: spec targets <500ms, but network jitter needs a buffer.
-const classificationTimeout = 2 * time.Second
+// Must accommodate Claude CLI startup (~3-4s for tool/plugin/MCP init
+// when --verbose is required) plus API response time.
+const classificationTimeout = 6 * time.Second
 
 // classificationSystemPrompt is kept minimal to stay within ~200 input tokens.
 const classificationSystemPrompt = `Classify the user's message as question, investigate, or task.
