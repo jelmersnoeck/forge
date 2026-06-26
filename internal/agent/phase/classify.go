@@ -40,8 +40,9 @@ type Classification struct {
 }
 
 // classificationTimeout is the per-attempt timeout for classification.
-// Kept tight: spec targets <500ms, but network jitter needs a buffer.
-const classificationTimeout = 2 * time.Second
+// Must accommodate Claude CLI startup (~3-4s for tool/plugin/MCP init
+// when --verbose is required) plus API response time.
+const classificationTimeout = 6 * time.Second
 
 // classificationSystemPromptTmpl is a template that accepts the spec index.
 // The %s placeholder is replaced with the output of spec.FormatSpecIndex(specs)

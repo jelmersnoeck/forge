@@ -44,7 +44,9 @@ func newLightweightProvider() types.LLMProvider {
 }
 
 // sessionNameTimeout caps the LLM call for slug generation.
-const sessionNameTimeout = 3 * time.Second
+// Must accommodate Claude CLI startup (~3-4s for tool/plugin/MCP init
+// when --verbose is required) plus API response time.
+const sessionNameTimeout = 6 * time.Second
 
 // sessionNamePromptPrefix is prepended to the user's prompt for slug generation.
 const sessionNamePromptPrefix = "Generate a 2-4 word kebab-case slug summarizing this task. " +
