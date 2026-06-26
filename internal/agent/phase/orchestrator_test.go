@@ -437,70 +437,70 @@ func writeTestFile(t *testing.T, dir, name, content string) {
 
 func TestResolveTaskPipeline(t *testing.T) {
 	tests := map[string]struct {
-		hint          string
-		size          TaskSize
-		wantSkipSpec  bool
-		wantIdeation  bool
+		hint         string
+		size         TaskSize
+		wantSkipSpec bool
+		wantIdeation bool
 	}{
 		"hint ideate overrides small size": {
-			hint:          "ideate",
-			size:          TaskSizeSmall,
-			wantSkipSpec:  false,
-			wantIdeation:  true,
+			hint:         "ideate",
+			size:         TaskSizeSmall,
+			wantSkipSpec: false,
+			wantIdeation: true,
 		},
 		"hint ideate overrides standard size": {
-			hint:          "ideate",
-			size:          TaskSizeStandard,
-			wantSkipSpec:  false,
-			wantIdeation:  true,
+			hint:         "ideate",
+			size:         TaskSizeStandard,
+			wantSkipSpec: false,
+			wantIdeation: true,
 		},
 		"hint code overrides large size": {
-			hint:          "code",
-			size:          TaskSizeLarge,
-			wantSkipSpec:  true,
-			wantIdeation:  false,
+			hint:         "code",
+			size:         TaskSizeLarge,
+			wantSkipSpec: true,
+			wantIdeation: false,
 		},
 		"hint code overrides standard size": {
-			hint:          "code",
-			size:          TaskSizeStandard,
-			wantSkipSpec:  true,
-			wantIdeation:  false,
+			hint:         "code",
+			size:         TaskSizeStandard,
+			wantSkipSpec: true,
+			wantIdeation: false,
 		},
 		"small size skips spec": {
-			hint:          "",
-			size:          TaskSizeSmall,
-			wantSkipSpec:  true,
-			wantIdeation:  false,
+			hint:         "",
+			size:         TaskSizeSmall,
+			wantSkipSpec: true,
+			wantIdeation: false,
 		},
 		"standard size runs normal pipeline": {
-			hint:          "",
-			size:          TaskSizeStandard,
-			wantSkipSpec:  false,
-			wantIdeation:  false,
+			hint:         "",
+			size:         TaskSizeStandard,
+			wantSkipSpec: false,
+			wantIdeation: false,
 		},
 		"large size triggers ideation": {
-			hint:          "",
-			size:          TaskSizeLarge,
-			wantSkipSpec:  false,
-			wantIdeation:  true,
+			hint:         "",
+			size:         TaskSizeLarge,
+			wantSkipSpec: false,
+			wantIdeation: true,
 		},
 		"auto hint with small size": {
-			hint:          "auto",
-			size:          TaskSizeSmall,
-			wantSkipSpec:  true,
-			wantIdeation:  false,
+			hint:         "auto",
+			size:         TaskSizeSmall,
+			wantSkipSpec: true,
+			wantIdeation: false,
 		},
 		"auto hint with large size": {
-			hint:          "auto",
-			size:          TaskSizeLarge,
-			wantSkipSpec:  false,
-			wantIdeation:  true,
+			hint:         "auto",
+			size:         TaskSizeLarge,
+			wantSkipSpec: false,
+			wantIdeation: true,
 		},
 		"unknown hint treated as auto": {
-			hint:          "yolo",
-			size:          TaskSizeLarge,
-			wantSkipSpec:  false,
-			wantIdeation:  true,
+			hint:         "yolo",
+			size:         TaskSizeLarge,
+			wantSkipSpec: false,
+			wantIdeation: true,
 		},
 	}
 
