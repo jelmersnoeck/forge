@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +17,7 @@ func TestNewClaudeCLI(t *testing.T) {
 	p := NewClaudeCLI()
 	r.NotNil(p)
 	r.Empty(p.claudeSessionID)
+	r.False(p.alive)
 }
 
 func TestExtractPrompt(t *testing.T) {
@@ -232,12 +232,11 @@ func TestHandleAssistant(t *testing.T) {
 	}
 }
 
-func TestBuildArgs(t *testing.T) {
+func TestBuildOneShotArgs(t *testing.T) {
 	tests := map[string]struct {
-		req       types.ChatRequest
-		prompt    string
-		sessionID string
-		wantArgs  []string
+		req      types.ChatRequest
+		prompt   string
+		wantArgs []string
 	}{
 		"basic prompt": {
 			req:    types.ChatRequest{Model: "sonnet"},
@@ -272,21 +271,6 @@ func TestBuildArgs(t *testing.T) {
 				"what's up",
 			},
 		},
-		"with resume session": {
-			req:       types.ChatRequest{Model: "opus"},
-			prompt:    "continue",
-			sessionID: "session-greendale-123",
-			wantArgs: []string{
-				"-p",
-				"--verbose",
-				"--output-format", "stream-json",
-				"--include-partial-messages",
-				"--dangerously-skip-permissions",
-				"--model", "opus",
-				"--resume", "session-greendale-123",
-				"continue",
-			},
-		},
 		"no model": {
 			req:    types.ChatRequest{},
 			prompt: "hey",
@@ -304,51 +288,383 @@ func TestBuildArgs(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			p := &ClaudeCLIProvider{claudeSessionID: tc.sessionID}
-			got := p.buildArgs(tc.req, tc.prompt)
+			got := buildOneShotArgs(tc.req, tc.prompt)
 			r.Equal(tc.wantArgs, got)
 		})
 	}
 }
 
-// TestChatWithMockScript tests the full Chat flow using a mock "claude" script
-// that emits NDJSON to stdout.
-func TestChatWithMockScript(t *testing.T) {
+func TestBuildPromptWithSystem(t *testing.T) {
+	tests := map[string]struct {
+		req  types.ChatRequest
+		want string
+	}{
+		"no system prompt": {
+			req: types.ChatRequest{
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: []types.ChatContentBlock{
+						{Type: "text", Text: "hello"},
+					}},
+				},
+			},
+			want: "hello",
+		},
+		"with system prompt": {
+			req: types.ChatRequest{
+				System: []types.SystemBlock{
+					{Text: "You are Troy Barnes"},
+					{Text: "From Greendale"},
+				},
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: []types.ChatContentBlock{
+						{Type: "text", Text: "what's up"},
+					}},
+				},
+			},
+			want: "[System Instructions]\nYou are Troy Barnes\n\nFrom Greendale\n\n[User Message]\nwhat's up",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := buildPromptWithSystem(tc.req)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+// persistentMockScript returns a shell script that reads NDJSON from stdin
+// and emits a response for each message, staying alive between turns.
+func persistentMockScript() string {
+	return `#!/bin/sh
+while IFS= read -r line; do
+    echo '{"type":"system","session_id":"sess-persistent","message":"init"}'
+    echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Cool. Cool cool cool."}}}'
+    echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Cool. Cool cool cool."}],"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-persistent"}'
+    echo '{"type":"result","session_id":"sess-persistent","is_error":false,"duration_ms":100}'
+done
+`
+}
+
+// TestPersistentProcessChat verifies the basic persistent process flow.
+func TestPersistentProcessChat(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	mockBin := filepath.Join(tmpDir, "claude")
+	err := os.WriteFile(mockBin, []byte(persistentMockScript()), 0o755)
+	r.NoError(err)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	p := NewClaudeCLI()
+	defer func() { _ = p.Close() }()
+
+	req := types.ChatRequest{
+		Model: "opus",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "test prompt"},
+			}},
+		},
+	}
+
+	ch, err := p.Chat(context.Background(), req)
+	r.NoError(err)
+
+	var gotTypes []string
+	for delta := range ch {
+		gotTypes = append(gotTypes, delta.Type)
+	}
+
+	r.Equal([]string{"text_delta", "usage", "message_stop"}, gotTypes)
+	r.Equal("sess-persistent", p.claudeSessionID)
+	r.True(p.alive, "process should stay alive after first call")
+}
+
+// TestPersistentProcessReuse verifies two sequential calls reuse the same process.
+func TestPersistentProcessReuse(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	mockBin := filepath.Join(tmpDir, "claude")
+	err := os.WriteFile(mockBin, []byte(persistentMockScript()), 0o755)
+	r.NoError(err)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	p := NewClaudeCLI()
+	defer func() { _ = p.Close() }()
+
+	req := types.ChatRequest{
+		Model: "opus",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "first"},
+			}},
+		},
+	}
+
+	// First call — spawns the process.
+	ch, err := p.Chat(context.Background(), req)
+	r.NoError(err)
+	for range ch {
+	}
+
+	// Capture the process pointer.
+	firstCmd := p.cmd
+
+	// Second call — should reuse.
+	req.Messages = []types.ChatMessage{
+		{Role: "user", Content: []types.ChatContentBlock{
+			{Type: "text", Text: "second"},
+		}},
+	}
+	ch, err = p.Chat(context.Background(), req)
+	r.NoError(err)
+	for range ch {
+	}
+
+	r.Same(firstCmd, p.cmd, "should reuse the same process")
+	r.True(p.alive)
+}
+
+// TestPersistentProcessRespawn verifies respawn after process death.
+func TestPersistentProcessRespawn(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	mockBin := filepath.Join(tmpDir, "claude")
+	err := os.WriteFile(mockBin, []byte(persistentMockScript()), 0o755)
+	r.NoError(err)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	p := NewClaudeCLI()
+	defer func() { _ = p.Close() }()
+
+	req := types.ChatRequest{
+		Model: "opus",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "first"},
+			}},
+		},
+	}
+
+	// First call.
+	ch, err := p.Chat(context.Background(), req)
+	r.NoError(err)
+	for range ch {
+	}
+	r.True(p.alive)
+
+	// Kill the process externally.
+	p.mu.Lock()
+	_ = p.killProcess()
+	p.mu.Unlock()
+	r.False(p.alive)
+
+	// Next call should respawn.
+	ch, err = p.Chat(context.Background(), req)
+	r.NoError(err)
+	for range ch {
+	}
+	r.True(p.alive, "should have respawned")
+}
+
+// TestModelMismatchUsesOneShot verifies that a different model triggers one-shot mode.
+func TestModelMismatchUsesOneShot(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	mockBin := filepath.Join(tmpDir, "claude")
+
+	// Script that handles both persistent (stdin) and one-shot (arg) modes.
+	// One-shot: prompt is in $@ args. Persistent: prompt comes from stdin.
+	script := `#!/bin/sh
+# If we have args with the prompt, we're in one-shot mode
+if echo "$@" | grep -q "classify this"; then
+    echo '{"type":"system","session_id":"sess-oneshot","message":"init"}'
+    echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"oneshot"}}}'
+    echo '{"type":"result","session_id":"sess-oneshot","is_error":false}'
+    exit 0
+fi
+
+# Otherwise persistent mode
+while IFS= read -r line; do
+    echo '{"type":"system","session_id":"sess-persistent","message":"init"}'
+    echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"persistent"}}}'
+    echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"persistent"}],"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-persistent"}'
+    echo '{"type":"result","session_id":"sess-persistent","is_error":false}'
+done
+`
+	err := os.WriteFile(mockBin, []byte(script), 0o755)
+	r.NoError(err)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	p := NewClaudeCLI()
+	defer func() { _ = p.Close() }()
+
+	// First call with opus — starts persistent process.
+	ch, err := p.Chat(context.Background(), types.ChatRequest{
+		Model: "opus",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "main task"},
+			}},
+		},
+	})
+	r.NoError(err)
+
+	var firstTexts []string
+	for delta := range ch {
+		if delta.Type == "text_delta" {
+			firstTexts = append(firstTexts, delta.Text)
+		}
+	}
+	r.Equal([]string{"persistent"}, firstTexts)
+	r.Equal("opus", p.model)
+	r.True(p.alive)
+
+	// Second call with haiku — should use one-shot.
+	ch, err = p.Chat(context.Background(), types.ChatRequest{
+		Model: "haiku",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "classify this"},
+			}},
+		},
+	})
+	r.NoError(err)
+
+	var secondTexts []string
+	for delta := range ch {
+		if delta.Type == "text_delta" {
+			secondTexts = append(secondTexts, delta.Text)
+		}
+	}
+	r.Equal([]string{"oneshot"}, secondTexts)
+
+	// Persistent process should still be alive.
+	r.True(p.alive)
+}
+
+// TestClose verifies Close() kills the process.
+func TestClose(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	mockBin := filepath.Join(tmpDir, "claude")
+	err := os.WriteFile(mockBin, []byte(persistentMockScript()), 0o755)
+	r.NoError(err)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	p := NewClaudeCLI()
+
+	// Start a session.
+	ch, err := p.Chat(context.Background(), types.ChatRequest{
+		Model: "opus",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "hello"},
+			}},
+		},
+	})
+	r.NoError(err)
+	for range ch {
+	}
+	r.True(p.alive)
+
+	// Close.
+	err = p.Close()
+	r.NoError(err)
+	r.False(p.alive)
+	r.Nil(p.cmd)
+
+	// Double close should be safe.
+	err = p.Close()
+	r.NoError(err)
+}
+
+// TestSystemPromptInjection verifies system prompt is prepended to user message.
+func TestSystemPromptInjection(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	inputLog := filepath.Join(tmpDir, "input.log")
+	mockBin := filepath.Join(tmpDir, "claude")
+
+	// Script that logs stdin input and emits a response.
+	// Use printf to avoid shell interpretation of escape sequences in JSON.
+	script := `#!/bin/sh
+while IFS= read -r line; do
+    printf '%s\n' "$line" >> ` + inputLog + `
+    echo '{"type":"system","session_id":"sess-sys","message":"init"}'
+    echo '{"type":"result","session_id":"sess-sys","is_error":false}'
+done
+`
+	err := os.WriteFile(mockBin, []byte(script), 0o755)
+	r.NoError(err)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	p := NewClaudeCLI()
+	defer func() { _ = p.Close() }()
+
+	ch, err := p.Chat(context.Background(), types.ChatRequest{
+		Model: "opus",
+		System: []types.SystemBlock{
+			{Text: "You are the Dean of Greendale"},
+		},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "introduce yourself"},
+			}},
+		},
+	})
+	r.NoError(err)
+	for range ch {
+	}
+
+	// Read what was sent to stdin.
+	inputBytes, err := os.ReadFile(inputLog)
+	r.NoError(err)
+
+	var msg cliInputMessage
+	err = json.Unmarshal(inputBytes, &msg)
+	r.NoError(err)
+
+	r.Equal("user", msg.Type)
+	r.Equal("user", msg.Message.Role)
+	r.Contains(msg.Message.Content, "[System Instructions]")
+	r.Contains(msg.Message.Content, "You are the Dean of Greendale")
+	r.Contains(msg.Message.Content, "[User Message]")
+	r.Contains(msg.Message.Content, "introduce yourself")
+}
+
+// TestOneShotChat verifies the one-shot fallback works for non-persistent calls.
+func TestOneShotChat(t *testing.T) {
 	tests := map[string]struct {
 		script    string
 		wantTypes []string
 		wantTexts []string
 		wantErr   bool
-		wantSID   string
 	}{
-		"happy path text streaming": {
+		"happy path": {
 			script: `#!/bin/sh
-echo '{"type":"system","session_id":"sess-troy-barnes","message":"init"}'
-echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Cool. "}}}'
-echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Cool cool cool."}}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Cool. Cool cool cool."}],"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-troy-barnes"}'
-echo '{"type":"result","session_id":"sess-troy-barnes","is_error":false,"duration_ms":100}'
+echo '{"type":"system","session_id":"sess-troy","message":"init"}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Cool. Cool cool cool."}}}'
+echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Cool. Cool cool cool."}],"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-troy"}'
+echo '{"type":"result","session_id":"sess-troy","is_error":false,"duration_ms":100}'
 `,
-			wantTypes: []string{"text_delta", "text_delta", "usage", "message_stop"},
-			wantTexts: []string{"Cool. ", "Cool cool cool.", "", ""},
-			wantSID:   "sess-troy-barnes",
+			wantTypes: []string{"text_delta", "usage", "message_stop"},
+			wantTexts: []string{"Cool. Cool cool cool.", "", ""},
 		},
 		"error result": {
 			script: `#!/bin/sh
 echo '{"type":"system","session_id":"sess-chang","message":"init"}'
-echo '{"type":"result","session_id":"sess-chang","is_error":true,"duration_ms":50}'
+echo '{"type":"result","session_id":"sess-chang","is_error":true}'
 `,
 			wantTypes: []string{"error"},
 			wantTexts: []string{"Claude CLI returned an error"},
-			wantSID:   "sess-chang",
-		},
-		"empty output": {
-			script: `#!/bin/sh
-# Just exit
-`,
-			wantTypes: []string{"message_stop"},
-			wantTexts: []string{""},
-			wantSID:   "",
 		},
 		"stderr error": {
 			script: `#!/bin/sh
@@ -356,20 +672,6 @@ echo "Error: Señor Chang denied access" >&2
 `,
 			wantTypes: []string{"error"},
 			wantTexts: []string{"claude CLI error: Error: Señor Chang denied access"},
-			wantSID:   "",
-		},
-		"tool use in stream ignored": {
-			script: `#!/bin/sh
-echo '{"type":"system","session_id":"sess-abed","message":"init"}'
-echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check..."}}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{"file_path":"/tmp/test"}}]},"session_id":"sess-abed"}'
-echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Found it!"}}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Found it!"}],"usage":{"input_tokens":20,"output_tokens":10}},"session_id":"sess-abed"}'
-echo '{"type":"result","session_id":"sess-abed","is_error":false,"duration_ms":200}'
-`,
-			wantTypes: []string{"text_delta", "text_delta", "usage", "message_stop"},
-			wantTexts: []string{"Let me check...", "Found it!", "", ""},
-			wantSID:   "sess-abed",
 		},
 	}
 
@@ -377,26 +679,26 @@ echo '{"type":"result","session_id":"sess-abed","is_error":false,"duration_ms":2
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			// Create a mock "claude" script.
 			tmpDir := t.TempDir()
 			mockBin := filepath.Join(tmpDir, "claude")
 			err := os.WriteFile(mockBin, []byte(tc.script), 0o755)
 			r.NoError(err)
-
-			// Override PATH to use our mock.
 			t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 			p := NewClaudeCLI()
-			req := types.ChatRequest{
+			// Force one-shot by making the persistent process have a
+			// different model locked in.
+			p.alive = true
+			p.model = "opus"
+
+			ch, err := p.Chat(context.Background(), types.ChatRequest{
 				Model: "haiku",
 				Messages: []types.ChatMessage{
 					{Role: "user", Content: []types.ChatContentBlock{
-						{Type: "text", Text: "test prompt"},
+						{Type: "text", Text: "test"},
 					}},
 				},
-			}
-
-			ch, err := p.Chat(context.Background(), req)
+			})
 			r.NoError(err)
 
 			var gotTypes, gotTexts []string
@@ -407,30 +709,36 @@ echo '{"type":"result","session_id":"sess-abed","is_error":false,"duration_ms":2
 
 			r.Equal(tc.wantTypes, gotTypes)
 			r.Equal(tc.wantTexts, gotTexts)
-			r.Equal(tc.wantSID, p.claudeSessionID)
 		})
 	}
 }
 
-// TestChatContextCancellation verifies the process is killed on context cancel.
+// TestChatContextCancellation verifies the process is killed on cancel and respawns.
 func TestChatContextCancellation(t *testing.T) {
 	r := require.New(t)
 
 	tmpDir := t.TempDir()
 	mockBin := filepath.Join(tmpDir, "claude")
-	// Script that sleeps forever — should be killed by context cancel.
+	// Script that reads stdin, emits a text delta, then sleeps (simulating
+	// a long response). On cancellation the process should be killed.
 	err := os.WriteFile(mockBin, []byte(`#!/bin/sh
-echo '{"type":"system","session_id":"sess-cancel","message":"init"}'
-sleep 60
+while IFS= read -r line; do
+    echo '{"type":"system","session_id":"sess-cancel","message":"init"}'
+    echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"working..."}}}'
+    sleep 60
+    echo '{"type":"result","session_id":"sess-cancel","is_error":false}'
+done
 `), 0o755)
 	r.NoError(err)
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	p := NewClaudeCLI()
+	defer func() { _ = p.Close() }()
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ch, err := p.Chat(ctx, types.ChatRequest{
-		Model: "haiku",
+		Model: "opus",
 		Messages: []types.ChatMessage{
 			{Role: "user", Content: []types.ChatContentBlock{
 				{Type: "text", Text: "testing cancel"},
@@ -439,76 +747,46 @@ sleep 60
 	})
 	r.NoError(err)
 
-	// Cancel after we've started.
+	// Read at least one delta to confirm the process started.
+	delta := <-ch
+	r.Equal("text_delta", delta.Type)
+
+	// Cancel the context — should kill the process.
 	cancel()
 
 	// Channel should close without hanging.
 	for range ch {
 	}
-	// We don't assert specific deltas or session ID — the cancel may fire
-	// before any output is read. The test validates we don't hang.
-}
 
-// TestChatSessionReuse verifies --resume is passed on second call.
-func TestChatSessionReuse(t *testing.T) {
-	r := require.New(t)
+	r.False(p.alive, "process should be killed on cancellation")
 
-	tmpDir := t.TempDir()
-	argsFile := filepath.Join(tmpDir, "args.log")
-
-	// Mock that logs its args and emits minimal NDJSON.
-	mockBin := filepath.Join(tmpDir, "claude")
-	script := fmt.Sprintf(`#!/bin/sh
-echo "$@" >> %s
-echo '{"type":"system","session_id":"sess-study-group","message":"init"}'
-echo '{"type":"result","session_id":"sess-study-group","is_error":false}'
-`, argsFile)
-	err := os.WriteFile(mockBin, []byte(script), 0o755)
+	// Rewrite mock to a non-sleeping version for the respawn test.
+	err = os.WriteFile(mockBin, []byte(persistentMockScript()), 0o755)
 	r.NoError(err)
-	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
-	p := NewClaudeCLI()
-	req := types.ChatRequest{
-		Model: "haiku",
+	// Next call should respawn the process.
+	ch, err = p.Chat(context.Background(), types.ChatRequest{
+		Model: "opus",
 		Messages: []types.ChatMessage{
 			{Role: "user", Content: []types.ChatContentBlock{
-				{Type: "text", Text: "first message"},
+				{Type: "text", Text: "after cancel"},
 			}},
 		},
-	}
-
-	// First call — no --resume.
-	ch, err := p.Chat(context.Background(), req)
+	})
 	r.NoError(err)
-	for range ch {
-	}
 
-	r.Equal("sess-study-group", p.claudeSessionID)
-
-	// Second call — should include --resume.
-	req.Messages = []types.ChatMessage{
-		{Role: "user", Content: []types.ChatContentBlock{
-			{Type: "text", Text: "second message"},
-		}},
+	var gotTypes []string
+	for delta := range ch {
+		gotTypes = append(gotTypes, delta.Type)
 	}
-	ch, err = p.Chat(context.Background(), req)
-	r.NoError(err)
-	for range ch {
-	}
-
-	// Check the logged args.
-	argsBytes, err := os.ReadFile(argsFile)
-	r.NoError(err)
-	lines := strings.Split(strings.TrimSpace(string(argsBytes)), "\n")
-	r.Len(lines, 2)
-	r.NotContains(lines[0], "--resume")
-	r.Contains(lines[1], "--resume sess-study-group")
+	r.Contains(gotTypes, "text_delta", "should have respawned and produced output")
+	r.True(p.alive, "should be alive after respawn")
 }
 
 // TestChatClaudeNotOnPath verifies a clear error when claude is missing.
 func TestChatClaudeNotOnPath(t *testing.T) {
 	r := require.New(t)
-	t.Setenv("PATH", t.TempDir()) // empty PATH
+	t.Setenv("PATH", t.TempDir())
 
 	p := NewClaudeCLI()
 	_, err := p.Chat(context.Background(), types.ChatRequest{
@@ -528,4 +806,43 @@ func mustJSON(v any) json.RawMessage {
 		panic(err)
 	}
 	return b
+}
+
+// TestProcessDiesEmitsError verifies error handling when the process exits unexpectedly.
+func TestProcessDiesEmitsError(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	mockBin := filepath.Join(tmpDir, "claude")
+	// Script that reads one message, emits system init, then exits without result.
+	err := os.WriteFile(mockBin, []byte(`#!/bin/sh
+IFS= read -r line
+echo '{"type":"system","session_id":"sess-die","message":"init"}'
+# Exit without sending result — simulates crash.
+`), 0o755)
+	r.NoError(err)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	p := NewClaudeCLI()
+
+	ch, err := p.Chat(context.Background(), types.ChatRequest{
+		Model: "opus",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: []types.ChatContentBlock{
+				{Type: "text", Text: "hello"},
+			}},
+		},
+	})
+	r.NoError(err)
+
+	var gotTypes []string
+	for delta := range ch {
+		gotTypes = append(gotTypes, delta.Type)
+		if delta.Type == "error" {
+			r.Contains(strings.ToLower(delta.Text), "terminated unexpectedly")
+		}
+	}
+
+	r.Contains(gotTypes, "error")
+	r.False(p.alive, "process should be marked as dead")
 }

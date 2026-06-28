@@ -54,6 +54,10 @@ func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[agent:%s] worker started, cwd=%s", w.sessionID, w.cwd)
 
 	prov := selectProvider()
+	// Close persistent CLI process on worker shutdown.
+	if closer, ok := prov.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
 	registry := tools.NewDefaultRegistry()
 	loader := rctx.NewLoader(w.cwd)
 	bundle, err := loader.Load([]string{"user", "project", "local"})

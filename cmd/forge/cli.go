@@ -391,6 +391,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.working || len(m.taskTrackers) > 0 {
 			m.spinnerFrame++
 		}
+		if m.textBuf != "" {
+			m.flushText()
+		}
 		return m, tick()
 
 	case sessionTitleMsg:
