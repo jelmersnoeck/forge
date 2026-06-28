@@ -18,6 +18,7 @@ func runAgent(args []string) int {
 	mode := fs.String("mode", "", "agent mode: swe (default), spec, code, review")
 	specPath := fs.String("spec", "", "path to spec file (used by coder phase)")
 	modelFlag := fs.String("model", "", "model to use (overrides settings)")
+	issueURLFlag := fs.String("issue-url", "", "GitHub issue URL for PR linking")
 	_ = fs.Parse(args[1:])
 
 	if err := os.Chdir(*cwd); err != nil {
@@ -48,6 +49,7 @@ func runAgent(args []string) int {
 		Mode:        agentMode,
 		SpecPath:    *specPath,
 		Model:       *modelFlag,
+		IssueURL:    *issueURLFlag,
 	}
 
 	if err := agent.Start(cfg); err != nil {

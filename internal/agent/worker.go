@@ -35,6 +35,7 @@ type Worker struct {
 	sessionsDir string
 	mode        string // "swe" (default), "spec", "code", "review"
 	specPath    string // spec file path for --spec flag
+	issueURL    string // GitHub issue URL for PR linking (from --issue)
 	ghAvailable bool   // cached exec.LookPath("gh") result
 	// prCheckPending is a per-worker backpressure flag for PR health checks.
 	// Set to true by enqueuePRCheck (monitor goroutine) when a synthetic
@@ -57,7 +58,7 @@ type Worker struct {
 }
 
 // NewWorker creates a new Worker.
-func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverride string) *Worker {
+func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverride, issueURL string) *Worker {
 	return &Worker{
 		hub:           hub,
 		sessionID:     sessionID,
@@ -65,6 +66,7 @@ func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverr
 		sessionsDir:   sessionsDir,
 		mode:          mode,
 		specPath:      specPath,
+		issueURL:      issueURL,
 		modelOverride: modelOverride,
 		ghAvailable:   tools.GHAvailable(),
 	}
@@ -1059,6 +1061,7 @@ func (w *Worker) buildPRAttribution() phase.PRAttributionOpts {
 			SessionID: w.sessionID,
 			CoAuthor:  "Forge <noreply+forge@siphoc.com>",
 			Enabled:   true,
+			IssueURL:  w.issueURL,
 		}
 	}
 
@@ -1071,6 +1074,7 @@ func (w *Worker) buildPRAttribution() phase.PRAttributionOpts {
 		SessionID: w.sessionID,
 		CoAuthor:  coAuthor,
 		Enabled:   userCfg.PR.Attribution.IsEnabled(),
+		IssueURL:  w.issueURL,
 	}
 }
 

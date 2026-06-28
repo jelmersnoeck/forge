@@ -88,6 +88,34 @@ func TestFormatIssuePrompt(t *testing.T) {
 	}
 }
 
+func TestExtractIssueNumber(t *testing.T) {
+	tests := map[string]struct {
+		input string
+		want  int
+	}{
+		"plain number":       {input: "42", want: 42},
+		"hash prefix":        {input: "#42", want: 42},
+		"full URL":           {input: "https://github.com/owner/repo/issues/42", want: 42},
+		"URL with fragment":  {input: "https://github.com/o/r/issues/99#comment-123", want: 99},
+		"URL with query":     {input: "https://github.com/o/r/issues/7?foo=bar", want: 7},
+		"cross-repo URL":     {input: "https://github.com/other-org/other-repo/issues/123", want: 123},
+		"not a number":       {input: "foo", want: 0},
+		"empty":              {input: "", want: 0},
+		"URL without number": {input: "https://github.com/o/r/issues/", want: 0},
+		"zero":               {input: "0", want: 0},
+		"spaces with hash":   {input: " #7 ", want: 7},
+		"negative":           {input: "-1", want: 0},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := extractIssueNumber(tc.input)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
 func TestNormalizeIssueRef(t *testing.T) {
 	tests := map[string]struct {
 		input string

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -12,6 +14,7 @@ type ghIssue struct {
 	Title    string      `json:"title"`
 	Body     string      `json:"body"`
 	URL      string      `json:"url"`
+	Number   int         `json:"number"`
 	Comments []ghComment `json:"comments"`
 }
 
@@ -26,16 +29,16 @@ type ghAuthor struct {
 }
 
 // fetchGitHubIssue resolves a GitHub issue reference and returns the formatted
-// prompt text and the issue title (for session naming). cwd is used to resolve
-// relative issue numbers against the current repo.
-func fetchGitHubIssue(ref string, cwd string) (prompt string, title string, err error) {
+// prompt text, issue title (for session naming), issue number, and issue URL.
+// cwd is used to resolve relative issue numbers against the current repo.
+func fetchGitHubIssue(ref string, cwd string) (prompt string, title string, issueNum int, issueURL string, err error) {
 	if _, lookErr := exec.LookPath("gh"); lookErr != nil {
-		return "", "", fmt.Errorf("--issue requires the GitHub CLI (gh) — install from https://cli.github.com")
+		return "", "", 0, "", fmt.Errorf("--issue requires the GitHub CLI (gh) — install from https://cli.github.com")
 	}
 
 	normalized := normalizeIssueRef(ref)
 
-	cmd := exec.Command("gh", "issue", "view", normalized, "--json", "title,body,url,comments")
+	cmd := exec.Command("gh", "issue", "view", normalized, "--json", "title,body,url,number,comments")
 	cmd.Dir = cwd
 
 	var stderr strings.Builder
@@ -47,15 +50,21 @@ func fetchGitHubIssue(ref string, cwd string) (prompt string, title string, err 
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", "", fmt.Errorf("%s", msg)
+		return "", "", 0, "", fmt.Errorf("%s", msg)
 	}
 
 	var issue ghIssue
 	if err := json.Unmarshal(out, &issue); err != nil {
-		return "", "", fmt.Errorf("parsing gh output: %w", err)
+		return "", "", 0, "", fmt.Errorf("parsing gh output: %w", err)
 	}
 
-	return formatIssuePrompt(issue), issue.Title, nil
+	// Use the number from the JSON response; fall back to parsing the ref.
+	num := issue.Number
+	if num == 0 {
+		num = extractIssueNumber(ref)
+	}
+
+	return formatIssuePrompt(issue), issue.Title, num, issue.URL, nil
 }
 
 // normalizeIssueRef strips leading `#` and whitespace from an issue reference.
@@ -94,4 +103,31 @@ func formatIssuePrompt(issue ghIssue) string {
 	}
 
 	return b.String()
+}
+
+// issueURLNumberRe matches /issues/<number> in a GitHub URL path.
+var issueURLNumberRe = regexp.MustCompile(`/issues/(\d+)`)
+
+// extractIssueNumber parses an issue number from a URL, #N shorthand, or plain
+// number string. Returns 0 if the ref doesn't contain a valid positive number.
+func extractIssueNumber(ref string) int {
+	ref = strings.TrimSpace(ref)
+
+	// Try URL pattern first.
+	if m := issueURLNumberRe.FindStringSubmatch(ref); len(m) == 2 {
+		n, _ := strconv.Atoi(m[1])
+		if n > 0 {
+			return n
+		}
+		return 0
+	}
+
+	// Strip leading # for shorthand.
+	ref = strings.TrimPrefix(ref, "#")
+
+	n, err := strconv.Atoi(ref)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }

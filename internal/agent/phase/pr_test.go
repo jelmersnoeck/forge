@@ -175,3 +175,35 @@ func TestCreatePR_DeprecatedDelegatesToInternal(t *testing.T) {
 	r.Error(result.Error)
 	r.Contains(result.Error.Error(), "skipped")
 }
+
+func TestAppendIssueClosesLine(t *testing.T) {
+	tests := map[string]struct {
+		body     string
+		issueURL string
+		want     string
+	}{
+		"appends closes line": {
+			body:     "This PR adds paintball mode to Greendale.",
+			issueURL: "https://github.com/greendale/community/issues/42",
+			want:     "This PR adds paintball mode to Greendale.\n\nCloses https://github.com/greendale/community/issues/42",
+		},
+		"no issue URL": {
+			body:     "Regular PR without issue link.",
+			issueURL: "",
+			want:     "Regular PR without issue link.",
+		},
+		"cross-repo issue": {
+			body:     "Fixes upstream dependency.",
+			issueURL: "https://github.com/other-org/other-repo/issues/99",
+			want:     "Fixes upstream dependency.\n\nCloses https://github.com/other-org/other-repo/issues/99",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := appendIssueClosesLine(tc.body, tc.issueURL)
+			r.Equal(tc.want, got)
+		})
+	}
+}
