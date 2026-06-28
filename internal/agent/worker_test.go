@@ -413,3 +413,78 @@ func (m *mockModelLister) Chat(_ context.Context, _ types.ChatRequest) (<-chan t
 func (m *mockModelLister) ListModels(_ context.Context) ([]types.ModelEntry, error) {
 	return m.models, m.err
 }
+
+func TestTurnErrorClassification(t *testing.T) {
+	// This test validates the pattern used in Worker.Run() to distinguish
+	// user interrupts from real errors. The bug: turnCancel() was called
+	// before checking turnCtx.Err(), so every error looked like an interrupt.
+	tests := map[string]struct {
+		cancelBeforeCheck bool // simulate interrupt
+		wantInterrupted   bool
+	}{
+		"API error without interrupt emits error not interrupted": {
+			cancelBeforeCheck: false,
+			wantInterrupted:   false,
+		},
+		"interrupt cancels context before check": {
+			cancelBeforeCheck: true,
+			wantInterrupted:   true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			ctx := context.Background()
+			turnCtx, turnCancel := context.WithCancel(ctx)
+
+			// Simulate: the turn produced an error
+			runErr := fmt.Errorf("Anthropic API error: 529 overloaded")
+
+			if tc.cancelBeforeCheck {
+				// Simulate interrupt arriving during the turn
+				turnCancel()
+			}
+
+			// FIX PATTERN: capture context state BEFORE cleanup cancel
+			wasInterrupted := turnCtx.Err() == context.Canceled
+			turnCancel() // cleanup (always called)
+
+			// Classify
+			var eventType string
+			if runErr != nil {
+				if wasInterrupted {
+					eventType = "interrupted"
+				} else {
+					eventType = "error"
+				}
+			}
+
+			r.Equal(tc.wantInterrupted, wasInterrupted)
+			if tc.wantInterrupted {
+				r.Equal("interrupted", eventType)
+			} else {
+				r.Equal("error", eventType)
+			}
+		})
+	}
+}
+
+func TestTurnErrorClassification_BuggyPattern(t *testing.T) {
+	// Demonstrates the bug: if turnCancel() is called BEFORE checking
+	// turnCtx.Err(), an API error gets misclassified as interrupted.
+	r := require.New(t)
+
+	ctx := context.Background()
+	turnCtx, turnCancel := context.WithCancel(ctx)
+
+	runErr := fmt.Errorf("Anthropic API error: 529 overloaded")
+	_ = runErr
+
+	// BUGGY: cancel before check — this is what the old code did
+	turnCancel()
+
+	// After turnCancel(), turnCtx.Err() is ALWAYS context.Canceled
+	r.Equal(context.Canceled, turnCtx.Err(), "turnCancel() makes Err() always return Canceled — the bug")
+}

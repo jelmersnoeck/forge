@@ -402,17 +402,22 @@ func (w *Worker) Run(ctx context.Context) {
 			state.HistoryID = l.HistoryID()
 		}
 
+		// Capture whether the context was cancelled by an interrupt
+		// BEFORE we call turnCancel() for cleanup. Otherwise
+		// turnCtx.Err() always returns context.Canceled and every
+		// error gets misclassified as "user interrupted".
+		wasInterrupted := turnCtx.Err() == context.Canceled
+
 		turnCancel() // clean up goroutine
 
 		if runErr != nil {
 			log.Printf("[agent:%s] error: %v", w.sessionID, runErr)
 
 			// Distinguish interrupts from real errors.
-			switch turnCtx.Err() {
-			case context.Canceled:
+			if wasInterrupted {
 				turnInterrupted = true
 				emit(types.OutboundEvent{Type: "interrupted"})
-			default:
+			} else {
 				emit(types.OutboundEvent{Type: "error", Content: runErr.Error()})
 			}
 
