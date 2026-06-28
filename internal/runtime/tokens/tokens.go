@@ -8,6 +8,7 @@ package tokens
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -220,15 +221,20 @@ func hasToolUse(msg types.ChatMessage) bool {
 // history and returns a clean copy safe to send to the Anthropic API.
 //
 // Rules enforced:
-//  1. A user message with tool_result blocks must be preceded by an
+//  1. Empty or whitespace-only text content blocks are dropped (the API
+//     rejects them with a 400). Messages left with zero content blocks are
+//     removed entirely.
+//  2. A user message with tool_result blocks must be preceded by an
 //     assistant message whose tool_use IDs are a superset of the
 //     tool_result's tool_use_ids. Orphaned tool_result blocks are dropped.
-//  2. A trailing assistant message with tool_use but no following
+//  3. A trailing assistant message with tool_use but no following
 //     tool_result (e.g., interrupted mid-turn) is dropped.
 func SanitizeHistory(history []types.ChatMessage) []types.ChatMessage {
 	if len(history) == 0 {
 		return history
 	}
+
+	history = dropEmptyTextBlocks(history)
 
 	result := make([]types.ChatMessage, 0, len(history))
 
@@ -282,6 +288,27 @@ func SanitizeHistory(history []types.ChatMessage) []types.ChatMessage {
 		}
 	}
 
+	return result
+}
+
+// dropEmptyTextBlocks returns a copy of history with empty/whitespace-only
+// text content blocks removed. Messages left with no content blocks are
+// dropped entirely. Non-text blocks (tool_use, tool_result) are preserved.
+func dropEmptyTextBlocks(history []types.ChatMessage) []types.ChatMessage {
+	result := make([]types.ChatMessage, 0, len(history))
+	for _, msg := range history {
+		kept := make([]types.ChatContentBlock, 0, len(msg.Content))
+		for _, block := range msg.Content {
+			if block.Type == "text" && strings.TrimSpace(block.Text) == "" {
+				continue
+			}
+			kept = append(kept, block)
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		result = append(result, types.ChatMessage{Role: msg.Role, Content: kept})
+	}
 	return result
 }
 

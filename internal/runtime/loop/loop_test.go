@@ -237,6 +237,44 @@ func TestLoop_Send_TextResponse(t *testing.T) {
 	r.Len(messages, 2)
 }
 
+func TestLoop_Send_EmptyPrompt(t *testing.T) {
+	tests := map[string]struct {
+		prompt string
+	}{
+		"empty string":    {prompt: ""},
+		"whitespace only": {prompt: "   \n\t "},
+		"newlines only":   {prompt: "\n\n"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			dir := t.TempDir()
+			store := session.NewStore(dir)
+			loop := New(Options{
+				Provider:     &MockTextProvider{},
+				Tools:        tools.NewRegistry(),
+				Context:      types.ContextBundle{},
+				CWD:          "/home/abed/greendale",
+				SessionStore: store,
+				SessionID:    "session-empty",
+				Model:        "claude-sonnet-4-5-20250929",
+				MaxTurns:     10,
+			})
+
+			emit := func(types.OutboundEvent) {}
+
+			err := loop.Send(context.Background(), tc.prompt, emit)
+			r.NoError(err)
+
+			// No empty user message appended; only the assistant reply.
+			r.Len(loop.history, 1)
+			r.Equal("assistant", loop.history[0].Role)
+		})
+	}
+}
+
 func TestLoop_Send_ToolUse(t *testing.T) {
 	r := require.New(t)
 
@@ -404,6 +442,53 @@ func TestLoop_Resume(t *testing.T) {
 	messages, err := store.Load(historyID)
 	r.NoError(err)
 	r.Greater(len(messages), 3)
+}
+
+func TestLoop_Resume_EmptyTextBlockInHistory(t *testing.T) {
+	r := require.New(t)
+
+	dir := t.TempDir()
+	store := session.NewStore(dir)
+	historyID := "resume-empty-block"
+
+	// Seed a stored session that contains an empty text block — the exact
+	// shape that previously triggered a 400 on resume.
+	appendMsg := func(msg types.ChatMessage) {
+		r.NoError(store.Append(historyID, types.SessionMessage{
+			UUID:      historyID + "-msg",
+			SessionID: historyID,
+			Type:      msg.Role,
+			Message:   msg,
+			Timestamp: 1,
+		}))
+	}
+	appendMsg(types.ChatMessage{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Cool cool cool"}}})
+	appendMsg(types.ChatMessage{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: ""}}})
+
+	loop := New(Options{
+		Provider:     &MockTextProvider{},
+		Tools:        tools.NewRegistry(),
+		Context:      types.ContextBundle{},
+		CWD:          "/home/jeff/greendale",
+		SessionStore: store,
+		SessionID:    "session-resume",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     10,
+	})
+
+	// Resume with an empty prompt — must not error despite the empty block.
+	err := loop.Resume(context.Background(), historyID, "", func(types.OutboundEvent) {})
+	r.NoError(err)
+
+	// Sanitization runs inside runLoop, so the in-memory history is cleaned of
+	// the empty text block before the assistant reply is appended.
+	for _, msg := range loop.history {
+		for _, block := range msg.Content {
+			if block.Type == "text" {
+				r.NotEmpty(strings.TrimSpace(block.Text))
+			}
+		}
+	}
 }
 
 func TestLoop_UsageTracking(t *testing.T) {

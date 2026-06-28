@@ -251,6 +251,80 @@ func TestBuildRequest_PriorityOrder(t *testing.T) {
 	r.LessOrEqual(countCacheBreakpoints(params), maxCacheBreakpoints)
 }
 
+func TestBuildRequest_EmptyTextBlocks(t *testing.T) {
+	tests := map[string]struct {
+		messages  []types.ChatMessage
+		wantMsgs  int
+		wantTexts []string // text blocks present across all surviving messages
+	}{
+		"empty text block dropped": {
+			messages: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{
+					{Type: "text", Text: ""},
+				}},
+			},
+			wantMsgs:  0,
+			wantTexts: nil,
+		},
+		"whitespace-only text block dropped": {
+			messages: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{
+					{Type: "text", Text: "   \n\t  "},
+				}},
+			},
+			wantMsgs:  0,
+			wantTexts: nil,
+		},
+		"non-empty text survives": {
+			messages: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{
+					{Type: "text", Text: "Troy and Abed in the morning"},
+				}},
+			},
+			wantMsgs:  1,
+			wantTexts: []string{"Troy and Abed in the morning"},
+		},
+		"mixed: empty text dropped, tool_use kept": {
+			messages: []types.ChatMessage{
+				{Role: "assistant", Content: []types.ChatContentBlock{
+					{Type: "text", Text: ""},
+					{Type: "tool_use", ID: "tu_1", Name: "Read", Input: map[string]any{"file_path": "/x"}},
+				}},
+				{Role: "user", Content: []types.ChatContentBlock{
+					{Type: "tool_result", ToolUseID: "tu_1", Content: []types.ToolResultContent{{Type: "text", Text: "ok"}}},
+				}},
+			},
+			wantMsgs:  2,
+			wantTexts: nil,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			params, err := buildRequest(types.ChatRequest{
+				Model:     "claude-sonnet-4-5-20250929",
+				Messages:  tc.messages,
+				MaxTokens: 1024,
+			})
+			r.NoError(err)
+			r.Len(params.Messages, tc.wantMsgs)
+
+			var gotTexts []string
+			for _, msg := range params.Messages {
+				for _, block := range msg.Content {
+					if block.OfText != nil {
+						r.NotEmpty(block.OfText.Text, "buildRequest must never emit an empty text block")
+						gotTexts = append(gotTexts, block.OfText.Text)
+					}
+				}
+			}
+			r.Equal(tc.wantTexts, gotTexts)
+		})
+	}
+}
+
 func TestAnthropicProvider_ListModels(t *testing.T) {
 	r := require.New(t)
 

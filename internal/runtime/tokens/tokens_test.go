@@ -332,6 +332,46 @@ func TestSanitizeHistory(t *testing.T) {
 			},
 			want: 2,
 		},
+		"empty text block dropped, message removed": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Hello"}}},
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: ""}}},
+			},
+			want: 1,
+			check: func(t *testing.T, result []types.ChatMessage) {
+				r := require.New(t)
+				r.Equal("Hello", result[0].Content[0].Text)
+			},
+		},
+		"whitespace-only text block dropped, message removed": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "  \n\t "}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{{Type: "text", Text: "Six seasons and a movie"}}},
+			},
+			want: 1,
+			check: func(t *testing.T, result []types.ChatMessage) {
+				r := require.New(t)
+				r.Equal("assistant", result[0].Role)
+			},
+		},
+		"empty text block stripped but tool_use survives": {
+			history: []types.ChatMessage{
+				{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Run it"}}},
+				{Role: "assistant", Content: []types.ChatContentBlock{
+					{Type: "text", Text: ""},
+					{Type: "tool_use", ID: "toolu_chang", Name: "Bash"},
+				}},
+				{Role: "user", Content: []types.ChatContentBlock{
+					{Type: "tool_result", ToolUseID: "toolu_chang", Content: []types.ToolResultContent{{Type: "text", Text: "done"}}},
+				}},
+			},
+			want: 3,
+			check: func(t *testing.T, result []types.ChatMessage) {
+				r := require.New(t)
+				r.Len(result[1].Content, 1)
+				r.Equal("tool_use", result[1].Content[0].Type)
+			},
+		},
 	}
 
 	for name, tc := range tests {
