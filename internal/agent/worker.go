@@ -279,6 +279,11 @@ func (w *Worker) Run(ctx context.Context) {
 			return
 		}
 
+		// Trim leading/trailing whitespace so a blank or whitespace-only
+		// prompt becomes "" — the loop then advances existing history without
+		// appending an empty text block (which the Anthropic API rejects).
+		msg.Text = strings.TrimSpace(msg.Text)
+
 		// Internal PR health check — runs inline, serialized with all
 		// other message processing. No concurrent git access possible.
 		if msg.Source == prCheckSource {

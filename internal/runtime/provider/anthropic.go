@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -87,12 +88,19 @@ func buildRequest(req types.ChatRequest) (anthropic.MessageNewParams, error) {
 		tools[i] = toolUnion
 	}
 
-	messages := make([]anthropic.MessageParam, len(req.Messages))
-	for i, msg := range req.Messages {
-		content := make([]anthropic.ContentBlockParamUnion, len(msg.Content))
-		for j, block := range msg.Content {
+	messages := make([]anthropic.MessageParam, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		content := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Content))
+		for _, block := range msg.Content {
 			switch block.Type {
 			case "text":
+				// The Anthropic API rejects empty text content blocks with a
+				// 400 ("text content blocks must be non-empty"). Skip blocks
+				// that are empty or whitespace-only — this is the single
+				// chokepoint every request passes through.
+				if strings.TrimSpace(block.Text) == "" {
+					continue
+				}
 				textBlock := anthropic.TextBlockParam{
 					Text: block.Text,
 				}
@@ -100,16 +108,16 @@ func buildRequest(req types.ChatRequest) (anthropic.MessageNewParams, error) {
 					textBlock.CacheControl = toCacheControl(block.CacheControl)
 					cacheRemaining--
 				}
-				content[j] = anthropic.ContentBlockParamUnion{
+				content = append(content, anthropic.ContentBlockParamUnion{
 					OfText: &textBlock,
-				}
+				})
 			case "tool_use":
 				toolUse := anthropic.NewToolUseBlock(block.ID, block.Input, block.Name)
 				if block.CacheControl != nil && cacheRemaining > 0 && toolUse.OfToolUse != nil {
 					toolUse.OfToolUse.CacheControl = toCacheControl(block.CacheControl)
 					cacheRemaining--
 				}
-				content[j] = toolUse
+				content = append(content, toolUse)
 			case "tool_result":
 				resultJSON, err := json.Marshal(block.Content)
 				if err != nil {
@@ -120,14 +128,20 @@ func buildRequest(req types.ChatRequest) (anthropic.MessageNewParams, error) {
 					toolResult.OfToolResult.CacheControl = toCacheControl(block.CacheControl)
 					cacheRemaining--
 				}
-				content[j] = toolResult
+				content = append(content, toolResult)
 			}
 		}
 
-		messages[i] = anthropic.NewUserMessage(content...)
-		if msg.Role == "assistant" {
-			messages[i] = anthropic.NewAssistantMessage(content...)
+		// A message with zero content blocks is invalid — drop it entirely.
+		if len(content) == 0 {
+			continue
 		}
+
+		msgParam := anthropic.NewUserMessage(content...)
+		if msg.Role == "assistant" {
+			msgParam = anthropic.NewAssistantMessage(content...)
+		}
+		messages = append(messages, msgParam)
 	}
 
 	params := anthropic.MessageNewParams{

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,18 +135,23 @@ func (l *Loop) Model() string {
 	return l.model
 }
 
-// Send processes a user prompt and runs the agentic loop.
+// Send processes a user prompt and runs the agentic loop. An empty or
+// whitespace-only promptText is not appended to history (the Anthropic API
+// rejects empty text blocks), but the loop still runs against existing history
+// — this lets resume/continuation paths advance without a new message.
 func (l *Loop) Send(ctx context.Context, promptText string, emit func(types.OutboundEvent)) error {
-	userMsg := types.ChatMessage{
-		Role: "user",
-		Content: []types.ChatContentBlock{
-			{Type: "text", Text: promptText},
-		},
-	}
-	l.history = append(l.history, userMsg)
+	if strings.TrimSpace(promptText) != "" {
+		userMsg := types.ChatMessage{
+			Role: "user",
+			Content: []types.ChatContentBlock{
+				{Type: "text", Text: promptText},
+			},
+		}
+		l.history = append(l.history, userMsg)
 
-	if err := l.persistMessage("user", userMsg); err != nil {
-		return fmt.Errorf("persist user message: %w", err)
+		if err := l.persistMessage("user", userMsg); err != nil {
+			return fmt.Errorf("persist user message: %w", err)
+		}
 	}
 
 	return l.runLoop(ctx, emit)
@@ -209,6 +215,12 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 				text, ok := l.steeringSource()
 				if !ok {
 					break
+				}
+
+				// Skip empty/whitespace-only steering messages — they would
+				// produce an empty text block that the API rejects.
+				if strings.TrimSpace(text) == "" {
+					continue
 				}
 
 				steerMsg := types.ChatMessage{

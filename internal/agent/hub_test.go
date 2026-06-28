@@ -446,3 +446,49 @@ func TestHub_ConsumeSteeringMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestHub_ConsumeSteeringMessage_SkipsEmpty(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	// Queue empties interleaved with a real message.
+	hub.PushMessage(types.InboundMessage{Text: "", User: "Troy Barnes"})
+	hub.PushMessage(types.InboundMessage{Text: "   \n\t ", User: "Troy Barnes"})
+	hub.PushMessage(types.InboundMessage{Text: "Six seasons and a movie", User: "Abed Nadir"})
+
+	text, ok := hub.ConsumeSteeringMessage()
+	r.True(ok)
+	r.Equal("Six seasons and a movie", text)
+
+	// Queue now exhausted — leading empties were discarded too.
+	_, ok = hub.ConsumeSteeringMessage()
+	r.False(ok)
+}
+
+func TestHub_ConsumeSteeringMessage_AllEmpty(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	hub.PushMessage(types.InboundMessage{Text: "", User: "Pierce Hawthorne"})
+	hub.PushMessage(types.InboundMessage{Text: "  ", User: "Pierce Hawthorne"})
+
+	_, ok := hub.ConsumeSteeringMessage()
+	r.False(ok)
+}
+
+func TestHub_PeekSteeringMessage_SkipsEmpty(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	hub.PushMessage(types.InboundMessage{Text: "  ", User: "Senor Chang"})
+	hub.PushMessage(types.InboundMessage{Text: "Ha! Gay.", User: "Senor Chang"})
+
+	text, ok := hub.PeekSteeringMessage()
+	r.True(ok)
+	r.Equal("Ha! Gay.", text)
+
+	// Non-destructive — peek again returns same non-empty message.
+	text2, ok2 := hub.PeekSteeringMessage()
+	r.True(ok2)
+	r.Equal("Ha! Gay.", text2)
+}

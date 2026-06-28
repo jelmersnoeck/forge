@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -237,29 +238,36 @@ func (h *Hub) ReviewChannel() <-chan string {
 	return h.reviewCh
 }
 
-// PeekSteeringMessage returns the text of the next queued message without
-// removing it, for mid-turn steering. Non-blocking: returns ("", false) when
-// the queue is empty.
+// PeekSteeringMessage returns the text of the next non-empty queued message
+// without removing it, for mid-turn steering. Non-blocking: returns ("", false)
+// when the queue holds no non-empty message.
 func (h *Hub) PeekSteeringMessage() (string, bool) {
 	h.qmu.Lock()
 	defer h.qmu.Unlock()
-	if len(h.queue) == 0 {
-		return "", false
+	for _, msg := range h.queue {
+		if strings.TrimSpace(msg.Text) != "" {
+			return msg.Text, true
+		}
 	}
-	return h.queue[0].Text, true
+	return "", false
 }
 
-// ConsumeSteeringMessage removes and returns the next queued message.
-// Non-blocking: returns ("", false) when the queue is empty.
+// ConsumeSteeringMessage removes and returns the next non-empty queued message,
+// discarding any empty/whitespace-only entries it encounters along the way.
+// Empty steering messages would produce empty text blocks that the Anthropic
+// API rejects, so they are dropped here. Non-blocking: returns ("", false) when
+// the queue holds no non-empty message.
 func (h *Hub) ConsumeSteeringMessage() (string, bool) {
 	h.qmu.Lock()
 	defer h.qmu.Unlock()
-	if len(h.queue) == 0 {
-		return "", false
+	for len(h.queue) > 0 {
+		text := h.queue[0].Text
+		h.queue = h.queue[1:]
+		if strings.TrimSpace(text) != "" {
+			return text, true
+		}
 	}
-	text := h.queue[0].Text
-	h.queue = h.queue[1:]
-	return text, true
+	return "", false
 }
 
 // IsIdle reports whether the worker is waiting for a message (i.e., no active
