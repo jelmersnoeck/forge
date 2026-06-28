@@ -55,6 +55,10 @@ type OrchestratorOpts struct {
 	// direct coder). Set during Q&A→task or investigate→task transitions
 	// so the spec-creator can Resume() with full prior context.
 	TransitionHistoryID string
+
+	// SteeringSource is called between LLM iterations to check for
+	// mid-turn user messages. Passed through to loop.Options.
+	SteeringSource func() (string, bool)
 }
 
 // OrchestratorResult is the return value from Orchestrator.Run.
@@ -212,15 +216,16 @@ func (o *Orchestrator) runConversationPhase(ctx context.Context, opts Orchestrat
 	bundle := InjectPhasePrompt(opts.Bundle, p.Name)
 
 	l := loop.New(loop.Options{
-		Provider:     opts.Provider,
-		Tools:        registry,
-		Context:      bundle,
-		CWD:          opts.CWD,
-		SessionStore: opts.SessionStore,
-		SessionID:    opts.SessionID,
-		Model:        opts.Model,
-		MaxTurns:     p.MaxTurns,
-		AuditLogger:  opts.AuditLogger,
+		Provider:       opts.Provider,
+		Tools:          registry,
+		Context:        bundle,
+		CWD:            opts.CWD,
+		SessionStore:   opts.SessionStore,
+		SessionID:      opts.SessionID,
+		Model:          opts.Model,
+		MaxTurns:       p.MaxTurns,
+		AuditLogger:    opts.AuditLogger,
+		SteeringSource: opts.SteeringSource,
 	})
 
 	var err error

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -1075,4 +1076,252 @@ func (m *mockSlowReadProvider) Chat(ctx context.Context, req types.ChatRequest) 
 		}
 	}()
 	return ch, nil
+}
+
+// MockSteeringProvider returns tool_use on calls 1-2, text on call 3.
+// This gives the steering checkpoint two chances to inject messages.
+type MockSteeringProvider struct {
+	callCount int
+	mu        sync.Mutex
+	messages  []types.ChatRequest // captured requests for inspection
+}
+
+func (m *MockSteeringProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.messages = append(m.messages, req)
+	m.mu.Unlock()
+
+	ch := make(chan types.ChatDelta, 8)
+	go func() {
+		defer close(ch)
+		switch {
+		case count <= 2:
+			ch <- types.ChatDelta{Type: "tool_use_start", ID: fmt.Sprintf("t-%d", count), Name: "read"}
+			ch <- types.ChatDelta{Type: "tool_use_delta", PartialJSON: `{"file_path":"/tmp/test.txt"}`}
+			ch <- types.ChatDelta{Type: "tool_use_end"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "tool_use"}
+		default:
+			ch <- types.ChatDelta{Type: "text_delta", Text: "Done at Greendale"}
+			ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+		}
+	}()
+	return ch, nil
+}
+
+func TestLoop_SteeringMessage_Injected(t *testing.T) {
+	r := require.New(t)
+
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "file contents"}},
+			}, nil
+		},
+	})
+
+	provider := &MockSteeringProvider{}
+
+	// Steering source: return "Actually, use Y instead" on the first call,
+	// then nothing.
+	steerCallCount := 0
+	steeringSource := func() (string, bool) {
+		steerCallCount++
+		switch steerCallCount {
+		case 1:
+			return "Actually, use Y instead of X", true
+		default:
+			return "", false
+		}
+	}
+
+	l := makeLoop(t, provider, registry, func(o *Options) {
+		o.SteeringSource = steeringSource
+	})
+
+	var events []types.OutboundEvent
+	var mu sync.Mutex
+	emit := func(e types.OutboundEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+
+	err := l.Send(context.Background(), "Do the thing", emit)
+	r.NoError(err)
+
+	// Check that a steering event was emitted.
+	var steeringEvents []types.OutboundEvent
+	for _, e := range events {
+		if e.Type == "steering" {
+			steeringEvents = append(steeringEvents, e)
+		}
+	}
+	r.Len(steeringEvents, 1, "should have emitted exactly one steering event")
+	r.Equal("Actually, use Y instead of X", steeringEvents[0].Content)
+
+	// Verify the steering message was injected into history as a user message.
+	var userMessages []string
+	for _, msg := range l.history {
+		if msg.Role == "user" {
+			for _, block := range msg.Content {
+				if block.Type == "text" {
+					userMessages = append(userMessages, block.Text)
+				}
+			}
+		}
+	}
+	r.Contains(userMessages, "Actually, use Y instead of X",
+		"steering message should appear in history as a user message")
+
+	// Verify the second LLM call saw the steering message in its request.
+	// Call 1: initial prompt -> tool_use
+	// Call 2: tool_result + steering message -> tool_use
+	// Call 3: tool_result -> text
+	provider.mu.Lock()
+	r.GreaterOrEqual(len(provider.messages), 2)
+	secondReq := provider.messages[1]
+	provider.mu.Unlock()
+
+	// The second request's messages should contain the steering text.
+	var found bool
+	for _, msg := range secondReq.Messages {
+		if msg.Role == "user" {
+			for _, block := range msg.Content {
+				if block.Type == "text" && block.Text == "Actually, use Y instead of X" {
+					found = true
+				}
+			}
+		}
+	}
+	r.True(found, "steering message should appear in the second LLM request")
+}
+
+func TestLoop_SteeringMessage_MultipleConsumed(t *testing.T) {
+	r := require.New(t)
+
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "data"}},
+			}, nil
+		},
+	})
+
+	// Two steering messages arrive between the first and second LLM calls.
+	steerIdx := 0
+	steerMsgs := []string{"First correction", "Second correction"}
+	steeringSource := func() (string, bool) {
+		if steerIdx < len(steerMsgs) {
+			msg := steerMsgs[steerIdx]
+			steerIdx++
+			return msg, true
+		}
+		return "", false
+	}
+
+	l := makeLoop(t, &MockSteeringProvider{}, registry, func(o *Options) {
+		o.SteeringSource = steeringSource
+	})
+
+	var events []types.OutboundEvent
+	var mu sync.Mutex
+	emit := func(e types.OutboundEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+
+	err := l.Send(context.Background(), "Go go go", emit)
+	r.NoError(err)
+
+	var steeringCount int
+	for _, e := range events {
+		if e.Type == "steering" {
+			steeringCount++
+		}
+	}
+	r.Equal(2, steeringCount, "both steering messages should be consumed and emitted")
+}
+
+func TestLoop_SteeringMessage_NilSource(t *testing.T) {
+	r := require.New(t)
+
+	// No SteeringSource configured — should work exactly like before.
+	l := makeLoop(t, &MockTextProvider{}, tools.NewRegistry())
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "No steering", emit)
+	r.NoError(err)
+}
+
+func TestLoop_SteeringMessage_Persisted(t *testing.T) {
+	r := require.New(t)
+
+	registry := tools.NewRegistry()
+	registry.Register(types.ToolDefinition{
+		Name:     "read",
+		ReadOnly: true,
+		Handler: func(input map[string]any, ctx types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{
+				Content: []types.ToolResultContent{{Type: "text", Text: "data"}},
+			}, nil
+		},
+	})
+
+	steerOnce := true
+	steeringSource := func() (string, bool) {
+		if steerOnce {
+			steerOnce = false
+			return "Course correction from Jeff Winger", true
+		}
+		return "", false
+	}
+
+	dir := t.TempDir()
+	store := session.NewStore(dir)
+
+	l := New(Options{
+		Provider:       &MockSteeringProvider{},
+		Tools:          registry,
+		Context:        types.ContextBundle{},
+		CWD:            "/home/dean/greendale",
+		SessionStore:   store,
+		SessionID:      "session-steering",
+		Model:          "claude-sonnet-4-5-20250929",
+		MaxTurns:       100,
+		SteeringSource: steeringSource,
+	})
+
+	emit := func(e types.OutboundEvent) {}
+	err := l.Send(context.Background(), "Start working", emit)
+	r.NoError(err)
+
+	// Verify the steering message was persisted to the session store.
+	messages, err := store.Load(l.HistoryID())
+	r.NoError(err)
+
+	var persistedTexts []string
+	for _, sm := range messages {
+		if sm.Type == "user" {
+			var chatMsg types.ChatMessage
+			msgBytes, _ := json.Marshal(sm.Message)
+			if json.Unmarshal(msgBytes, &chatMsg) == nil {
+				for _, block := range chatMsg.Content {
+					if block.Type == "text" {
+						persistedTexts = append(persistedTexts, block.Text)
+					}
+				}
+			}
+		}
+	}
+	r.Contains(persistedTexts, "Course correction from Jeff Winger",
+		"steering message should be persisted in session JSONL")
 }

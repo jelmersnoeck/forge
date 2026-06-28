@@ -222,3 +222,37 @@ func (h *Hub) TriggerReview(baseBranch string) {
 func (h *Hub) ReviewChannel() <-chan string {
 	return h.reviewCh
 }
+
+// PeekSteeringMessage returns the text of the next queued message without
+// removing it, for mid-turn steering. Non-blocking: returns ("", false) when
+// the queue is empty.
+func (h *Hub) PeekSteeringMessage() (string, bool) {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	if len(h.queue) == 0 {
+		return "", false
+	}
+	return h.queue[0].Text, true
+}
+
+// ConsumeSteeringMessage removes and returns the next queued message.
+// Non-blocking: returns ("", false) when the queue is empty.
+func (h *Hub) ConsumeSteeringMessage() (string, bool) {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	if len(h.queue) == 0 {
+		return "", false
+	}
+	text := h.queue[0].Text
+	h.queue = h.queue[1:]
+	return text, true
+}
+
+// IsIdle reports whether the worker is waiting for a message (i.e., no active
+// conversation turn is in progress). The monitor uses this to avoid touching
+// the git repo while the agent is working.
+func (h *Hub) IsIdle() bool {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	return len(h.waiters) > 0
+}

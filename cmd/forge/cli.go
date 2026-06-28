@@ -623,9 +623,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 
-			// Otherwise, add to queue (will be sent when current work completes)
-			m.queue = append(m.queue, text)
-			return m, nil
+			// Agent is busy — send as a steering message (injected mid-turn).
+			// Display with a distinct label so the user knows it'll be
+			// picked up between LLM iterations, not queued for later.
+			m.output = append(m.output, "")
+			maxWidth := m.width - 7
+			if maxWidth < 40 {
+				maxWidth = 80
+			}
+			wrapped := wrapText(text, maxWidth)
+			for i, line := range wrapped {
+				if i == 0 {
+					m.output = append(m.output, thinkingStyle.Render("You (steering): ")+line)
+				} else {
+					m.output = append(m.output, "                "+line)
+				}
+			}
+			return m, m.sendMessage(text)
 
 		default:
 			// Let textarea handle all other keys (including navigation)
@@ -649,7 +663,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tool_progress":
 			// Keep working/thinking state, just update progress
 		case "text", "tool_use", "task_status", "review_start", "review_finding",
-			"phase_start", "phase_handoff":
+			"phase_start", "phase_handoff", "steering":
 			m.thinking = false
 			m.working = true
 			m.toolProgress = ""
@@ -1022,6 +1036,10 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 				m.output = append(m.output, "                           "+dimStyle.Render(line))
 			}
 		}
+
+	case "steering":
+		m.flushText()
+		m.output = append(m.output, dimStyle.Render("  [steering message injected]"))
 
 	case "usage":
 		// Loop sends cumulative totalUsage

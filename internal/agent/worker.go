@@ -281,30 +281,32 @@ func (w *Worker) Run(ctx context.Context) {
 			// Resume the coder conversation with coder phase config.
 			coderBundle := phase.InjectPhasePrompt(bundle, "code")
 			l := loop.New(loop.Options{
-				Provider:     prov,
-				Tools:        registry,
-				Context:      coderBundle,
-				CWD:          w.cwd,
-				SessionStore: store,
-				SessionID:    w.sessionID,
-				Model:        model,
-				MaxTurns:     0,
-				AuditLogger:  &StdAuditLogger{},
+				Provider:       prov,
+				Tools:          registry,
+				Context:        coderBundle,
+				CWD:            w.cwd,
+				SessionStore:   store,
+				SessionID:      w.sessionID,
+				Model:          model,
+				MaxTurns:       0,
+				AuditLogger:    &StdAuditLogger{},
+				SteeringSource: w.hub.ConsumeSteeringMessage,
 			})
 			runErr = l.Resume(turnCtx, historyID, msg.Text, emit)
 			historyID = l.HistoryID()
 
 		default:
 			l := loop.New(loop.Options{
-				Provider:     prov,
-				Tools:        registry,
-				Context:      bundle,
-				CWD:          w.cwd,
-				SessionStore: store,
-				SessionID:    w.sessionID,
-				Model:        model,
-				MaxTurns:     0,
-				AuditLogger:  &StdAuditLogger{},
+				Provider:       prov,
+				Tools:          registry,
+				Context:        bundle,
+				CWD:            w.cwd,
+				SessionStore:   store,
+				SessionID:      w.sessionID,
+				Model:          model,
+				MaxTurns:       0,
+				AuditLogger:    &StdAuditLogger{},
+				SteeringSource: w.hub.ConsumeSteeringMessage,
 			})
 			runErr = l.Send(turnCtx, msg.Text, emit)
 			historyID = l.HistoryID()
@@ -360,6 +362,7 @@ func (w *Worker) runOrchestrator(
 		QAHistoryID:          qaHistoryID,
 		InvestigateHistoryID: investigateHistoryID,
 		PipelineHint:         pipelineHint,
+		SteeringSource:       w.hub.ConsumeSteeringMessage,
 	}
 
 	result, err := orch.Run(ctx, opts)
