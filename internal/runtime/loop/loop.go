@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -142,6 +143,40 @@ func (l *Loop) Send(ctx context.Context, promptText string, emit func(types.Outb
 	}
 
 	return l.runLoop(ctx, emit)
+}
+
+// SendWithContext loads prior conversation history from priorHistoryID
+// into the loop's message history (for LLM context), then sends promptText
+// as a new user message. Unlike Resume, the loop keeps its own fresh
+// historyID — the prior messages are context, not continuation.
+//
+// If priorHistoryID is empty or the session cannot be loaded, falls back
+// to a plain Send (no error — missing context is degraded, not fatal).
+func (l *Loop) SendWithContext(ctx context.Context, priorHistoryID string, promptText string, emit func(types.OutboundEvent)) error {
+	if priorHistoryID != "" {
+		sessionMessages, err := l.sessionStore.Load(priorHistoryID)
+		switch {
+		case err != nil:
+			log.Printf("[loop:%s] SendWithContext: failed to load prior session %s: %v (falling back to Send)",
+				l.sessionID, priorHistoryID, err)
+		default:
+			for _, msg := range sessionMessages {
+				messageBytes, err := json.Marshal(msg.Message)
+				if err != nil {
+					continue
+				}
+
+				var chatMsg types.ChatMessage
+				if err := json.Unmarshal(messageBytes, &chatMsg); err != nil {
+					continue
+				}
+
+				l.history = append(l.history, chatMsg)
+			}
+		}
+	}
+
+	return l.Send(ctx, promptText, emit)
 }
 
 // Resume loads a session and continues with a new prompt.

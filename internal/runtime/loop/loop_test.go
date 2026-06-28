@@ -1049,6 +1049,224 @@ func TestLoop_InterruptDuringReadOnlyTools(t *testing.T) {
 	}
 }
 
+// MockTrackingProvider records the number of messages per Chat call.
+type MockTrackingProvider struct {
+	mu        sync.Mutex
+	msgCounts []int
+}
+
+func (m *MockTrackingProvider) Chat(_ context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
+	m.mu.Lock()
+	m.msgCounts = append(m.msgCounts, len(req.Messages))
+	m.mu.Unlock()
+
+	ch := make(chan types.ChatDelta, 3)
+	go func() {
+		defer close(ch)
+		ch <- types.ChatDelta{Type: "text_delta", Text: "Cool. Cool cool cool."}
+		ch <- types.ChatDelta{Type: "usage", Usage: &types.TokenUsage{InputTokens: 100, OutputTokens: 50}}
+		ch <- types.ChatDelta{Type: "message_stop", StopReason: "end_turn"}
+	}()
+	return ch, nil
+}
+
+func TestLoop_SendWithContext_LoadsPriorHistory(t *testing.T) {
+	r := require.New(t)
+
+	dir := t.TempDir()
+	store := session.NewStore(dir)
+	prov := &MockTrackingProvider{}
+	registry := tools.NewRegistry()
+
+	// Phase 1: Create a QA conversation with a few turns.
+	qaLoop := New(Options{
+		Provider:     prov,
+		Tools:        registry,
+		Context:      types.ContextBundle{},
+		CWD:          "/home/troy/greendale",
+		SessionStore: store,
+		SessionID:    "qa-session",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     10,
+	})
+	emit := func(e types.OutboundEvent) {}
+	err := qaLoop.Send(context.Background(), "What does the air conditioning annex do?", emit)
+	r.NoError(err)
+	qaHistoryID := qaLoop.HistoryID()
+
+	// Phase 2: Create a spec-creator loop that uses SendWithContext.
+	specLoop := New(Options{
+		Provider:     prov,
+		Tools:        registry,
+		Context:      types.ContextBundle{},
+		CWD:          "/home/abed/greendale",
+		SessionStore: store,
+		SessionID:    "spec-session",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     10,
+	})
+
+	err = specLoop.SendWithContext(context.Background(), qaHistoryID, "Write a spec for the AC repair tool", emit)
+	r.NoError(err)
+
+	// The spec loop should have its OWN historyID (not the QA one).
+	r.NotEqual(qaHistoryID, specLoop.HistoryID())
+
+	// The spec loop's Chat call should have more messages than the QA loop's call
+	// because it loaded prior context + the new prompt.
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Equal(2, len(counts))
+	r.Greater(counts[1], counts[0],
+		"SendWithContext should load prior history, resulting in more messages")
+
+	// Prior context (2 messages: user + assistant) + new user prompt = at least 3.
+	r.GreaterOrEqual(counts[1], 3)
+}
+
+func TestLoop_SendWithContext_DoesNotPersistPriorMessages(t *testing.T) {
+	r := require.New(t)
+
+	dir := t.TempDir()
+	store := session.NewStore(dir)
+	prov := &MockTextProvider{}
+	registry := tools.NewRegistry()
+
+	// Create a QA session.
+	qaLoop := New(Options{
+		Provider:     prov,
+		Tools:        registry,
+		Context:      types.ContextBundle{},
+		CWD:          "/home/jeff/greendale",
+		SessionStore: store,
+		SessionID:    "qa-sess",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     10,
+	})
+	emit := func(e types.OutboundEvent) {}
+	err := qaLoop.Send(context.Background(), "Tell me about the Dreamatorium", emit)
+	r.NoError(err)
+	qaHistoryID := qaLoop.HistoryID()
+
+	// Verify QA session has messages.
+	qaMsgs, err := store.Load(qaHistoryID)
+	r.NoError(err)
+	qaCount := len(qaMsgs)
+	r.Greater(qaCount, 0)
+
+	// Create spec loop with context from QA.
+	specLoop := New(Options{
+		Provider:     prov,
+		Tools:        registry,
+		Context:      types.ContextBundle{},
+		CWD:          "/home/jeff/greendale",
+		SessionStore: store,
+		SessionID:    "spec-sess",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     10,
+	})
+	err = specLoop.SendWithContext(context.Background(), qaHistoryID, "Build a Dreamatorium spec", emit)
+	r.NoError(err)
+
+	// Spec session should only have its OWN messages (user prompt + assistant response).
+	// Prior messages are NOT persisted under the new historyID.
+	specMsgs, err := store.Load(specLoop.HistoryID())
+	r.NoError(err)
+	r.Equal(2, len(specMsgs), "spec session should only persist its own messages (user+assistant)")
+
+	// QA session file should be unchanged.
+	qaAfter, err := store.Load(qaHistoryID)
+	r.NoError(err)
+	r.Equal(qaCount, len(qaAfter), "QA session should not be modified")
+}
+
+func TestLoop_SendWithContext_EmptyPriorHistoryID(t *testing.T) {
+	r := require.New(t)
+
+	prov := &MockTrackingProvider{}
+	l := makeLoop(t, prov, tools.NewRegistry())
+	emit := func(e types.OutboundEvent) {}
+
+	// Empty priorHistoryID should behave like Send.
+	err := l.SendWithContext(context.Background(), "", "Build something at Greendale", emit)
+	r.NoError(err)
+
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Equal(1, len(counts))
+	r.Equal(1, counts[0], "with empty priorHistoryID, should just have the 1 user message")
+}
+
+func TestLoop_SendWithContext_MissingSessionFallsBackToSend(t *testing.T) {
+	r := require.New(t)
+
+	prov := &MockTrackingProvider{}
+	l := makeLoop(t, prov, tools.NewRegistry())
+	emit := func(e types.OutboundEvent) {}
+
+	// Non-existent history ID should not error — falls back to Send.
+	err := l.SendWithContext(context.Background(), "nonexistent-history-id", "Write a spec for Troy's homework", emit)
+	r.NoError(err)
+
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Equal(1, len(counts))
+	r.Equal(1, counts[0], "missing session should fall back to plain Send")
+}
+
+func TestLoop_SendWithContext_KeepsOwnHistoryID(t *testing.T) {
+	r := require.New(t)
+
+	dir := t.TempDir()
+	store := session.NewStore(dir)
+	prov := &MockTextProvider{}
+	registry := tools.NewRegistry()
+
+	// Create QA loop.
+	qaLoop := New(Options{
+		Provider:     prov,
+		Tools:        registry,
+		Context:      types.ContextBundle{},
+		CWD:          "/home/britta/greendale",
+		SessionStore: store,
+		SessionID:    "qa",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     10,
+	})
+	emit := func(e types.OutboundEvent) {}
+	err := qaLoop.Send(context.Background(), "What's wrong with the study room?", emit)
+	r.NoError(err)
+
+	// Create spec loop.
+	specLoop := New(Options{
+		Provider:     prov,
+		Tools:        registry,
+		Context:      types.ContextBundle{},
+		CWD:          "/home/britta/greendale",
+		SessionStore: store,
+		SessionID:    "spec",
+		Model:        "claude-sonnet-4-5-20250929",
+		MaxTurns:     10,
+	})
+
+	originalHistoryID := specLoop.HistoryID()
+	err = specLoop.SendWithContext(context.Background(), qaLoop.HistoryID(), "Fix the study room", emit)
+	r.NoError(err)
+
+	// Unlike Resume, SendWithContext does NOT change the loop's historyID.
+	r.Equal(originalHistoryID, specLoop.HistoryID(),
+		"SendWithContext must keep the loop's own fresh historyID")
+}
+
 type mockSlowReadProvider struct {
 	callCount int
 	mu        sync.Mutex

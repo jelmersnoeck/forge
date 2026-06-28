@@ -2,97 +2,144 @@
 id: phase-session-continuity
 status: implemented
 ---
-# Persistent sessions for spec and coder phases across review cycles
+# Cross-phase context preservation for QA/Investigate → Spec transitions
 
 ## Description
-The SWE orchestrator currently creates a fresh conversation loop for every phase
-invocation — spec creator, coder, and coder-fix all start from scratch. This
-wastes context: the coder phase loses its entire implementation history when
-asked to fix review findings. The spec creator similarly loses context if
-the user provides follow-up feedback. This spec adds session continuity for
-the spec-creator and coder phases while keeping reviewers stateless.
+The SWE orchestrator has two context-preservation problems, at different layers:
+
+**Solved (coder ↔ review loop):** The coder phase preserves its conversation
+across review-fix cycles via `loop.Resume()`. The spec creator and planner
+store historyIDs for future resumption. Reviewers remain stateless. This was
+the original scope of this spec and is already implemented.
+
+**New (QA/Investigate → Spec):** When a user transitions from QA or Investigate
+intent to a Task (triggering the SWE pipeline), the orchestrator replaces the
+prior conversation with a text hint: *"use the context from the conversation"*
+— without passing the actual conversation. The spec creator starts fresh,
+knowing nothing about what was discussed. This spec extends cross-phase context
+to cover QA→Spec and Investigate→Spec transitions.
+
+Related: issue #205.
 
 ## Context
-Files changed:
+Files that change or are relevant:
 
-- `internal/agent/phase/orchestrator.go` — `runSWEPipeline`, `runCoder`, `runCoderResume`: `runCoder` now returns `(historyID, error)`. New `runCoderResume` uses `loop.Resume()` with the stored historyID. `runCoderWithMessage` deleted (replaced by the two methods). `runSpecCreator` returns historyID in Result.
-- `internal/agent/phase/phase.go` — `Result` struct gains `HistoryID` field for session resumption plumbing.
-- `internal/agent/phase/debate.go` — `DebateResult` struct gains `PlannerHistoryID` field. `runPlanner` stores `l.HistoryID()` in the result.
-- `internal/runtime/loop/loop.go` — `Loop.Send()`, `Loop.Resume()`, `Loop.HistoryID()`: unchanged (existing API is sufficient).
-- `internal/agent/phase/session_continuity_test.go` — new test file with 5 tests covering coder resume, historyID propagation, session store continuity, spec creator historyID, and reviewer statelessness.
+- `internal/runtime/loop/loop.go` — Add `SendWithContext` method: loads messages
+  from a prior historyID into `l.history` (as read-only context) but keeps the
+  loop's own fresh `historyID`. Does not overwrite `l.historyID` like `Resume` does.
+- `internal/agent/phase/orchestrator.go` — Lines 154-168 (`switch` block for
+  QA/Investigate transition): replace text-only prompt augmentation with
+  `SendWithContext` call that passes the prior `historyID` into the spec-creator
+  or ideation pipeline. `runSpecCreator` gains `priorHistoryID` parameter.
+- `internal/agent/phase/debate.go` — `DebateOpts` gains `PriorHistoryID` field.
+  `runPlanner` uses `SendWithContext` when `PriorHistoryID` is set.
+- `internal/agent/phase/session_continuity_test.go` — New tests for
+  QA→Spec and Investigate→Spec context propagation.
+
+Already implemented (no changes needed):
+- `internal/agent/phase/phase.go` — `Result.HistoryID` (already exists).
+- `internal/agent/phase/debate.go` — `DebateResult.PlannerHistoryID` (exists).
+- Coder resume via `loop.Resume()` (exists, unchanged).
+- Reviewer statelessness (exists, unchanged).
 
 ## Behavior
-- **Coder session continuity**: The first `runCoder` call creates a new conversation loop and stores its `historyID`. Subsequent `runCoderWithMessage` calls (triggered by review findings) use `loop.Resume()` with the stored historyID instead of creating a fresh loop. The fix message is injected as the new user prompt into the existing conversation, so the coder retains full context of what it built and why.
-- **Spec creator session continuity**: If the spec creator needs to be re-invoked (future extension point), it resumes from its stored historyID rather than starting from scratch. Currently the spec creator runs once, so this is plumbing for when user feedback loops are added to the spec phase.
-- **Reviewer statelessness**: The review orchestrator (`runReviewerWithDiff`) continues to start fresh every cycle. Each review run gets only the diff + specs + reviewer prompt — no conversation history from previous review rounds. This is intentional: reviewers should evaluate the current state of the code without bias from previous review context.
-- **historyID ownership**: The orchestrator's `runSWEPipeline` method owns the historyIDs for each resumable phase. These are local variables scoped to the pipeline run — not persisted across separate orchestrator invocations.
-- **Session persistence**: Each `loop.Send()` and `loop.Resume()` already persists messages via the session store. The historyID connects the JSONL entries across Resume calls, so the full conversation (initial coder prompt + implementation + fix prompt 1 + fixes + fix prompt 2 + ...) is recoverable from a single historyID.
-- **Debate/ideation pipeline**: When the ideation pipeline is used (`shouldIdeate` returns true), the planner phase (which writes the spec) should also store its historyID for potential resumption, though currently only the coder historyID is used in the review-fix loop.
+
+### Cross-phase context (new)
+- **QA → Spec**: When `opts.QAHistoryID` is set and intent classifies as `task`,
+  the orchestrator passes `QAHistoryID` to `runSpecCreator` (or `RunDebate` for
+  the ideation path). The spec-creator loop loads the QA conversation history
+  into its context via `loop.SendWithContext`, then sends the user's new prompt.
+  The spec creator sees the full QA exchange — questions asked, answers given,
+  files explored — and uses it to write a better-informed spec.
+- **Investigate → Spec**: Same mechanism as QA → Spec, using
+  `opts.InvestigateHistoryID`. The investigation conversation (tool calls,
+  findings, analysis) becomes context for spec creation.
+- **Prompt still augmented**: The text prefix ("Based on our previous
+  discussion...") is still prepended to the prompt as a signal to the LLM, but
+  now the actual conversation history backs it up.
+- **Context is read-only**: The spec-creator loop gets its own fresh `historyID`.
+  Prior history is loaded into `l.history` for LLM context but persisted under
+  the new historyID, not appended to the QA/Investigate session file. This
+  means the QA session file stays clean, and the spec session is independently
+  resumable.
+- **Ideation pipeline**: When the ideation pipeline runs (large tasks), the
+  prior historyID flows through `DebateOpts.PriorHistoryID` to the planner
+  phase. Ideator agents do NOT receive prior context (they work from the prompt
+  alone); only the planner (which writes the spec) gets it.
+
+### Coder session continuity (already implemented)
+- Coder resume via `loop.Resume()` with stored `coderHistoryID`.
+- Spec creator returns `historyID` in `Result` for future resumption.
+- Reviewer remains stateless — fresh `ChatRequest` each cycle.
 
 ## Constraints
-- Must not change the `loop.Loop` API — the existing `Send`/`Resume`/`HistoryID` contract is sufficient.
-- Must not leak historyIDs outside the pipeline run — they are not returned in `OrchestratorResult` (except for QA, which already does this).
-- Reviewers must never receive conversation history from previous rounds — they always get a fresh `ChatRequest` with only the diff.
-- Must not change the behavior of `RunSinglePhase` or `RunReviewOnly` — those are standalone invocations that correctly start fresh.
-- Token budget is managed by the loop's existing compaction mechanism — long conversations from many review cycles will be compacted automatically.
-- The `ReadState` (file read dedup) should carry over within the same loop instance — this is already the case since the loop is reused.
+- `loop.Resume` semantics must not change — it still overwrites `l.historyID`
+  for same-session continuation. The new `SendWithContext` is a separate method.
+- Must not duplicate message persistence — prior messages are loaded into
+  `l.history` but persisted under the new historyID only when the loop runs
+  (the loop already persists all of `l.history` on first Send).
+- Prior context must not be persisted twice. `SendWithContext` loads messages
+  into `l.history` for LLM context but does NOT call `persistMessage` for
+  the loaded messages. Only new messages (user prompt, assistant responses)
+  are persisted under the new historyID.
+- Token budget: prior context + spec-creator conversation must stay within
+  the loop's compaction budget. If the QA conversation was very long,
+  compaction will trim the oldest prior turns first. This is acceptable —
+  recent context is more relevant.
+- Reviewers must never receive cross-phase context.
+- `RunSinglePhase` and `RunReviewOnly` behavior must not change.
+- The `QAHistoryID` / `InvestigateHistoryID` fields on `OrchestratorOpts` must
+  still be cleared after the transition to prevent double-loading on retry.
 
 ## Interfaces
+
 ```go
+// internal/runtime/loop/loop.go
+
+// SendWithContext loads prior conversation history from priorHistoryID
+// into the loop's message history (for LLM context), then sends promptText
+// as a new user message. Unlike Resume, the loop keeps its own fresh
+// historyID — the prior messages are context, not continuation.
+//
+// If priorHistoryID is empty or the session cannot be loaded, falls back
+// to a plain Send (no error — missing context is degraded, not fatal).
+func (l *Loop) SendWithContext(ctx context.Context, priorHistoryID string, promptText string, emit func(types.OutboundEvent)) error
+
 // internal/agent/phase/orchestrator.go
 
-// runSWEPipeline gains local historyID tracking.
-// No new types or exported functions — the change is internal to the method.
-
-func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string) error {
-    // ... spec creation (stores specHistoryID for future use) ...
-
-    var coderHistoryID string
-
-    // Phase 2: Coder — first invocation uses Send
-    coderHistoryID, err = o.runCoder(ctx, opts, specPath)
-
-    // Phase 3: Review → Fix loop
-    for cycle := 0; cycle < o.maxReviewCycles; cycle++ {
-        // ... review (always fresh) ...
-
-        // Fix: Resume the coder's conversation
-        coderHistoryID, err = o.runCoderResume(ctx, opts, coderHistoryID, fixMsg)
-    }
-}
-
-// runCoder creates a new loop, returns its historyID.
-func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, specPath string) (string, error)
-
-// runCoderResume resumes an existing coder conversation with a new message.
-func (o *Orchestrator) runCoderResume(ctx context.Context, opts OrchestratorOpts, historyID, message string) (string, error)
-
-// internal/agent/phase/phase.go
-
-// Result gains HistoryID for session resumption plumbing.
-type Result struct {
-    Phase     string
-    SpecPath  string
-    Diff      string
-    Findings  []review.Finding
-    HistoryID string // conversation historyID for session resumption
-}
+// runSpecCreator gains priorHistoryID parameter.
+func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts, priorHistoryID string) (Result, error)
 
 // internal/agent/phase/debate.go
 
-// DebateResult gains PlannerHistoryID for future planner resumption.
-type DebateResult struct {
-    SpecPath         string
-    Winner           Candidate
-    Alternatives     []Candidate
-    PlannerHistoryID string // planner conversation historyID
+// DebateOpts gains PriorHistoryID.
+type DebateOpts struct {
+    // ... existing fields ...
+    PriorHistoryID string // loaded into planner context for QA/Investigate→Spec
 }
 ```
 
 ## Edge Cases
-- **First review cycle has no findings** — coder historyID is stored but never used for Resume. No harm; the JSONL file exists with the initial conversation.
-- **Coder loop hits token budget during Resume** — the loop's compaction kicks in, removing oldest turns. The coder loses some early context but the most recent work and the current fix request are preserved. This is already handled by `tokens.Compact`.
-- **Context cancelled mid-Resume** — same behavior as current mid-Send: turn context is cancelled, loop returns error, worker emits interrupted event.
-- **Max review cycles reached with critical findings** — the cycle counter resets (existing behavior). The coder conversation continues growing via Resume, but compaction keeps it within bounds.
-- **Debate pipeline + coder resume** — the planner phase in the debate pipeline creates the spec but runs in its own loop. The coder phase still starts fresh (its own loop), then gets resumed on fix cycles. The planner's historyID is stored but unused in the current flow.
-- **Empty fix message from reviewer** — `formatFindingsForCoder` produces an empty-ish message if there are no high-severity findings. The guard `HasHighSeverityFindings` prevents this case — the loop breaks before calling `runCoderResume`.
+- **Prior session file missing or corrupted** — `SendWithContext` logs a
+  warning and falls back to `Send`. The spec creator runs without prior
+  context (same as current behavior). Not fatal.
+- **Very long QA conversation (>100k tokens context)** — The loop's compaction
+  mechanism trims the oldest turns. Prior QA context is oldest, so it gets
+  trimmed first. The spec creator's own tool calls and reasoning are preserved.
+  Acceptable degradation.
+- **QA session had tool_use/tool_result blocks** — These are valid
+  `ChatMessage` entries and load correctly. The spec creator sees what files
+  the QA agent read, which is useful context for spec writing.
+- **Small task route (skipSpec=true)** — `runCoderDirect` is called instead of
+  `runSpecCreator`. The prior historyID should still flow to `runCoderDirect`
+  so small tasks benefit from QA context too.
+- **Ideation pipeline + prior context** — Prior context goes to the planner
+  only, not the ideator agents. Ideators work from the user prompt alone —
+  they don't need QA context, and adding it would bloat their already-large
+  prompts.
+- **First review cycle has no findings** — Coder historyID stored but never
+  used for Resume. No harm (existing behavior, unchanged).
+- **Empty prior history (QA session with 0 messages)** — `SendWithContext`
+  loads an empty slice, effectively behaving like `Send`. No special case needed.
+- **Context cancelled mid-SendWithContext** — Same as mid-Send: context
+  cancelled, loop returns error, worker emits interrupted event.

@@ -152,14 +152,17 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 	}
 
 	// Task path: augment prompt with prior context if transitioning from Q&A or investigation.
+	var priorHistoryID string
 	switch {
 	case opts.InvestigateHistoryID != "":
+		priorHistoryID = opts.InvestigateHistoryID
 		augmented := "Based on our previous investigation, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the investigation to inform the spec."
 		log.Printf("[orchestrator:%s] investigate→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
 		opts.InitialPrompt = augmented
 		opts.InvestigateHistoryID = ""
 	case opts.QAHistoryID != "":
+		priorHistoryID = opts.QAHistoryID
 		augmented := "Based on our previous discussion, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the conversation to inform the spec."
 		log.Printf("[orchestrator:%s] Q&A→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
@@ -182,7 +185,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 	}
 
 	// Run SWE pipeline with classification for size-based routing.
-	return o.runSWEPipeline(ctx, opts, specPath, classification)
+	return o.runSWEPipeline(ctx, opts, specPath, classification, priorHistoryID)
 }
 
 // runQA runs the Q&A conversation loop. Returns the history ID for resumption.
@@ -225,14 +228,15 @@ func (o *Orchestrator) runConversationPhase(ctx context.Context, opts Orchestrat
 }
 
 // runSWEPipeline runs the SWE pipeline with size-based routing.
-func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string, classification Classification) (OrchestratorResult, error) {
+// priorHistoryID, when set, passes QA/Investigate context to the spec-creation phase.
+func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string, classification Classification, priorHistoryID string) (OrchestratorResult, error) {
 	result := OrchestratorResult{Intent: IntentTask}
 
 	// Size-based routing: small tasks skip spec and review entirely.
 	skipSpec, useIdeation := resolveTaskPipeline(opts.PipelineHint, classification.Size)
 	if skipSpec && specPath == "" {
 		// Small task path: direct code, no spec, no review.
-		coderHistoryID, err := o.runCoderDirect(ctx, opts)
+		coderHistoryID, err := o.runCoderDirect(ctx, opts, priorHistoryID)
 		result.CoderHistoryID = coderHistoryID
 		return result, err
 	}
@@ -245,16 +249,17 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 			o.emitPhaseStart(opts, "ideate")
 
 			debateResult, err := RunDebate(ctx, DebateOpts{
-				Provider:     opts.Provider,
-				Registry:     opts.Registry,
-				Bundle:       opts.Bundle,
-				CWD:          opts.CWD,
-				SessionStore: opts.SessionStore,
-				SessionID:    opts.SessionID,
-				Model:        opts.Model,
-				Emit:         opts.Emit,
-				AuditLogger:  opts.AuditLogger,
-				Prompt:       opts.InitialPrompt,
+				Provider:       opts.Provider,
+				Registry:       opts.Registry,
+				Bundle:         opts.Bundle,
+				CWD:            opts.CWD,
+				SessionStore:   opts.SessionStore,
+				SessionID:      opts.SessionID,
+				Model:          opts.Model,
+				Emit:           opts.Emit,
+				AuditLogger:    opts.AuditLogger,
+				Prompt:         opts.InitialPrompt,
+				PriorHistoryID: priorHistoryID,
 			})
 			if err != nil {
 				return result, fmt.Errorf("ideation pipeline: %w", err)
@@ -273,7 +278,7 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 			// Single-agent spec creator (original behavior)
 			o.emitPhaseStart(opts, "spec")
 
-			specResult, err := o.runSpecCreator(ctx, opts)
+			specResult, err := o.runSpecCreator(ctx, opts, priorHistoryID)
 			if err != nil {
 				return result, fmt.Errorf("spec-creator phase: %w", err)
 			}
@@ -480,7 +485,7 @@ func RunSinglePhase(ctx context.Context, opts OrchestratorOpts, phase Phase) err
 	return l.Send(ctx, opts.InitialPrompt, opts.Emit)
 }
 
-func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts) (Result, error) {
+func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts, priorHistoryID string) (Result, error) {
 	phase := SpecCreator()
 	registry := opts.Registry.Filtered(phase.AllowedTools, phase.DisallowedTools)
 	bundle := InjectPhasePrompt(opts.Bundle, phase.Name)
@@ -503,8 +508,17 @@ func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts
 	}
 
 	l := loop.New(loopOpts)
-	if err := l.Send(ctx, opts.InitialPrompt, opts.Emit); err != nil {
-		log.Printf("[orchestrator:%s] spec-creator phase Send failed (historyID=%s, promptLen=%d): %v",
+
+	var err error
+	switch priorHistoryID {
+	case "":
+		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+	default:
+		err = l.SendWithContext(ctx, priorHistoryID, opts.InitialPrompt, opts.Emit)
+	}
+
+	if err != nil {
+		log.Printf("[orchestrator:%s] spec-creator phase failed (historyID=%s, promptLen=%d): %v",
 			opts.SessionID, l.HistoryID(), len(opts.InitialPrompt), err)
 		return Result{Phase: "spec", HistoryID: l.HistoryID()}, err
 	}
@@ -549,7 +563,8 @@ func (o *Orchestrator) runCoder(ctx context.Context, opts OrchestratorOpts, spec
 
 // runCoderDirect runs the coder phase directly with the user's prompt,
 // bypassing spec creation and review. Used for small tasks.
-func (o *Orchestrator) runCoderDirect(ctx context.Context, opts OrchestratorOpts) (string, error) {
+// priorHistoryID, when set, loads QA/Investigate context into the coder loop.
+func (o *Orchestrator) runCoderDirect(ctx context.Context, opts OrchestratorOpts, priorHistoryID string) (string, error) {
 	o.emitPhaseStart(opts, "code")
 
 	phase := Coder()
@@ -573,8 +588,17 @@ func (o *Orchestrator) runCoderDirect(ctx context.Context, opts OrchestratorOpts
 	}
 
 	l := loop.New(loopOpts)
-	if err := l.Send(ctx, opts.InitialPrompt, opts.Emit); err != nil {
-		log.Printf("[orchestrator:%s] coder direct Send failed (historyID=%s, promptLen=%d): %v",
+
+	var err error
+	switch priorHistoryID {
+	case "":
+		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+	default:
+		err = l.SendWithContext(ctx, priorHistoryID, opts.InitialPrompt, opts.Emit)
+	}
+
+	if err != nil {
+		log.Printf("[orchestrator:%s] coder direct failed (historyID=%s, promptLen=%d): %v",
 			opts.SessionID, l.HistoryID(), len(opts.InitialPrompt), err)
 		return l.HistoryID(), err
 	}

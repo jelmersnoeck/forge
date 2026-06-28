@@ -147,9 +147,157 @@ func TestRunSpecCreator_ReturnsHistoryID(t *testing.T) {
 	opts.InitialPrompt = "Build a paintball tournament tracker for Greendale"
 	orch := NewSWEOrchestrator()
 
-	result, err := orch.runSpecCreator(context.Background(), opts)
+	result, err := orch.runSpecCreator(context.Background(), opts, "")
 	r.NoError(err)
 	r.NotEmpty(result.HistoryID, "runSpecCreator should return a historyID for future resumption")
+}
+
+func TestRunSpecCreator_WithPriorContext(t *testing.T) {
+	r := require.New(t)
+	prov := &trackingProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	opts.InitialPrompt = "Build the Dreamatorium simulator"
+	orch := NewSWEOrchestrator()
+
+	// Simulate a QA conversation by running a QA-like loop first.
+	qaHistoryID, err := orch.runQA(context.Background(), OrchestratorOpts{
+		Provider:      prov,
+		Registry:      opts.Registry,
+		Bundle:        opts.Bundle,
+		CWD:           opts.CWD,
+		SessionStore:  opts.SessionStore,
+		SessionID:     opts.SessionID,
+		Model:         opts.Model,
+		Emit:          opts.Emit,
+		InitialPrompt: "What is the Dreamatorium?",
+	})
+	r.NoError(err)
+	r.NotEmpty(qaHistoryID)
+
+	// Now call runSpecCreator with prior context.
+	prov.mu.Lock()
+	callsBefore := len(prov.msgCounts)
+	prov.mu.Unlock()
+
+	result, err := orch.runSpecCreator(context.Background(), opts, qaHistoryID)
+	r.NoError(err)
+	r.NotEmpty(result.HistoryID)
+	r.NotEqual(qaHistoryID, result.HistoryID, "spec creator should get its own historyID")
+
+	// The spec creator's Chat call should have more messages (QA context + new prompt).
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	specCallIdx := callsBefore // the first call after QA
+	r.Greater(len(counts), specCallIdx)
+	r.GreaterOrEqual(counts[specCallIdx], 3,
+		"spec creator should see QA context (user+assistant) + its own prompt")
+}
+
+func TestQAToSpecTransition_PassesPriorHistoryID(t *testing.T) {
+	r := require.New(t)
+	prov := &trackingProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	orch := NewSWEOrchestrator()
+
+	// Create a QA session.
+	qaHistoryID, err := orch.runQA(context.Background(), OrchestratorOpts{
+		Provider:      prov,
+		Registry:      opts.Registry,
+		Bundle:        opts.Bundle,
+		CWD:           opts.CWD,
+		SessionStore:  opts.SessionStore,
+		SessionID:     opts.SessionID,
+		Model:         opts.Model,
+		Emit:          opts.Emit,
+		InitialPrompt: "How does Greendale's HVAC work?",
+	})
+	r.NoError(err)
+
+	// Transition: QA → Spec (simulated by calling runSpecCreator with QA historyID).
+	prov.mu.Lock()
+	callsBefore := len(prov.msgCounts)
+	prov.mu.Unlock()
+
+	opts.InitialPrompt = "Based on our previous discussion, fix the HVAC"
+	result, err := orch.runSpecCreator(context.Background(), opts, qaHistoryID)
+	r.NoError(err)
+	r.NotEmpty(result.HistoryID)
+
+	// Verify the spec creator got the QA context.
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Greater(counts[callsBefore], 1,
+		"spec creator should have received QA history as context")
+
+	// Verify QA session is unchanged (read-only context).
+	qaMsgs, err := opts.SessionStore.Load(qaHistoryID)
+	r.NoError(err)
+	r.Equal(2, len(qaMsgs), "QA session should still have exactly its original messages")
+}
+
+func TestInvestigateToSpecTransition(t *testing.T) {
+	r := require.New(t)
+	prov := &trackingProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	orch := NewSWEOrchestrator()
+
+	// Create an investigation session.
+	invHistoryID, err := orch.runInvestigate(context.Background(), OrchestratorOpts{
+		Provider:      prov,
+		Registry:      opts.Registry,
+		Bundle:        opts.Bundle,
+		CWD:           opts.CWD,
+		SessionStore:  opts.SessionStore,
+		SessionID:     opts.SessionID,
+		Model:         opts.Model,
+		Emit:          opts.Emit,
+		InitialPrompt: "Investigate the AC annex conspiracy",
+	})
+	r.NoError(err)
+
+	// Transition: Investigate → Spec.
+	prov.mu.Lock()
+	callsBefore := len(prov.msgCounts)
+	prov.mu.Unlock()
+
+	opts.InitialPrompt = "Based on the investigation, build the fix"
+	result, err := orch.runSpecCreator(context.Background(), opts, invHistoryID)
+	r.NoError(err)
+	r.NotEmpty(result.HistoryID)
+
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Greater(counts[callsBefore], 1,
+		"spec creator should see investigation context")
+}
+
+func TestRunSpecCreator_EmptyPriorHistoryID(t *testing.T) {
+	r := require.New(t)
+	prov := &trackingProvider{}
+	opts := makeTestOrchestratorOpts(t, prov)
+	opts.InitialPrompt = "Build the blanket fort tracker"
+	orch := NewSWEOrchestrator()
+
+	result, err := orch.runSpecCreator(context.Background(), opts, "")
+	r.NoError(err)
+	r.NotEmpty(result.HistoryID)
+
+	// Without prior context, should just have 1 message (the prompt).
+	prov.mu.Lock()
+	counts := make([]int, len(prov.msgCounts))
+	copy(counts, prov.msgCounts)
+	prov.mu.Unlock()
+
+	r.Equal(1, counts[0], "no prior context should mean just 1 user message")
 }
 
 func TestOrchestratorResult_CoderHistoryID(t *testing.T) {

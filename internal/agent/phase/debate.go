@@ -58,6 +58,10 @@ type DebateOpts struct {
 	Emit         func(types.OutboundEvent)
 	AuditLogger  types.AuditLogger
 	Prompt       string
+
+	// PriorHistoryID loads QA/Investigate context into the planner phase.
+	// Ideator agents do NOT receive this — only the planner (spec writer) gets it.
+	PriorHistoryID string
 }
 
 // ideatorPersonality defines the lens for each ideation agent.
@@ -391,7 +395,16 @@ func runPlanner(ctx context.Context, opts DebateOpts, clarified ClarifiedResult)
 	}
 
 	l := loop.New(loopOpts)
-	if err := l.Send(ctx, plannerMessage, opts.Emit); err != nil {
+
+	var err error
+	switch opts.PriorHistoryID {
+	case "":
+		err = l.Send(ctx, plannerMessage, opts.Emit)
+	default:
+		err = l.SendWithContext(ctx, opts.PriorHistoryID, plannerMessage, opts.Emit)
+	}
+
+	if err != nil {
 		return DebateResult{}, err
 	}
 
