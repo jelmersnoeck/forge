@@ -162,11 +162,14 @@ func EnvForCommit(sessionID string, cfg CommitConfig) []string {
 // PrependAttribution prepends an attribution block to a PR body.
 // Returns body unchanged if enabled is false.
 //
-// The block format (from spec):
+// Attribution is rendered as an HTML comment so it's machine-readable
+// but invisible to reviewers:
 //
-//	> 🤖 This PR was opened by a Forge session acting on behalf of @<author>.
-//	> Session: `<session-id>`
-//	> Co-authored by: <coAuthor>
+//	<!-- forge-attribution
+//	session: <session-id>
+//	author: @<author>
+//	co-authored-by: <coAuthor>
+//	-->
 //
 // @<author> is resolved from the GitHub login associated with the commit
 // author email (best-effort; falls back to the bare email).
@@ -178,12 +181,13 @@ func PrependAttribution(body, sessionID, coAuthor string, enabled bool) string {
 	author := resolveAuthor()
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "> 🤖 This PR was opened by a Forge session acting on behalf of @%s.\n", author)
-	fmt.Fprintf(&b, "> Session: `%s`\n", sessionID)
+	b.WriteString("<!-- forge-attribution\n")
+	fmt.Fprintf(&b, "session: %s\n", sessionID)
+	fmt.Fprintf(&b, "author: @%s\n", author)
 	if coAuthor != "" {
-		fmt.Fprintf(&b, "> Co-authored by: %s\n", coAuthor)
+		fmt.Fprintf(&b, "co-authored-by: %s\n", coAuthor)
 	}
-	b.WriteString("\n---\n\n")
+	b.WriteString("-->\n\n")
 	b.WriteString(body)
 
 	return b.String()
