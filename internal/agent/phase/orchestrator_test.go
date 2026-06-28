@@ -460,6 +460,18 @@ func TestResolveTaskPipeline(t *testing.T) {
 			wantSkipSpec: true,
 			wantIdeation: false,
 		},
+		"hint spec overrides large size": {
+			hint:         "spec",
+			size:         TaskSizeLarge,
+			wantSkipSpec: false,
+			wantIdeation: false,
+		},
+		"hint spec overrides small size": {
+			hint:         "spec",
+			size:         TaskSizeSmall,
+			wantSkipSpec: false,
+			wantIdeation: false,
+		},
 		"hint code overrides standard size": {
 			hint:         "code",
 			size:         TaskSizeStandard,

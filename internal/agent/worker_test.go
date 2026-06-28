@@ -225,6 +225,10 @@ func TestExtractPipelineHint(t *testing.T) {
 			metadata: map[string]any{"pipeline_hint": "code"},
 			want:     "code",
 		},
+		"spec hint": {
+			metadata: map[string]any{"pipeline_hint": "spec"},
+			want:     "spec",
+		},
 		"auto hint": {
 			metadata: map[string]any{"pipeline_hint": "auto"},
 			want:     "auto",

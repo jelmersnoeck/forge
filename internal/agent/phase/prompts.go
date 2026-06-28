@@ -22,6 +22,15 @@ Explore with purpose, not exhaustively:
 
 Prefer smaller scope with clear extension points over sprawling designs.
 
+## Splitting Into Multiple Specs
+
+A single request — especially a GitHub issue — may cover several independent
+units of work. When the request spans distinct subsystems or capabilities that
+can ship separately, write one spec per unit rather than cramming everything
+into a single oversized spec. Give each spec its own kebab-case ID and file.
+Cross-reference related specs in each Description. If the work is cohesive and
+ships as one change, a single spec is correct — do not split for the sake of it.
+
 ## Quality Gates
 
 Each spec section must meet this bar:
