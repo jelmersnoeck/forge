@@ -1,6 +1,6 @@
 ---
 id: context-loss-qa-spec-transition
-status: draft
+status: implemented
 ---
 # Carry conversation history into spec phase on Q&A/investigate→task transition
 
@@ -55,18 +55,21 @@ has full context of what was discussed.
 ## Interfaces
 
 ```go
-// OrchestratorOpts already has QAHistoryID and InvestigateHistoryID fields.
-// No new fields needed.
+// OrchestratorOpts gains a new field:
+type OrchestratorOpts struct {
+    // ... existing fields ...
 
-// The change is in runSWEPipeline and runSpecCreator:
-// - runSpecCreator gains an optional historyID parameter
-// - When historyID is non-empty, it calls l.Resume() instead of l.Send()
-
-// Updated specResult struct (if needed):
-type specResult struct {
-    SpecPath  string
-    HistoryID string
+    // TransitionHistoryID carries the conversation history from a prior
+    // Q&A or investigation phase into the next phase (spec-creator or
+    // direct coder). Set during Q&A→task or investigate→task transitions
+    // so the spec-creator can Resume() with full prior context.
+    TransitionHistoryID string
 }
+
+// runSpecCreator and runCoderDirect check opts.TransitionHistoryID:
+// - Non-empty: call l.Resume(ctx, transitionHistoryID, prompt, emit)
+// - Empty: call l.Send(ctx, prompt, emit) (current behavior)
+// - Resume failure: log warning, fall back to l.Send()
 ```
 
 ## Edge Cases
@@ -80,5 +83,7 @@ type specResult struct {
 - **Large task after investigation**: Ideation pipeline (debate) should NOT
   receive the investigation history — it's a multi-agent process that doesn't
   support Resume(). Only the single-agent spec-creator path benefits.
+  (Implemented: TransitionHistoryID is set but the debate path doesn't use it.)
 - **Multiple transitions**: User does Q&A → investigate → task. Only the most
   recent history (investigate) should be carried forward.
+  (Implemented: the switch/case picks the first non-empty ID.)
