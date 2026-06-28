@@ -127,6 +127,7 @@ func runCLI(args []string) int {
 	issue := fs.String("issue", "", "GitHub issue URL or #N to use as initial prompt")
 	branch := fs.String("branch", "", "branch to check out (reuses existing worktree if found)")
 	mode := fs.String("mode", "", "agent mode: swe (default), spec, code, review")
+	modelFlag := fs.String("model", "", "model to use (e.g. sonnet, opus, claude-sonnet-4-20250514)")
 	_ = fs.Parse(args[1:])
 
 	if *branch != "" && *skipWorktree {
@@ -243,7 +244,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath, namingHint)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath, *modelFlag, namingHint)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
@@ -442,6 +443,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case modelSwitchedMsg:
+		name := string(msg)
+		if name != "" {
+			m.modelName = name
+			m.output = append(m.output, dimStyle.Render("Model switched to "+name))
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -566,6 +575,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.output = append(m.output, headerStyle.Render("Starting code review...")+" "+dimStyle.Render("("+reviewProviderSummary()+")"))
 					m.working = true
 					return m, m.sendReview(baseBranch)
+				}
+
+				// Check for /model command
+				if isModelCommand(text) {
+					arg := parseModelArg(text)
+					if arg == "" {
+						display := m.modelName
+						if display == "" {
+							display = "(not yet known)"
+						}
+						m.output = append(m.output, "")
+						m.output = append(m.output, dimStyle.Render("Current model: "+display))
+						return m, nil
+					}
+					if !m.interactiveMode {
+						m.output = append(m.output, "")
+						m.output = append(m.output, errorStyle.Render("model switching is not supported in gateway mode"))
+						return m, nil
+					}
+					m.output = append(m.output, "")
+					m.output = append(m.output, dimStyle.Render("Switching model to "+arg+"..."))
+					return m, m.sendSetModel(arg)
 				}
 
 				// Display the user's message in the output with wrapping
@@ -795,6 +826,14 @@ func (m model) View() string {
 		totalCost := cost.Calculate(m.modelName, m.totalUsage)
 		costStr := cost.FormatCost(totalCost)
 		costPart = fmt.Sprintf("%s | %s", tokens, costStr)
+	}
+	if m.modelName != "" {
+		short := shortModelName(m.modelName)
+		if costPart != "" {
+			costPart = short + " | " + costPart
+		} else {
+			costPart = short
+		}
 	}
 
 	// Build left side: cwd + optional PR link
@@ -1494,7 +1533,7 @@ func isInWorktree(dir string) bool {
 // If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
 // If branchName is set, reuses an existing worktree for that branch or creates one.
 // initialPrompt, when non-empty, is used to generate a human-readable session name via Haiku.
-func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, namingHint string) (string, string, string, string, func(), error) {
+func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, modelName string, namingHint string) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -1657,6 +1696,9 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	}
 	if specPath != "" {
 		agentArgs = append(agentArgs, "--spec", specPath)
+	}
+	if modelName != "" {
+		agentArgs = append(agentArgs, "--model", modelName)
 	}
 	cmd := exec.Command(forgeBin, agentArgs...)
 
@@ -1851,6 +1893,76 @@ func parseReviewBase(text string) string {
 		}
 	}
 	return ""
+}
+
+// isModelCommand checks if the input is a /model command.
+func isModelCommand(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return trimmed == "/model" || strings.HasPrefix(trimmed, "/model ")
+}
+
+// parseModelArg extracts the model name from a /model command.
+// "/model sonnet" → "sonnet", "/model" → ""
+func parseModelArg(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "/model" {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "/model"))
+}
+
+// shortModelName strips the "claude-" prefix and date suffix for status bar display.
+//
+//	"claude-sonnet-4-20250514" → "sonnet-4"
+//	"claude-opus-4-6"          → "opus-4"
+//	"sonnet"                   → "sonnet"
+func shortModelName(name string) string {
+	s := strings.TrimPrefix(name, "claude-")
+	// Strip trailing date suffix: -YYYYMMDD or -N (short version numbers)
+	// Match the last segment if it looks like a date (8 digits).
+	if idx := strings.LastIndex(s, "-"); idx > 0 {
+		suffix := s[idx+1:]
+		if len(suffix) == 8 {
+			allDigits := true
+			for _, c := range suffix {
+				if c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				s = s[:idx]
+			}
+		}
+	}
+	return s
+}
+
+type modelSwitchedMsg string
+
+// sendSetModel sends a model change request to the agent.
+func (m model) sendSetModel(modelName string) tea.Cmd {
+	return func() tea.Msg {
+		body, _ := json.Marshal(map[string]string{"model": modelName})
+		url := fmt.Sprintf("%s/model", m.gateway)
+
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return errMsg(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			return errMsg(fmt.Errorf("model switch failed: %d %s", resp.StatusCode, b))
+		}
+
+		var result struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&result)
+		return modelSwitchedMsg(result.Model)
+	}
 }
 
 // reviewProviderSummary returns a human-readable summary of available review providers.

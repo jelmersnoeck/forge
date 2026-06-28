@@ -21,6 +21,7 @@ type Config struct {
 	SessionsDir string
 	Mode        string // "swe" (default), "spec", "code", "review"
 	SpecPath    string // path to spec file (for --spec flag)
+	Model       string // explicit model override (from --model flag)
 }
 
 // Start creates a Hub, starts the Worker in a background goroutine,
@@ -31,13 +32,14 @@ type Config struct {
 func Start(cfg Config) error {
 	hub := NewHub()
 
-	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir, cfg.Mode, cfg.SpecPath)
+	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir, cfg.Mode, cfg.SpecPath, cfg.Model)
 	go worker.Run(context.Background())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth(cfg.SessionID))
 	mux.HandleFunc("POST /messages", handleMessages(hub, cfg.SessionID))
 	mux.HandleFunc("POST /review", handleReview(hub, cfg.SessionID))
+	mux.HandleFunc("POST /model", handleSetModel(worker, hub))
 	mux.HandleFunc("POST /interrupt", handleInterrupt(hub))
 	mux.HandleFunc("GET /events", handleSSE(hub))
 
@@ -124,6 +126,36 @@ func handleReview(hub *Hub, sessionID string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "review_started"})
+	}
+}
+
+func handleSetModel(worker *Worker, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		if body.Model == "" {
+			http.Error(w, `{"error":"model is required"}`, http.StatusBadRequest)
+			return
+		}
+
+		worker.SetModel(body.Model)
+		log.Printf("[agent] model switched to %s", body.Model)
+
+		// Emit model event so CLI updates its display.
+		hub.PublishEvent(types.OutboundEvent{
+			ID:        fmt.Sprintf("model-%d", time.Now().UnixMilli()),
+			Type:      "model",
+			Content:   body.Model,
+			Timestamp: time.Now().UnixMilli(),
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"model": body.Model})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,19 +46,38 @@ type Worker struct {
 	// Store, Load). The monitor goroutine and worker loop may race on it —
 	// the atomic ensures visibility without a mutex.
 	prCheckPending atomic.Bool
+
+	modelMu       sync.RWMutex
+	modelOverride string // explicit model from --model flag or /model command
 }
 
 // NewWorker creates a new Worker.
-func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath string) *Worker {
+func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverride string) *Worker {
 	return &Worker{
-		hub:         hub,
-		sessionID:   sessionID,
-		cwd:         cwd,
-		sessionsDir: sessionsDir,
-		mode:        mode,
-		specPath:    specPath,
-		ghAvailable: tools.GHAvailable(),
+		hub:           hub,
+		sessionID:     sessionID,
+		cwd:           cwd,
+		sessionsDir:   sessionsDir,
+		mode:          mode,
+		specPath:      specPath,
+		modelOverride: modelOverride,
+		ghAvailable:   tools.GHAvailable(),
 	}
+}
+
+// SetModel updates the model for subsequent turns.
+// Safe for concurrent use from the HTTP handler goroutine.
+func (w *Worker) SetModel(model string) {
+	w.modelMu.Lock()
+	w.modelOverride = model
+	w.modelMu.Unlock()
+}
+
+// ModelOverride returns the current model override, if any.
+func (w *Worker) ModelOverride() string {
+	w.modelMu.RLock()
+	defer w.modelMu.RUnlock()
+	return w.modelOverride
 }
 
 // Run starts the worker message loop. It blocks until the context is cancelled.
@@ -102,17 +122,12 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 	}()
 
-	// Pick model: settings override, but only pass through real API model IDs
-	// to the Anthropic provider. Claude CLI accepts aliases (sonnet, opus, etc.).
+	// Pick model: explicit override > settings > default.
+	// Only pass real API model IDs to the Anthropic provider.
+	// Claude CLI accepts aliases (sonnet, opus, etc.).
 	_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
 	const defaultModel = "claude-opus-4-6"
-	model := defaultModel
-	switch {
-	case isClaudeCLI && bundle.Settings.Model != "":
-		model = bundle.Settings.Model
-	case bundle.Settings.Model != "" && strings.HasPrefix(bundle.Settings.Model, "claude-"):
-		model = bundle.Settings.Model
-	}
+	settingsModel := bundle.Settings.Model
 
 	// Listen for review triggers in a separate goroutine.
 	go w.reviewListener(ctx, bundle)
@@ -156,6 +171,9 @@ func (w *Worker) Run(ctx context.Context) {
 			}
 			continue
 		}
+
+		// Re-resolve model each turn so /model switches take effect.
+		model := w.resolveModel(settingsModel, isClaudeCLI, defaultModel)
 
 		if len(msg.Text) > 100 {
 			log.Printf("[agent:%s] <- %s...", w.sessionID, msg.Text[:100])
@@ -939,5 +957,41 @@ func (w *Worker) buildPRAttribution() phase.PRAttributionOpts {
 		SessionID: w.sessionID,
 		CoAuthor:  coAuthor,
 		Enabled:   userCfg.PR.Attribution.IsEnabled(),
+	}
+}
+
+// modelAliases maps short names to full Anthropic model IDs.
+var modelAliases = map[string]string{
+	"opus":   "claude-opus-4-6",
+	"sonnet": "claude-sonnet-4-20250514",
+	"haiku":  "claude-haiku-4-20250506",
+}
+
+// ResolveModelAlias expands a short alias to its full model ID.
+// Returns the input unchanged if no alias matches.
+// When isClaudeCLI is true, aliases are passed through (the CLI
+// handles its own resolution).
+func ResolveModelAlias(name string, isClaudeCLI bool) string {
+	if isClaudeCLI {
+		return name
+	}
+	if full, ok := modelAliases[name]; ok {
+		return full
+	}
+	return name
+}
+
+// resolveModel picks the model with priority: override > settings > default.
+func (w *Worker) resolveModel(settingsModel string, isClaudeCLI bool, defaultModel string) string {
+	override := w.ModelOverride()
+	switch {
+	case override != "":
+		return ResolveModelAlias(override, isClaudeCLI)
+	case isClaudeCLI && settingsModel != "":
+		return settingsModel
+	case settingsModel != "" && strings.HasPrefix(settingsModel, "claude-"):
+		return settingsModel
+	default:
+		return defaultModel
 	}
 }

@@ -265,3 +265,96 @@ func TestExtractPRURL(t *testing.T) {
 		})
 	}
 }
+
+func TestIsModelCommand(t *testing.T) {
+	tests := map[string]struct {
+		input string
+		want  bool
+	}{
+		"exact match": {
+			input: "/model", want: true,
+		},
+		"with argument": {
+			input: "/model sonnet", want: true,
+		},
+		"with whitespace": {
+			input: "  /model opus  ", want: true,
+		},
+		"not a model command": {
+			input: "what model are you?", want: false,
+		},
+		"empty string": {
+			input: "", want: false,
+		},
+		"similar but not model": {
+			input: "/models", want: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, isModelCommand(tc.input))
+		})
+	}
+}
+
+func TestParseModelArg(t *testing.T) {
+	tests := map[string]struct {
+		input string
+		want  string
+	}{
+		"no argument": {
+			input: "/model", want: "",
+		},
+		"sonnet": {
+			input: "/model sonnet", want: "sonnet",
+		},
+		"full model ID": {
+			input: "/model claude-sonnet-4-20250514", want: "claude-sonnet-4-20250514",
+		},
+		"with extra whitespace": {
+			input: "  /model  opus  ", want: "opus",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, parseModelArg(tc.input))
+		})
+	}
+}
+
+func TestShortModelName(t *testing.T) {
+	tests := map[string]struct {
+		input string
+		want  string
+	}{
+		"full sonnet": {
+			input: "claude-sonnet-4-20250514", want: "sonnet-4",
+		},
+		"full opus": {
+			input: "claude-opus-4-6", want: "opus-4-6",
+		},
+		"full haiku": {
+			input: "claude-haiku-4-20250506", want: "haiku-4",
+		},
+		"short alias": {
+			input: "sonnet", want: "sonnet",
+		},
+		"no claude prefix": {
+			input: "gpt-4", want: "gpt-4",
+		},
+		"empty": {
+			input: "", want: "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, shortModelName(tc.input))
+		})
+	}
+}

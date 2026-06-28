@@ -17,6 +17,7 @@ func runAgent(args []string) int {
 	sessionsDir := fs.String("sessions-dir", defaultSessionsDir, "directory for session JSONL files")
 	mode := fs.String("mode", "", "agent mode: swe (default), spec, code, review")
 	specPath := fs.String("spec", "", "path to spec file (used by coder phase)")
+	modelFlag := fs.String("model", "", "model to use (overrides settings)")
 	_ = fs.Parse(args[1:])
 
 	if err := os.Chdir(*cwd); err != nil {
@@ -46,6 +47,7 @@ func runAgent(args []string) int {
 		SessionsDir: *sessionsDir,
 		Mode:        agentMode,
 		SpecPath:    *specPath,
+		Model:       *modelFlag,
 	}
 
 	if err := agent.Start(cfg); err != nil {

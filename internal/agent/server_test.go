@@ -161,3 +161,74 @@ func TestSSE_EventDelivery(t *testing.T) {
 	require.Equal(t, "text", event.Type)
 	require.Equal(t, "Welcome to the thunderdome.", event.Content)
 }
+
+func TestSetModel_Endpoint(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+	worker := &Worker{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /model", handleSetModel(worker, hub))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Subscribe to SSE events to verify model event is emitted
+	events, unsub := hub.Subscribe()
+	defer unsub()
+
+	payload := `{"model":"sonnet"}`
+	resp, err := http.Post(srv.URL+"/model", "application/json", strings.NewReader(payload))
+	r.NoError(err)
+	defer func() { _ = resp.Body.Close() }()
+
+	r.Equal(http.StatusOK, resp.StatusCode)
+
+	var body map[string]string
+	err = json.NewDecoder(resp.Body).Decode(&body)
+	r.NoError(err)
+	r.Equal("sonnet", body["model"])
+	r.Equal("sonnet", worker.ModelOverride())
+
+	// Verify model event was emitted
+	select {
+	case evt := <-events:
+		r.Equal("model", evt.Type)
+		r.Equal("sonnet", evt.Content)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for model event")
+	}
+}
+
+func TestSetModel_EmptyModel(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+	worker := &Worker{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /model", handleSetModel(worker, hub))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/model", "application/json", strings.NewReader(`{"model":""}`))
+	r.NoError(err)
+	defer func() { _ = resp.Body.Close() }()
+
+	r.Equal(http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestSetModel_InvalidJSON(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+	worker := &Worker{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /model", handleSetModel(worker, hub))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/model", "application/json", strings.NewReader("{oops"))
+	r.NoError(err)
+	defer func() { _ = resp.Body.Close() }()
+
+	r.Equal(http.StatusBadRequest, resp.StatusCode)
+}
