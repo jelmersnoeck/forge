@@ -59,3 +59,97 @@ func TestExtractPipelineHint(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveModelAlias(t *testing.T) {
+	tests := map[string]struct {
+		name        string
+		isClaudeCLI bool
+		want        string
+	}{
+		"opus alias": {
+			name: "opus", isClaudeCLI: false,
+			want: "claude-opus-4-6",
+		},
+		"sonnet alias": {
+			name: "sonnet", isClaudeCLI: false,
+			want: "claude-sonnet-4-20250514",
+		},
+		"haiku alias": {
+			name: "haiku", isClaudeCLI: false,
+			want: "claude-haiku-4-20250506",
+		},
+		"full model ID passes through": {
+			name: "claude-sonnet-4-20250514", isClaudeCLI: false,
+			want: "claude-sonnet-4-20250514",
+		},
+		"unknown name passes through": {
+			name: "gpt-4", isClaudeCLI: false,
+			want: "gpt-4",
+		},
+		"claude CLI skips alias resolution": {
+			name: "sonnet", isClaudeCLI: true,
+			want: "sonnet",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, ResolveModelAlias(tc.name, tc.isClaudeCLI))
+		})
+	}
+}
+
+func TestWorkerResolveModel(t *testing.T) {
+	tests := map[string]struct {
+		override      string
+		settingsModel string
+		isClaudeCLI   bool
+		want          string
+	}{
+		"override takes priority": {
+			override: "sonnet", settingsModel: "claude-opus-4-6", isClaudeCLI: false,
+			want: "claude-sonnet-4-20250514",
+		},
+		"settings fallback": {
+			override: "", settingsModel: "claude-opus-4-6", isClaudeCLI: false,
+			want: "claude-opus-4-6",
+		},
+		"default when no override or settings": {
+			override: "", settingsModel: "", isClaudeCLI: false,
+			want: "claude-opus-4-6",
+		},
+		"claude CLI passes alias through": {
+			override: "sonnet", settingsModel: "", isClaudeCLI: true,
+			want: "sonnet",
+		},
+		"settings with non-claude prefix ignored for Anthropic": {
+			override: "", settingsModel: "opus[1m]", isClaudeCLI: false,
+			want: "claude-opus-4-6",
+		},
+		"settings with non-claude prefix used for Claude CLI": {
+			override: "", settingsModel: "opus[1m]", isClaudeCLI: true,
+			want: "opus[1m]",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			w := &Worker{modelOverride: tc.override}
+			r.Equal(tc.want, w.resolveModel(tc.settingsModel, tc.isClaudeCLI, "claude-opus-4-6"))
+		})
+	}
+}
+
+func TestWorkerSetModelConcurrent(t *testing.T) {
+	r := require.New(t)
+	w := &Worker{}
+	r.Equal("", w.ModelOverride())
+
+	w.SetModel("sonnet")
+	r.Equal("sonnet", w.ModelOverride())
+
+	w.SetModel("opus")
+	r.Equal("opus", w.ModelOverride())
+}
