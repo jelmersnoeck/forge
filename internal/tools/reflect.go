@@ -188,7 +188,7 @@ func slugify(s string, maxLen int) string {
 }
 
 const agentsMDLearningsSection = `
-# Agent Learnings
+## Gotchas
 
 Actionable discoveries from past sessions are stored in ` + "`.forge/learnings/`" + `.
 Consult them when starting a task — if a learning is relevant, factor it into
@@ -213,7 +213,7 @@ func ensureAgentsMD(cwd string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if strings.Contains(string(content), "# Agent Learnings") {
+		if strings.Contains(string(content), "## Gotchas") {
 			return "", nil // already has the section
 		}
 		// Append the section

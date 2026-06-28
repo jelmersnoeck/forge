@@ -79,7 +79,7 @@ func TestReflectTool(t *testing.T) {
 			// Root AGENTS.md should be auto-created
 			agentsMD, err := os.ReadFile(filepath.Join(tmpDir, "AGENTS.md"))
 			r.NoError(err, "AGENTS.md should be auto-created at project root")
-			r.Contains(string(agentsMD), "# Agent Learnings")
+			r.Contains(string(agentsMD), "## Gotchas")
 		})
 	}
 }
@@ -355,7 +355,7 @@ func TestEnsureAgentsMD(t *testing.T) {
 		},
 		"root AGENTS.md already has section, noop": {
 			setup: func(tb testing.TB, dir string) {
-				require.NoError(tb, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Greendale\n\n# Agent Learnings\n\nStuff here.\n"), 0644))
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Greendale\n\n## Gotchas\n\nStuff here.\n"), 0644))
 			},
 			wantNoop: true,
 		},
@@ -369,7 +369,7 @@ func TestEnsureAgentsMD(t *testing.T) {
 		".forge/AGENTS.md already has section, noop": {
 			setup: func(tb testing.TB, dir string) {
 				require.NoError(tb, os.MkdirAll(filepath.Join(dir, ".forge"), 0755))
-				require.NoError(tb, os.WriteFile(filepath.Join(dir, ".forge", "AGENTS.md"), []byte("# Agent Learnings\n"), 0644))
+				require.NoError(tb, os.WriteFile(filepath.Join(dir, ".forge", "AGENTS.md"), []byte("## Gotchas\n"), 0644))
 			},
 			wantNoop: true,
 		},
@@ -407,7 +407,7 @@ func TestEnsureAgentsMD(t *testing.T) {
 
 			content, err := os.ReadFile(path)
 			r.NoError(err)
-			r.Contains(string(content), "# Agent Learnings")
+			r.Contains(string(content), "## Gotchas")
 			r.Contains(string(content), ".forge/learnings/")
 
 			if !tc.wantNew {

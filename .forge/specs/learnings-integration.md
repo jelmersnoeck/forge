@@ -2,57 +2,83 @@
 id: learnings-integration
 status: implemented
 ---
-# Improve learnings integration: auto-AGENTS.md, prompt guidance, learnings section
+# Consolidate learnings into AGENTS.md Gotchas and clean up stale files
 
 ## Description
-Learnings are written by the Reflect tool and loaded into context, but the
-system prompt doesn't actively guide the agent to consult them. Additionally,
-when no AGENTS.md exists in a project, the Reflect tool should auto-generate a
-minimal one that references `.forge/learnings/` so future sessions (from any
-tool) know to look there.
+Learnings are scattered across three locations (AGENTS.md "Gotchas", AGENTS.md
+"Agent Learnings", `.forge/learnings/` files) causing duplication, wasted prompt
+tokens, and cache inefficiency. Consolidate into a single `## Gotchas` section
+in AGENTS.md. Treat `.forge/learnings/` as a staging area: the Reflect tool
+still writes there, but the `ensureAgentsMD` function now references "Gotchas"
+instead of "Agent Learnings".
 
 ## Context
-- `internal/tools/reflect.go` — Reflect tool writes `.forge/learnings/*.md`
-- `internal/runtime/context/loader.go` — loads learnings into `ContextBundle.AgentsMD`
-- `internal/runtime/prompt/prompt.go` — assembles system prompt; learnings in dynamic block
-- `AGENTS.md` — project-level agent instructions; currently hand-written
+- `AGENTS.md` — lines 304-315 (`## Gotchas`), lines 337-349 (`# Agent Learnings`)
+- `.forge/learnings/` — 13 files (10 stale diary entries, 3 useful)
+- `internal/tools/reflect.go` — `ensureAgentsMD()`, `agentsMDLearningsSection` constant
+- `internal/tools/reflect_test.go` — `TestEnsureAgentsMD`, `TestReflectTool`
+- `internal/runtime/prompt/prompt.go` — `Assemble()` splits learnings into dynamic block
+- `internal/runtime/prompt/prompt_test.go` — `TestAssemble_AgentsMD_Learnings`, `TestAssemble_CacheControlTTL`
+- `internal/runtime/context/loader.go` — `loadLearnings()`
+- `internal/runtime/context/loader_agents_test.go` — `TestLoader_LoadLearnings*`
 
 ## Behavior
-1. **Auto-generate AGENTS.md on first Reflect call**: When the Reflect tool writes
-   a learning and no `AGENTS.md` exists at the project root OR `.forge/AGENTS.md`,
-   create a minimal `.forge/AGENTS.md` that contains:
-   - A `# Agent Learnings` header
-   - A note that `.forge/learnings/` contains actionable discoveries from past sessions
-   - A directive for agents to consult learnings when they're relevant to the task
-2. **Prompt guidance for learnings**: Enhance the system prompt (in `prompt.go`)
-   to include a brief directive when learnings are present, instructing the agent to:
-   - Scan learnings for relevance to the current task before diving in
-   - If a learning directly relates to the work at hand, factor it into the approach
-3. **Append learnings section to existing AGENTS.md**: If an `AGENTS.md` already
-   exists but doesn't contain an `# Agent Learnings` section, append one that
-   references the `.forge/learnings/` directory. This only happens during Reflect,
-   not on every load.
+1. **AGENTS.md "Gotchas" section absorbs "Agent Learnings"**: The existing
+   `## Gotchas` section (L304) keeps its original bullets. The 9 bullets from
+   `# Agent Learnings` (L337-349) are appended below. The `# Agent Learnings`
+   heading and its reference to `.forge/learnings/` are removed.
+
+2. **Graduate useful learnings from files**: The 3 useful `.forge/learnings/`
+   files have their bullet-point learnings appended to `## Gotchas`:
+   - `20260408-*`: 3 bullets on `exec.CommandContext`/process groups/`cmd.WaitDelay`
+   - `20260413-*`: 2 bullets on `cmd.Stderr` data race / Claude CLI NDJSON format
+   - `20260522-*`: 2 bullets on gateway daemon re-exec bug / TmuxBackend stale agent
+
+3. **Delete all `.forge/learnings/` files**: All 13 markdown files are removed.
+   The directory itself stays (Reflect tool creates files here).
+
+4. **`ensureAgentsMD` now targets "Gotchas"**: The sentinel check changes from
+   `# Agent Learnings` to `## Gotchas`. The appended section content changes to
+   a Gotchas-flavored version directing users to `.forge/learnings/`.
+
+5. **Tests updated**: All tests referencing `# Agent Learnings` check for
+   `## Gotchas` instead. Prompt tests for learnings in the dynamic block still
+   pass (the loader/prompt code is unchanged — learnings files that exist are
+   still loaded into the dynamic block).
 
 ## Constraints
-- Do NOT modify a user's existing AGENTS.md content — only append
-- Do NOT create AGENTS.md at project root if one already exists at `.forge/AGENTS.md`
-- The auto-generated `.forge/AGENTS.md` should be minimal (< 10 lines)
-- The prompt guidance should be 2-3 sentences max — not a wall of text
-- The learnings section append is idempotent (check before appending)
-- Include the auto-generated `.forge/AGENTS.md` in the git commit alongside the learning
+- Do NOT remove the `loadLearnings()` function or the dynamic-block learnings
+  injection — `.forge/learnings/` remains a valid staging area.
+- Do NOT change the Reflect tool's write behavior — it still writes to
+  `.forge/learnings/`.
+- Do NOT restructure `## Gotchas` content — keep it as a flat bullet list.
+- The `ensureAgentsMD` detection must be case-insensitive for the heading
+  (handles `## Gotchas`, `## gotchas`, etc.) — actually no, keep it simple:
+  just check for `## Gotchas` literally.
 
 ## Interfaces
 
 ```go
-// In reflect.go — called after writing the learning file
-func ensureAgentsMD(cwd string) error
+// Updated constant in reflect.go
+const agentsMDLearningsSection = `
+## Gotchas
+
+Actionable discoveries from past sessions are stored in ` + "`.forge/learnings/`" + `.
+Consult them when starting a task — if a learning is relevant, factor it into
+your approach to avoid repeating past mistakes.
+`
+
+// ensureAgentsMD sentinel check changes from:
+//   strings.Contains(string(content), "# Agent Learnings")
+// to:
+//   strings.Contains(string(content), "## Gotchas")
 ```
 
 ## Edge Cases
-- AGENTS.md exists at root, `.forge/AGENTS.md` does not: append section to root AGENTS.md
-- `.forge/AGENTS.md` exists, root does not: append section to `.forge/AGENTS.md`
-- Both exist: append to root AGENTS.md (primary)
-- Neither exists: create `.forge/AGENTS.md`
-- AGENTS.md already has `# Agent Learnings` section: no-op
-- Not a git repo: still create/update AGENTS.md, just don't commit
-- CLAUDE.md exists (legacy): do NOT append to it; create `.forge/AGENTS.md` instead
+- AGENTS.md already has `## Gotchas` but no `# Agent Learnings`: `ensureAgentsMD`
+  returns noop (correct — the section exists).
+- AGENTS.md has neither section: appends `## Gotchas` section.
+- `.forge/learnings/` is empty after cleanup: `loadLearnings()` returns no entries,
+  dynamic block omits the learnings `<system-reminder>` — no wasted tokens.
+- Future Reflect calls write new files to `.forge/learnings/`: still loaded into
+  dynamic block until manually graduated. No behavior change.
