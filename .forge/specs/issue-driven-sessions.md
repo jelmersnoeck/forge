@@ -14,6 +14,9 @@ implemented now.
 This spec was extended to ensure that when `--issue` is used:
 1. The issue number is included in the branch name for traceability.
 2. The issue URL is linked in the PR description so GitHub auto-closes the issue.
+3. The session goes straight to spec creation — it never ideates, never skips
+   the spec, and never drifts into Q&A/investigation/review. An issue is an
+   unambiguous task.
 
 ## Context
 - `cmd/forge/main.go` — help text, subcommand routing
@@ -28,7 +31,15 @@ This spec was extended to ensure that when `--issue` is used:
 - `cmd/forge/session_name.go` — `generateSessionName()` (prompt → slug)
 - `internal/agent/server.go` — `Config` struct, `Start()` entry point
 - `internal/agent/worker.go` — `NewWorker()`, `ensurePR()` — passes issue ref
-  through to `EnsurePR`
+  through to `EnsurePR`; `Worker.Run()` forces `pipeline_hint="spec"` and
+  `ForceTask=true` for the first message of an issue-driven session;
+  `extractPipelineHint()` accepts the `"spec"` value
+- `internal/agent/phase/orchestrator.go` — `OrchestratorOpts.ForceTask` skips
+  the question/investigate/review classification branches;
+  `resolveTaskPipeline()` handles the `"spec"` hint (always single-agent spec
+  creator, never ideate, never skip spec)
+- `internal/agent/phase/prompts.go` — `specCreatorPrompt` gains a "Splitting
+  Into Multiple Specs" section so large issues can produce multiple specs
 - `internal/agent/phase/pr.go` — `EnsurePR()`, `createNewPR()`,
   `generatePRContent()`, `fallbackPRContent()`, `PRAttributionOpts` — accepts
   and appends issue reference to PR body
@@ -91,6 +102,24 @@ This spec was extended to ensure that when `--issue` is used:
 - The issue URL is passed from CLI → agent config → worker → `EnsurePR` →
   `createNewPR` via `PRAttributionOpts.IssueURL`.
 
+### Pipeline routing for issue-driven sessions
+- An issue-driven session's first message goes straight to the single-agent
+  spec creator. It does NOT run the ideation/debate pipeline and does NOT skip
+  the spec (small-task direct-code path is disabled for issues).
+- The worker detects an issue-driven session via the non-empty `issueURL` field
+  and `state.Phase == PhaseIdle` (first message only). It forces
+  `pipelineHint = "spec"` and `ForceTask = true`, overriding any metadata hint.
+- `ForceTask = true` makes the orchestrator skip the question/investigate/review
+  classification branches entirely — an issue is unambiguously a task, so the
+  agent must never answer it as a question or merely investigate it.
+- Follow-up messages (after the orchestrator completes) are NOT forced — they
+  behave like any normal session message (coder resume / plain loop).
+- The `"spec"` pipeline hint is also a generally available metadata value:
+  `pipeline_hint = "spec"` forces the single-agent spec creator regardless of
+  task size.
+- The spec-creator may split a large issue into multiple specs (one per
+  independent unit of work), cross-referencing them in each Description.
+
 ## Constraints
 - Must not add any new Go dependencies.
 - Must not call the GitHub API directly — use `gh` CLI exclusively (handles auth,
@@ -149,6 +178,27 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string,
     namingHint string, issueNum int, issueURL string) (string, string, string, string, func(), error)
 ```
 
+```go
+// internal/agent/phase/orchestrator.go — OrchestratorOpts gains ForceTask
+type OrchestratorOpts struct {
+    // ... existing fields ...
+    PipelineHint string // "ideate" | "spec" | "code" | "auto" | ""
+    ForceTask    bool   // skip classification, treat prompt as a task
+}
+
+// resolveTaskPipeline routes based on hint, then size.
+//   "ideate" → (skipSpec=false, useIdeation=true)
+//   "spec"   → (skipSpec=false, useIdeation=false)  // always spec creator
+//   "code"   → (skipSpec=true,  useIdeation=false)
+func resolveTaskPipeline(hint string, size TaskSize) (skipSpec, useIdeation bool)
+```
+
+```go
+// internal/agent/worker.go — runOrchestrator gains forceTask parameter
+func (w *Worker) runOrchestrator(ctx context.Context, /* ... */,
+    pipelineHint string, forceTask bool) (phase.OrchestratorResult, error)
+```
+
 ## Edge Cases
 - **Issue number without `#`**: `forge --issue 42` works the same as
   `forge --issue #42` — strip leading `#` before passing to `gh`.
@@ -172,3 +222,14 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string,
 - **Cross-repo issue URL**: `forge --issue https://github.com/other-org/other-repo/issues/99`
   — the full URL is used in `Closes`, which GitHub resolves correctly for
   cross-repo references.
+- **Large issue classified as `large`**: previously routed to the ideation
+  pipeline (the bug). Now forced to the single-agent spec creator via
+  `pipeline_hint="spec"` — no ideation/debate.
+- **Issue phrased as a question** (e.g., "How should we handle auth?"): classifier
+  might return `question`, but `ForceTask=true` overrides it — the agent still
+  produces a spec rather than entering Q&A.
+- **Follow-up message in an issue session**: only the first message is forced.
+  A follow-up ("also add a flag") goes through the normal coder-resume path, not
+  forced to the spec pipeline again.
+- **`pipeline_hint="spec"` from a non-issue source**: honored generally — forces
+  the single-agent spec creator regardless of classified size.
