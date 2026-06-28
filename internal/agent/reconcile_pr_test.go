@@ -35,6 +35,11 @@ func newFeatureRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	gitRun(t, dir, "init", "-q")
+	// Set a local identity so production git-commit paths (which don't inject
+	// GIT_AUTHOR_*/GIT_COMMITTER_* env) succeed on CI runners with no global
+	// git identity configured.
+	gitRun(t, dir, "config", "user.name", "Troy Barnes")
+	gitRun(t, dir, "config", "user.email", "troy@greendale.edu")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("greendale\n"), 0o644))
 	gitRun(t, dir, "add", "-A")
