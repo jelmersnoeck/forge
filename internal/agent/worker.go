@@ -303,7 +303,6 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		var emit func(types.OutboundEvent)
-		turnToolsUsed := false   // reset each turn; tracks whether any tool_use event fired
 		turnInterrupted := false // set when turn context is cancelled by interrupt
 		emit = func(event types.OutboundEvent) {
 			if event.ID == "" {
@@ -323,18 +322,17 @@ func (w *Worker) Run(ctx context.Context) {
 			case "queue_on_complete":
 				w.hub.EnqueueCompletion(event.Content)
 			case "tool_use":
-				turnToolsUsed = true
 				// After any tool use, execute immediate queue
 				w.executeImmediateQueue(ctx, registry, state.HistoryID, emit)
 			case "done":
 				// Before done event, execute completion queue
 				w.executeCompletionQueue(ctx, registry, state.HistoryID, emit)
 				// Deterministic PR ensure step — runs before done reaches CLI.
-				// Skip when the turn was interrupted: the user pressed Ctrl+C,
-				// so spending up to 30s on PR operations would feel stuck.
-				if turnToolsUsed && !turnInterrupted {
-					w.ensurePR(ctx, prov, w.specPath, emit)
-				}
+				// Keyed off git ground truth (dirty tree / branch ahead of base),
+				// NOT per-turn tool-use flags: changes may be produced in an
+				// earlier turn or by a phase the worker loop never registered a
+				// tool_use event for. See issue #234.
+				w.reconcilePR(ctx, prov, turnInterrupted, emit)
 			}
 
 			w.hub.PublishEvent(event)
@@ -637,9 +635,107 @@ func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Regis
 	}
 }
 
+// reconcilePR enforces PR creation as a loop post-condition based on git
+// ground truth. It runs after every turn's done event, regardless of which
+// phase produced changes or whether the worker observed a tool_use event.
+//
+// Logic:
+//   - No pending work (clean tree, branch not ahead of base): no-op.
+//   - Pending work + interrupted turn: do not create a PR (Ctrl+C means stop),
+//     but warn loudly so the user knows changes were left without a PR.
+//   - Pending work + normal completion: commit any dirty tree, then ensure a PR.
+//
+// A "silent skip" never happens when there is pending work — either a PR is
+// created/updated, or a warning is emitted explaining why not.
+func (w *Worker) reconcilePR(ctx context.Context, prov types.LLMProvider, interrupted bool, emit func(types.OutboundEvent)) {
+	pending, reason := w.repoHasPendingWork(ctx)
+	if !pending {
+		return
+	}
+
+	if interrupted {
+		msg := fmt.Sprintf("interrupted with uncommitted/unpushed changes (%s); no PR created. Resume the session or run the create-pr flow manually to ship them.", reason)
+		log.Printf("[agent:%s] reconcilePR: %s", w.sessionID, msg)
+		emit(types.OutboundEvent{Type: "warning", Content: msg})
+		return
+	}
+
+	// Commit any dirty working tree so the changes make it into the PR.
+	// EnsurePR only diffs committed history against the base — uncommitted
+	// changes would otherwise be silently dropped.
+	if w.workingTreeDirty(ctx) {
+		if err := w.commitPendingChanges(ctx); err != nil {
+			msg := fmt.Sprintf("failed to commit outstanding changes (%v); PR may be incomplete", err)
+			log.Printf("[agent:%s] reconcilePR: %s", w.sessionID, msg)
+			emit(types.OutboundEvent{Type: "warning", Content: msg})
+			// Continue anyway — EnsurePR will surface whatever is committed.
+		}
+	}
+
+	w.ensurePR(ctx, prov, w.specPath, emit)
+}
+
+// repoHasPendingWork reports whether the working tree is dirty OR the current
+// branch has commits not yet on origin's base branch. This is the git ground
+// truth that gates PR enforcement — independent of conversation events.
+// Returns (true, reason) when there is work to ship, (false, "") otherwise.
+func (w *Worker) repoHasPendingWork(ctx context.Context) (bool, string) {
+	// Must be a git repo.
+	if err := tools.RunGitCmd(w.cwd, "rev-parse", "--git-dir"); err != nil {
+		return false, ""
+	}
+
+	// Never enforce on main/master — those aren't PR branches.
+	branch, err := tools.GitOutputCtx(ctx, w.cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return false, ""
+	}
+	if branch == "main" || branch == "master" {
+		return false, ""
+	}
+
+	if w.workingTreeDirty(ctx) {
+		return true, "working tree has uncommitted changes"
+	}
+
+	// Branch ahead of base: commits exist that the base doesn't have.
+	base := phase.DetectDefaultBranchSafe(w.cwd)
+	if count, err := tools.GitOutputCtx(ctx, w.cwd, "rev-list", "--count", "origin/"+base+"..HEAD"); err == nil {
+		if count != "" && count != "0" {
+			return true, fmt.Sprintf("branch is %s commit(s) ahead of origin/%s", count, base)
+		}
+	}
+
+	return false, ""
+}
+
+// workingTreeDirty reports whether there are staged or unstaged changes,
+// including untracked files. Uses --porcelain for a stable machine format.
+func (w *Worker) workingTreeDirty(ctx context.Context) bool {
+	out, err := tools.GitOutputCtx(ctx, w.cwd, "status", "--porcelain")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(out) != ""
+}
+
+// commitPendingChanges stages everything and commits it with a deterministic
+// message so dirty-tree changes are captured before PR creation. The commit
+// hook adds attribution trailers transparently.
+func (w *Worker) commitPendingChanges(ctx context.Context) error {
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, w.cwd, "add", "-A"); err != nil {
+		return fmt.Errorf("git add -A: %s", strings.TrimSpace(stderr))
+	}
+	msg := "forge: commit outstanding session changes"
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, w.cwd, "commit", "-m", msg); err != nil {
+		return fmt.Errorf("git commit: %s", strings.TrimSpace(stderr))
+	}
+	log.Printf("[agent:%s] reconcilePR: committed outstanding changes", w.sessionID)
+	return nil
+}
+
 // ensurePR runs the deterministic PR creation/update step.
-// Called after every turn that executed tools. Non-fatal: failures are
-// logged, pr_url not emitted, session continues.
+// Non-fatal: failures are logged, pr_url not emitted, session continues.
 func (w *Worker) ensurePR(ctx context.Context, prov types.LLMProvider, specPath string, emit func(types.OutboundEvent)) {
 	if !w.ghAvailable {
 		return

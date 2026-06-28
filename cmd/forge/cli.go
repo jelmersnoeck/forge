@@ -1186,6 +1186,21 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		m.flushText()
 		m.output = append(m.output, dimStyle.Render("interrupted by user"))
 
+	case "warning":
+		m.flushText()
+		maxWidth := m.width - 11 // account for "warning: "
+		if maxWidth < 40 {
+			maxWidth = 40
+		}
+		wrapped := wrapText(event.Content, maxWidth)
+		for i, line := range wrapped {
+			if i == 0 {
+				m.output = append(m.output, errorStyle.Render("warning: ")+line)
+			} else {
+				m.output = append(m.output, "         "+line)
+			}
+		}
+
 	case "done":
 		m.flushText()
 		// Finalize any remaining task trackers (agent done, no more polling).
