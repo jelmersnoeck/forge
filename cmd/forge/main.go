@@ -68,12 +68,15 @@ Flags (interactive mode):
   --skip-worktree          skip git worktree creation
   --branch NAME            check out branch (reuses existing worktree if found)
   --spec PATH              implement a spec file directly
+  --issue REF              GitHub issue URL or #N to use as initial prompt
 
 Examples:
   forge                                        # start interactive session
   forge --skip-worktree                        # run in current directory
   forge --branch jelmer/my-feature             # reuse or create worktree for branch
   forge --spec .forge/specs/my-feature.md      # implement a spec
+  forge --issue #42                            # implement a GitHub issue
+  forge --issue https://github.com/o/r/issues/42  # issue by URL
   forge --gateway http://localhost:3000        # connect to remote gateway
   forge stats --month 2026-04                  # show costs for April 2026
   forge mcp add datadog --url https://mcp.datadoghq.com/mcp --auth oauth

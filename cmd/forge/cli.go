@@ -122,6 +122,7 @@ func runCLI(args []string) int {
 	serverFlag := fs.String("server", "", "deprecated: use --gateway instead")
 	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
 	specPath := fs.String("spec", "", "path to a spec file to implement directly")
+	issue := fs.String("issue", "", "GitHub issue URL or #N to use as initial prompt")
 	branch := fs.String("branch", "", "branch to check out (reuses existing worktree if found)")
 	mode := fs.String("mode", "", "agent mode: swe (default), spec, code, review")
 	_ = fs.Parse(args[1:])
@@ -147,6 +148,16 @@ func runCLI(args []string) int {
 	}
 	if *mode == "code" && *specPath == "" {
 		fmt.Fprintln(os.Stderr, errorStyle.Render("coder mode requires a spec (use --spec path/to/spec.md)"))
+		os.Exit(1)
+	}
+
+	// Validate --issue conflicts.
+	if *issue != "" && *specPath != "" {
+		fmt.Fprintln(os.Stderr, errorStyle.Render("cannot use --issue with --spec"))
+		os.Exit(1)
+	}
+	if *issue != "" && *mode == "spec" {
+		fmt.Fprintln(os.Stderr, errorStyle.Render("cannot use --issue with --mode spec"))
 		os.Exit(1)
 	}
 
@@ -180,6 +191,7 @@ func runCLI(args []string) int {
 	// Handle --spec: read spec file and prepare initial prompt.
 	// Done early so the prompt is available for session naming.
 	var initialPrompt string
+	var namingHint string // override for session name generation (e.g. issue title)
 	if *specPath != "" {
 		specContent, err := os.ReadFile(*specPath)
 		if err != nil {
@@ -194,6 +206,17 @@ func runCLI(args []string) int {
 				"discoveries made during implementation.",
 			*specPath, string(specContent),
 		)
+	}
+
+	// Handle --issue: fetch GitHub issue and prepare initial prompt.
+	if *issue != "" {
+		prompt, title, err := fetchGitHubIssue(*issue, cwd)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, errorStyle.Render(err.Error()))
+			os.Exit(1)
+		}
+		initialPrompt = prompt
+		namingHint = title
 	}
 
 	if *gatewayFlag != "" {
@@ -218,7 +241,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath, namingHint)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
@@ -346,6 +369,12 @@ func runCLI(args []string) int {
 	// Add spec info if present
 	if *specPath != "" {
 		m.output = append(m.output, dimStyle.Render("spec: "+*specPath))
+		m.working = true // mark as working since we'll auto-send
+	}
+
+	// Add issue info if present
+	if *issue != "" {
+		m.output = append(m.output, dimStyle.Render("issue: "+*issue))
 		m.working = true // mark as working since we'll auto-send
 	}
 
@@ -1408,7 +1437,7 @@ func isInWorktree(dir string) bool {
 // If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
 // If branchName is set, reuses an existing worktree for that branch or creates one.
 // initialPrompt, when non-empty, is used to generate a human-readable session name via Haiku.
-func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string) (string, string, string, string, func(), error) {
+func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, namingHint string) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -1425,9 +1454,13 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	}
 
 	// Generate session ID with a readable name.
-	// If we have a prompt, ask Haiku for a slug (up to 3s).
-	// Otherwise, pick a random adjective-noun pair.
-	slug := generateSessionName(newLightweightProvider(), initialPrompt)
+	// If we have a naming hint (e.g. issue title), prefer that for a short slug.
+	// Otherwise use the full initial prompt. Falls back to random adjective-noun.
+	nameSource := namingHint
+	if nameSource == "" {
+		nameSource = initialPrompt
+	}
+	slug := generateSessionName(newLightweightProvider(), nameSource)
 	sessionID := time.Now().Format("20060102") + "-" + slug
 
 	// Check if we're in a git repo and should create a worktree
