@@ -158,6 +158,8 @@ just clean              # remove binaries
 export ANTHROPIC_API_KEY=sk-...
 forge                    # spawns local agent, ephemeral session
 forge --skip-worktree    # skip worktree creation, run in current directory
+forge --issue #42        # start session from GitHub issue
+forge --issue https://github.com/o/r/issues/42  # issue by full URL
 ```
 
 **Git Worktree Isolation**: By default, when running in interactive mode from a git repository (and not already in a worktree), Forge automatically:
