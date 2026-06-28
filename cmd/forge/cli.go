@@ -451,6 +451,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case modelsListMsg:
+		m.output = append(m.output, renderModelList(msg)...)
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -580,7 +584,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Check for /model command
 				if isModelCommand(text) {
 					arg := parseModelArg(text)
-					if arg == "" {
+					switch arg {
+					case "":
 						display := m.modelName
 						if display == "" {
 							display = "(not yet known)"
@@ -588,15 +593,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.output = append(m.output, "")
 						m.output = append(m.output, dimStyle.Render("Current model: "+display))
 						return m, nil
-					}
-					if !m.interactiveMode {
+					case "list":
 						m.output = append(m.output, "")
-						m.output = append(m.output, errorStyle.Render("model switching is not supported in gateway mode"))
-						return m, nil
+						m.output = append(m.output, dimStyle.Render("Fetching available models..."))
+						return m, m.fetchModelList()
+					default:
+						if !m.interactiveMode {
+							m.output = append(m.output, "")
+							m.output = append(m.output, errorStyle.Render("model switching is not supported in gateway mode"))
+							return m, nil
+						}
+						m.output = append(m.output, "")
+						m.output = append(m.output, dimStyle.Render("Switching model to "+arg+"..."))
+						return m, m.sendSetModel(arg)
 					}
-					m.output = append(m.output, "")
-					m.output = append(m.output, dimStyle.Render("Switching model to "+arg+"..."))
-					return m, m.sendSetModel(arg)
 				}
 
 				// Display the user's message in the output with wrapping
@@ -1934,6 +1944,61 @@ func parseModelArg(text string) string {
 //	"claude-sonnet-4-20250514" → "sonnet-4"
 //	"claude-opus-4-6"          → "opus-4"
 //	"sonnet"                   → "sonnet"
+//
+// renderModelList formats provider model lists for TUI output.
+func renderModelList(providers []types.ProviderModels) []string {
+	if len(providers) == 0 {
+		return []string{
+			dimStyle.Render("No providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or install claude CLI."),
+		}
+	}
+
+	var lines []string
+	lines = append(lines, dimStyle.Render("Available models:"))
+	lines = append(lines, "")
+
+	for _, pm := range providers {
+		if pm.Error != "" {
+			lines = append(lines, headerStyle.Render(pm.Provider))
+			lines = append(lines, dimStyle.Render("  Error: "+pm.Error))
+			lines = append(lines, "")
+			continue
+		}
+
+		// Claude CLI gets special alias display
+		if pm.Provider == "Claude CLI" {
+			lines = append(lines, headerStyle.Render("Claude CLI (aliases)"))
+			for _, pair := range modelAliasesForDisplay() {
+				lines = append(lines, dimStyle.Render(fmt.Sprintf("  %-10s → %s", pair[0], pair[1])))
+			}
+			lines = append(lines, "")
+			continue
+		}
+
+		lines = append(lines, headerStyle.Render(pm.Provider))
+		for _, m := range pm.Models {
+			switch m.DisplayName {
+			case "":
+				lines = append(lines, dimStyle.Render("  "+m.ID))
+			default:
+				lines = append(lines, dimStyle.Render(fmt.Sprintf("  %-30s %s", m.ID, m.DisplayName)))
+			}
+		}
+		lines = append(lines, "")
+	}
+
+	return lines
+}
+
+// modelAliasesForDisplay returns the ordered alias→full-ID mapping for CLI display.
+func modelAliasesForDisplay() [][2]string {
+	return [][2]string{
+		{"opus", "claude-opus-4-6"},
+		{"sonnet", "claude-sonnet-4-20250514"},
+		{"haiku", "claude-haiku-4-20250506"},
+	}
+}
+
 func shortModelName(name string) string {
 	s := strings.TrimPrefix(name, "claude-")
 	// Strip trailing date suffix: -YYYYMMDD or -N (short version numbers)
@@ -1957,6 +2022,7 @@ func shortModelName(name string) string {
 }
 
 type modelSwitchedMsg string
+type modelsListMsg []types.ProviderModels
 
 // sendSetModel sends a model change request to the agent.
 func (m model) sendSetModel(modelName string) tea.Cmd {
@@ -1980,6 +2046,30 @@ func (m model) sendSetModel(modelName string) tea.Cmd {
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&result)
 		return modelSwitchedMsg(result.Model)
+	}
+}
+
+// fetchModelList queries the agent for available models from all providers.
+func (m model) fetchModelList() tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("%s/models", m.gateway)
+
+		resp, err := http.Get(url)
+		if err != nil {
+			return errMsg(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			return errMsg(fmt.Errorf("model list failed: %d %s", resp.StatusCode, b))
+		}
+
+		var result []types.ProviderModels
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return errMsg(fmt.Errorf("decode model list: %w", err))
+		}
+		return modelsListMsg(result)
 	}
 }
 

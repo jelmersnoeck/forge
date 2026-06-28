@@ -119,6 +119,24 @@ type LLMProvider interface {
 	Chat(ctx context.Context, req ChatRequest) (<-chan ChatDelta, error)
 }
 
+// ModelLister is an optional interface for providers that can list available models.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelEntry, error)
+}
+
+// ModelEntry represents a single model in a provider's catalog.
+type ModelEntry struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+// ProviderModels groups models by provider, with optional error for non-fatal failures.
+type ProviderModels struct {
+	Provider string       `json:"provider"`
+	Models   []ModelEntry `json:"models"`
+	Error    string       `json:"error,omitempty"`
+}
+
 // LightweightModels is a prioritized list of cheap/fast models for auxiliary
 // LLM calls (session naming, intent classification, etc.). Callsites should
 // try each model in order, falling through on error.

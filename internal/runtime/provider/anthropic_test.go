@@ -251,6 +251,19 @@ func TestBuildRequest_PriorityOrder(t *testing.T) {
 	r.LessOrEqual(countCacheBreakpoints(params), maxCacheBreakpoints)
 }
 
+func TestAnthropicProvider_ListModels(t *testing.T) {
+	r := require.New(t)
+
+	// The Anthropic SDK's Models.List returns paginated results.
+	// We test that our ListModels correctly iterates and converts them.
+	// Since we can't easily mock the SDK client, we verify interface compliance.
+	p := NewAnthropic("test-key")
+
+	// AnthropicProvider should implement ModelLister
+	var _ types.ModelLister = p
+	r.NotNil(p)
+}
+
 func TestAnthropicProvider_Chat(t *testing.T) {
 	r := require.New(t)
 

@@ -236,3 +236,27 @@ func TestSetModel_InvalidJSON(t *testing.T) {
 
 	r.Equal(http.StatusBadRequest, resp.StatusCode)
 }
+
+func TestListModels_Endpoint(t *testing.T) {
+	r := require.New(t)
+	worker := &Worker{}
+	worker.providers = map[string]types.LLMProvider{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /models", handleListModels(worker))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/models")
+	r.NoError(err)
+	defer func() { _ = resp.Body.Close() }()
+
+	r.Equal(http.StatusOK, resp.StatusCode)
+	r.Equal("application/json", resp.Header.Get("Content-Type"))
+
+	var result []types.ProviderModels
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	r.NoError(err)
+	// Empty providers → empty list
+	r.Empty(result)
+}

@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jelmersnoeck/forge/internal/types"
 )
 
 func TestWorkerStateTransition(t *testing.T) {
@@ -344,4 +348,68 @@ func TestWorkerSetModelConcurrent(t *testing.T) {
 
 	w.SetModel("opus")
 	r.Equal("opus", w.ModelOverride())
+}
+
+func TestWorkerListModels(t *testing.T) {
+	r := require.New(t)
+
+	w := &Worker{}
+	ctx := context.Background()
+
+	results := w.ListModels(ctx)
+
+	// With no providers set, we should get an empty list
+	r.Empty(results)
+}
+
+func TestWorkerListModels_WithProviders(t *testing.T) {
+	r := require.New(t)
+
+	w := &Worker{}
+	w.providers = map[string]types.LLMProvider{
+		"Anthropic": &mockModelLister{
+			models: []types.ModelEntry{
+				{ID: "claude-opus-4-6", DisplayName: "Claude Opus 4"},
+				{ID: "claude-sonnet-4-20250514", DisplayName: "Claude Sonnet 4"},
+			},
+		},
+	}
+
+	results := w.ListModels(context.Background())
+	r.Len(results, 1)
+	r.Equal("Anthropic", results[0].Provider)
+	r.Len(results[0].Models, 2)
+	r.Equal("claude-opus-4-6", results[0].Models[0].ID)
+	r.Equal("Claude Opus 4", results[0].Models[0].DisplayName)
+}
+
+func TestWorkerListModels_ProviderError(t *testing.T) {
+	r := require.New(t)
+
+	w := &Worker{}
+	w.providers = map[string]types.LLMProvider{
+		"Anthropic": &mockModelLister{
+			err: fmt.Errorf("authentication failed"),
+		},
+	}
+
+	results := w.ListModels(context.Background())
+	r.Len(results, 1)
+	r.Equal("Anthropic", results[0].Provider)
+	r.Empty(results[0].Models)
+	r.Contains(results[0].Error, "authentication failed")
+}
+
+// mockModelLister implements both LLMProvider and ModelLister for testing.
+type mockModelLister struct {
+	models []types.ModelEntry
+	err    error
+}
+
+func (m *mockModelLister) Chat(_ context.Context, _ types.ChatRequest) (<-chan types.ChatDelta, error) {
+	return nil, nil
+}
+
+func (m *mockModelLister) ListModels(_ context.Context) ([]types.ModelEntry, error) {
+	return m.models, m.err
 }

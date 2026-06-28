@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -316,6 +317,12 @@ func TestParseModelArg(t *testing.T) {
 		"with extra whitespace": {
 			input: "  /model  opus  ", want: "opus",
 		},
+		"list subcommand": {
+			input: "/model list", want: "list",
+		},
+		"list with whitespace": {
+			input: "  /model  list  ", want: "list",
+		},
 	}
 
 	for name, tc := range tests {
@@ -355,6 +362,112 @@ func TestShortModelName(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 			r.Equal(tc.want, shortModelName(tc.input))
+		})
+	}
+}
+
+func TestRenderModelList(t *testing.T) {
+	tests := map[string]struct {
+		input []types.ProviderModels
+		check func(r *require.Assertions, lines []string)
+	}{
+		"empty providers": {
+			input: nil,
+			check: func(r *require.Assertions, lines []string) {
+				r.Len(lines, 1)
+				r.Contains(lines[0], "No providers configured")
+				r.Contains(lines[0], "ANTHROPIC_API_KEY")
+			},
+		},
+		"anthropic models": {
+			input: []types.ProviderModels{{
+				Provider: "Anthropic",
+				Models: []types.ModelEntry{
+					{ID: "claude-opus-4-6", DisplayName: "Claude Opus 4"},
+					{ID: "claude-sonnet-4-20250514", DisplayName: "Claude Sonnet 4"},
+				},
+			}},
+			check: func(r *require.Assertions, lines []string) {
+				joined := strings.Join(lines, "\n")
+				r.Contains(joined, "Available models:")
+				r.Contains(joined, "Anthropic")
+				r.Contains(joined, "claude-opus-4-6")
+				r.Contains(joined, "Claude Opus 4")
+				r.Contains(joined, "claude-sonnet-4-20250514")
+			},
+		},
+		"openai models no display name": {
+			input: []types.ProviderModels{{
+				Provider: "OpenAI",
+				Models: []types.ModelEntry{
+					{ID: "gpt-4.1"},
+					{ID: "gpt-4.1-mini"},
+				},
+			}},
+			check: func(r *require.Assertions, lines []string) {
+				joined := strings.Join(lines, "\n")
+				r.Contains(joined, "OpenAI")
+				r.Contains(joined, "gpt-4.1")
+				r.Contains(joined, "gpt-4.1-mini")
+			},
+		},
+		"claude CLI aliases": {
+			input: []types.ProviderModels{{
+				Provider: "Claude CLI",
+			}},
+			check: func(r *require.Assertions, lines []string) {
+				joined := strings.Join(lines, "\n")
+				r.Contains(joined, "Claude CLI (aliases)")
+				r.Contains(joined, "opus")
+				r.Contains(joined, "→")
+				r.Contains(joined, "claude-opus-4-6")
+				r.Contains(joined, "sonnet")
+				r.Contains(joined, "haiku")
+			},
+		},
+		"provider error": {
+			input: []types.ProviderModels{{
+				Provider: "Anthropic",
+				Error:    "authentication failed",
+			}},
+			check: func(r *require.Assertions, lines []string) {
+				joined := strings.Join(lines, "\n")
+				r.Contains(joined, "Anthropic")
+				r.Contains(joined, "Error: authentication failed")
+			},
+		},
+		"mixed providers": {
+			input: []types.ProviderModels{
+				{
+					Provider: "Anthropic",
+					Models: []types.ModelEntry{
+						{ID: "claude-opus-4-6", DisplayName: "Claude Opus 4"},
+					},
+				},
+				{
+					Provider: "OpenAI",
+					Error:    "request timed out",
+				},
+				{
+					Provider: "Claude CLI",
+				},
+			},
+			check: func(r *require.Assertions, lines []string) {
+				joined := strings.Join(lines, "\n")
+				r.Contains(joined, "Anthropic")
+				r.Contains(joined, "claude-opus-4-6")
+				r.Contains(joined, "OpenAI")
+				r.Contains(joined, "Error: request timed out")
+				r.Contains(joined, "Claude CLI (aliases)")
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			lines := renderModelList(tc.input)
+			tc.check(r, lines)
 		})
 	}
 }
