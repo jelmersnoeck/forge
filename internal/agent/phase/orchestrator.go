@@ -49,6 +49,12 @@ type OrchestratorOpts struct {
 	// Values: "ideate" (always ideate), "code" (skip to coding),
 	// "auto" or "" (use complexity gate to decide).
 	PipelineHint string
+
+	// TransitionHistoryID carries the conversation history from a prior
+	// Q&A or investigation phase into the next phase (spec-creator or
+	// direct coder). Set during Q&A→task or investigate→task transitions
+	// so the spec-creator can Resume() with full prior context.
+	TransitionHistoryID string
 }
 
 // OrchestratorResult is the return value from Orchestrator.Run.
@@ -152,18 +158,22 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 	}
 
 	// Task path: augment prompt with prior context if transitioning from Q&A or investigation.
+	// Carry the conversation history ID so the spec-creator (or direct coder)
+	// can Resume() from it, giving it full context — not just the text hint.
 	switch {
 	case opts.InvestigateHistoryID != "":
 		augmented := "Based on our previous investigation, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the investigation to inform the spec."
 		log.Printf("[orchestrator:%s] investigate→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
 		opts.InitialPrompt = augmented
+		opts.TransitionHistoryID = opts.InvestigateHistoryID
 		opts.InvestigateHistoryID = ""
 	case opts.QAHistoryID != "":
 		augmented := "Based on our previous discussion, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the conversation to inform the spec."
 		log.Printf("[orchestrator:%s] Q&A→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
 		opts.InitialPrompt = augmented
+		opts.TransitionHistoryID = opts.QAHistoryID
 		opts.QAHistoryID = ""
 	}
 
@@ -503,8 +513,25 @@ func (o *Orchestrator) runSpecCreator(ctx context.Context, opts OrchestratorOpts
 	}
 
 	l := loop.New(loopOpts)
-	if err := l.Send(ctx, opts.InitialPrompt, opts.Emit); err != nil {
-		log.Printf("[orchestrator:%s] spec-creator phase Send failed (historyID=%s, promptLen=%d): %v",
+
+	var err error
+	switch {
+	case opts.TransitionHistoryID != "":
+		// Resume from Q&A/investigate history so the spec-creator has full context.
+		err = l.Resume(ctx, opts.TransitionHistoryID, opts.InitialPrompt, opts.Emit)
+		if err != nil {
+			// If Resume fails (e.g. missing session file), fall back to Send.
+			log.Printf("[orchestrator:%s] spec-creator Resume failed (historyID=%s), falling back to Send: %v",
+				opts.SessionID, opts.TransitionHistoryID, err)
+			l = loop.New(loopOpts)
+			err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+		}
+	default:
+		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+	}
+
+	if err != nil {
+		log.Printf("[orchestrator:%s] spec-creator phase failed (historyID=%s, promptLen=%d): %v",
 			opts.SessionID, l.HistoryID(), len(opts.InitialPrompt), err)
 		return Result{Phase: "spec", HistoryID: l.HistoryID()}, err
 	}
@@ -573,8 +600,24 @@ func (o *Orchestrator) runCoderDirect(ctx context.Context, opts OrchestratorOpts
 	}
 
 	l := loop.New(loopOpts)
-	if err := l.Send(ctx, opts.InitialPrompt, opts.Emit); err != nil {
-		log.Printf("[orchestrator:%s] coder direct Send failed (historyID=%s, promptLen=%d): %v",
+
+	var err error
+	switch {
+	case opts.TransitionHistoryID != "":
+		// Resume from Q&A/investigate history so the coder has full context.
+		err = l.Resume(ctx, opts.TransitionHistoryID, opts.InitialPrompt, opts.Emit)
+		if err != nil {
+			log.Printf("[orchestrator:%s] coder direct Resume failed (historyID=%s), falling back to Send: %v",
+				opts.SessionID, opts.TransitionHistoryID, err)
+			l = loop.New(loopOpts)
+			err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+		}
+	default:
+		err = l.Send(ctx, opts.InitialPrompt, opts.Emit)
+	}
+
+	if err != nil {
+		log.Printf("[orchestrator:%s] coder direct failed (historyID=%s, promptLen=%d): %v",
 			opts.SessionID, l.HistoryID(), len(opts.InitialPrompt), err)
 		return l.HistoryID(), err
 	}
