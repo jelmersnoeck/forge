@@ -29,37 +29,34 @@ type PRInfo struct {
 	FailedChecks []string
 }
 
-// prHealthMonitor periodically checks PR health and takes corrective action.
+// prCheckSource is the sentinel Source value for internal PR health check
+// messages. The worker's main loop uses this to distinguish PR checks from
+// real user messages, ensuring git operations are serialized.
+const prCheckSource = "pr_check_internal"
+
+// prHealthMonitor periodically enqueues PR health checks into the hub.
+// The actual check runs in the worker's main loop (via handlePRCheck),
+// guaranteeing no concurrent git access with conversation turns.
 //
-//	┌─────────────┐
-//	│  prHealth    │  every 5 min
-//	│  Monitor     ├─────────────────────┐
-//	└──────┬───────┘                     │
-//	       │                             │
-//	       ▼                             ▼
-//	  ┌─────────┐  no PR?         ┌───────────┐
-//	  │ getPR   │ ──skip──►       │ needsRe-  │  yes
-//	  │ Info    │                 │ base?     │ ──► rebase + push
-//	  └─────────┘                 └─────┬─────┘
-//	                                    │ no
-//	                                    ▼
-//	                              ┌───────────┐
-//	                              │ checks    │  failing
-//	                              │ passing?  │ ──► inject fix msg
-//	                              └───────────┘
+// Flow: monitor goroutine enqueues a synthetic message every 5 min →
+// hub queue → worker pulls it → handlePRCheck runs git ops inline.
 func (w *Worker) prHealthMonitor(ctx context.Context) {
 	// Verify gh is available before starting the loop.
 	if _, err := exec.LookPath("gh"); err != nil {
 		log.Printf("[agent:%s] pr-monitor: gh CLI not found, disabling PR health monitor", w.sessionID)
+		w.hub.PublishEvent(types.OutboundEvent{
+			ID:        uuid.New().String(),
+			SessionID: w.sessionID,
+			Type:      "pr_monitor",
+			Content:   "PR health monitor disabled: gh CLI not found on PATH.",
+			Timestamp: time.Now().UnixMilli(),
+		})
 		return
 	}
 
-	// Track whether we've seen the PR close/merge to avoid repeated logs.
-	var prTerminal bool
-
-	// Run the first check immediately so rebase/CI issues surface at startup,
-	// not after a 5-minute wait.
-	prTerminal = w.runPRCheck(ctx)
+	// Enqueue the first check immediately so rebase/CI issues surface at
+	// startup, not after a 5-minute wait.
+	w.enqueuePRCheck()
 
 	ticker := time.NewTicker(prMonitorInterval)
 	defer ticker.Stop()
@@ -69,26 +66,35 @@ func (w *Worker) prHealthMonitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if prTerminal {
-				continue
-			}
-
-			// Don't touch git while the agent is actively working.
-			if !w.hub.IsIdle() {
-				log.Printf("[agent:%s] pr-monitor: agent busy, skipping cycle", w.sessionID)
-				continue
-			}
-
-			if w.runPRCheck(ctx) {
-				prTerminal = true
-			}
+			w.enqueuePRCheck()
 		}
 	}
 }
 
-// runPRCheck runs a health check and injects a fix message if needed.
+// enqueuePRCheck pushes a synthetic message into the hub that triggers a
+// PR health check when the worker processes it. Skips enqueue if a check
+// message is already pending (backpressure).
+func (w *Worker) enqueuePRCheck() {
+	if !w.prCheckPending.CompareAndSwap(false, true) {
+		log.Printf("[agent:%s] pr-monitor: skipping enqueue, previous check still pending", w.sessionID)
+		return
+	}
+	log.Printf("[agent:%s] pr-monitor: enqueuing PR health check", w.sessionID)
+	w.hub.PushMessage(types.InboundMessage{
+		Source:    prCheckSource,
+		Text:      "", // not user-visible
+		Timestamp: time.Now().UnixMilli(),
+	})
+}
+
+// handlePRCheck runs a PR health check inline in the worker's main loop.
 // Returns true if the PR is in a terminal state (merged/closed).
-func (w *Worker) runPRCheck(ctx context.Context) bool {
+// Because this runs in the worker loop (not a background goroutine),
+// it is serialized with all other message processing — no TOCTOU race.
+func (w *Worker) handlePRCheck(ctx context.Context) bool {
+	// Clear the pending flag so the monitor goroutine can enqueue again.
+	w.prCheckPending.Store(false)
+
 	needsFix, fixMsg, terminal := w.prHealthCheck(ctx)
 	if needsFix && fixMsg != "" {
 		w.hub.PushMessage(types.InboundMessage{

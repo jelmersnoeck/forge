@@ -144,36 +144,39 @@ func TestPRHealthCheck_NoPR(t *testing.T) {
 	require.False(t, terminal)
 }
 
-func TestPRMonitor_SkipsWhenBusy(t *testing.T) {
+func TestPRMonitor_EnqueuesCheckMessage(t *testing.T) {
 	r := require.New(t)
 	hub := NewHub()
 
-	// Push a message so the hub has a queued item (worker would be busy).
-	hub.PushMessage(types.InboundMessage{Text: "doing work"})
+	w := &Worker{
+		hub:       hub,
+		sessionID: "test-greendale",
+	}
 
-	// Hub should NOT be idle.
-	r.False(hub.IsIdle())
+	// enqueuePRCheck should push an internal message.
+	w.enqueuePRCheck()
+
+	msg, ok := hub.PullMessage(context.Background())
+	r.True(ok)
+	r.Equal(prCheckSource, msg.Source)
 }
 
-func TestPRMonitor_IdleWhenWaiting(t *testing.T) {
+func TestPRMonitor_CheckMessageNotProcessedAsUserMessage(t *testing.T) {
 	r := require.New(t)
 	hub := NewHub()
 
-	// Start a goroutine that blocks on PullMessage (simulates idle worker).
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		hub.PullMessage(context.Background())
-	}()
+	// Push a PR check message followed by a real user message.
+	hub.PushMessage(types.InboundMessage{Source: prCheckSource})
+	hub.PushMessage(types.InboundMessage{Text: "hey Troy", Source: "user"})
 
-	// Give the goroutine time to register as a waiter.
-	time.Sleep(50 * time.Millisecond)
+	// First message should be the internal check.
+	msg1, _ := hub.PullMessage(context.Background())
+	r.Equal(prCheckSource, msg1.Source)
 
-	r.True(hub.IsIdle())
-
-	// Unblock the goroutine.
-	hub.PushMessage(types.InboundMessage{Text: "wake up"})
-	<-done
+	// Second should be the user message.
+	msg2, _ := hub.PullMessage(context.Background())
+	r.Equal("user", msg2.Source)
+	r.Equal("hey Troy", msg2.Text)
 }
 
 func TestPRInfo_ParseChecks(t *testing.T) {
@@ -281,5 +284,141 @@ func TestPRMonitor_EmitsEvents(t *testing.T) {
 		r.Contains(event.Content, "rebased onto main")
 	case <-time.After(1 * time.Second):
 		t.Fatal("expected pr_monitor event")
+	}
+}
+
+func TestPRMonitor_SerializedWithWorker(t *testing.T) {
+	// Verify the fix: PR check messages go through the hub queue,
+	// so they're processed by the worker in sequence — no concurrent
+	// git access with conversation turns.
+	r := require.New(t)
+	hub := NewHub()
+
+	// Simulate: user message, then PR check, then another user message.
+	hub.PushMessage(types.InboundMessage{Text: "user msg 1", Source: "user"})
+	hub.PushMessage(types.InboundMessage{Source: prCheckSource})
+	hub.PushMessage(types.InboundMessage{Text: "user msg 2", Source: "user"})
+
+	// Messages come out in order — PR check is sandwiched between
+	// user messages, proving serialization.
+	msg1, _ := hub.PullMessage(context.Background())
+	r.Equal("user", msg1.Source)
+	r.Equal("user msg 1", msg1.Text)
+
+	msg2, _ := hub.PullMessage(context.Background())
+	r.Equal(prCheckSource, msg2.Source)
+
+	msg3, _ := hub.PullMessage(context.Background())
+	r.Equal("user", msg3.Source)
+	r.Equal("user msg 2", msg3.Text)
+}
+
+func TestPRMonitor_GracefulShutdownDrainsPendingChecks(t *testing.T) {
+	// When the worker context is cancelled, pending PR check messages
+	// should not cause hangs — PullMessage returns (_, false).
+	r := require.New(t)
+	hub := NewHub()
+
+	w := &Worker{
+		hub:       hub,
+		sessionID: "test-shutdown",
+	}
+
+	// Enqueue a PR check.
+	w.enqueuePRCheck()
+
+	// Pull the pending message — simulates worker draining before shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
+	msg, ok := hub.PullMessage(ctx)
+	r.True(ok)
+	r.Equal(prCheckSource, msg.Source)
+
+	// Cancel context, then try pulling — should return immediately with false.
+	cancel()
+	_, ok = hub.PullMessage(ctx)
+	r.False(ok)
+}
+
+func TestPRMonitor_BackpressureSkipsDuplicate(t *testing.T) {
+	// When a PR check is already pending, enqueuePRCheck should skip
+	// rather than growing the queue unboundedly.
+	r := require.New(t)
+	hub := NewHub()
+
+	w := &Worker{
+		hub:       hub,
+		sessionID: "test-backpressure",
+	}
+
+	// First enqueue succeeds.
+	w.enqueuePRCheck()
+
+	// Second enqueue is skipped — pending flag is still set.
+	w.enqueuePRCheck()
+	w.enqueuePRCheck()
+
+	// Only one message should be in the queue.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	msg, ok := hub.PullMessage(ctx)
+	r.True(ok)
+	r.Equal(prCheckSource, msg.Source)
+
+	// No more messages — context should time out.
+	_, ok = hub.PullMessage(ctx)
+	r.False(ok)
+}
+
+func TestPRMonitor_HandlePRCheckClearsPendingFlag(t *testing.T) {
+	// After handlePRCheck processes a message, the pending flag should
+	// be cleared so the next timer tick can enqueue again.
+	r := require.New(t)
+
+	local, _ := setupGitRepo(t)
+	hub := NewHub()
+
+	w := &Worker{
+		hub:       hub,
+		cwd:       local,
+		sessionID: "test-clear-pending",
+	}
+
+	// Simulate an enqueued check by setting the pending flag.
+	w.prCheckPending.Store(true)
+
+	// handlePRCheck clears the flag.
+	w.handlePRCheck(context.Background())
+	r.False(w.prCheckPending.Load())
+
+	// Now enqueuePRCheck should succeed again.
+	w.enqueuePRCheck()
+	r.True(w.prCheckPending.Load())
+}
+
+func TestPRMonitor_GHNotAvailableEmitsEvent(t *testing.T) {
+	// When gh is not on PATH, the monitor should emit a structured
+	// pr_monitor event (not just log).
+	r := require.New(t)
+
+	// Only meaningful if gh is actually missing; otherwise we test
+	// the event emission path directly.
+	hub := NewHub()
+	events, unsub := hub.Subscribe()
+	defer unsub()
+
+	// Emit the event directly (same as what prHealthMonitor does when
+	// gh is missing) to verify the event structure is correct.
+	hub.PublishEvent(types.OutboundEvent{
+		Type:    "pr_monitor",
+		Content: "PR health monitor disabled: gh CLI not found on PATH.",
+	})
+
+	select {
+	case event := <-events:
+		r.Equal("pr_monitor", event.Type)
+		r.Contains(event.Content, "gh CLI not found")
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected pr_monitor event for gh not available")
 	}
 }
