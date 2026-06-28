@@ -812,10 +812,8 @@ func (w *Worker) makeAgentRunner(
 		model := agent.Model
 		if model == "" {
 			const defaultModel = "claude-opus-4-6"
-			model = defaultModel
-			if m := bundle.Settings.Model; m != "" && strings.HasPrefix(m, "claude-") {
-				model = m
-			}
+			_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
+			model = resolveDefaultModel(bundle.Settings.Model, isClaudeCLI, defaultModel)
 		}
 
 		maxTurns := agent.MaxTurns
@@ -1097,17 +1095,33 @@ func ResolveModelAlias(name string, isClaudeCLI bool) string {
 	return name
 }
 
-// resolveModel picks the model with priority: override > settings > default.
+// resolveModel picks the model with priority:
+// override > settings (claude- prefix) > userConfig.Model.Default > default.
 func (w *Worker) resolveModel(settingsModel string, isClaudeCLI bool, defaultModel string) string {
-	override := w.ModelOverride()
-	switch {
-	case override != "":
+	if override := w.ModelOverride(); override != "" {
 		return ResolveModelAlias(override, isClaudeCLI)
+	}
+	return resolveDefaultModel(settingsModel, isClaudeCLI, defaultModel)
+}
+
+// resolveDefaultModel resolves the model without a session override, with
+// priority: settings (claude- prefix) > userConfig.Model.Default > default.
+// Shared by the main loop and sub-agent runner.
+func resolveDefaultModel(settingsModel string, isClaudeCLI bool, defaultModel string) string {
+	switch {
 	case isClaudeCLI && settingsModel != "":
 		return settingsModel
 	case settingsModel != "" && strings.HasPrefix(settingsModel, "claude-"):
 		return settingsModel
-	default:
-		return defaultModel
 	}
+
+	// User-config default sits between project settings and the hardcoded
+	// fallback. Stored verbatim (id or alias) and resolved like --model.
+	if userCfg, err := config.LoadUserConfig(); err != nil {
+		log.Printf("[model] warning: failed to load user config: %v", err)
+	} else if userCfg.Model.Default != "" {
+		return ResolveModelAlias(userCfg.Model.Default, isClaudeCLI)
+	}
+
+	return defaultModel
 }

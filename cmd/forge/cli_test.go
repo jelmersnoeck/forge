@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -323,12 +325,42 @@ func TestParseModelArg(t *testing.T) {
 		"list with whitespace": {
 			input: "  /model  list  ", want: "list",
 		},
+		"global flag stripped after name": {
+			input: "/model opus --global", want: "opus",
+		},
+		"global flag stripped before name": {
+			input: "/model --global opus", want: "opus",
+		},
+		"global flag alone": {
+			input: "/model --global", want: "",
+		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 			r.Equal(tc.want, parseModelArg(tc.input))
+		})
+	}
+}
+
+func TestParseModelGlobal(t *testing.T) {
+	tests := map[string]struct {
+		input string
+		want  bool
+	}{
+		"no flag":             {input: "/model opus", want: false},
+		"flag after name":     {input: "/model opus --global", want: true},
+		"flag before name":    {input: "/model --global opus", want: true},
+		"flag alone":          {input: "/model --global", want: true},
+		"bare model":          {input: "/model", want: false},
+		"not the global flag": {input: "/model --globalish", want: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, parseModelGlobal(tc.input))
 		})
 	}
 }
@@ -470,4 +502,83 @@ func TestRenderModelList(t *testing.T) {
 			tc.check(r, lines)
 		})
 	}
+}
+
+func TestBuildModelChoices(t *testing.T) {
+	r := require.New(t)
+
+	providers := []types.ProviderModels{
+		{Provider: "Claude CLI"},
+		{Provider: "Anthropic", Models: []types.ModelEntry{
+			{ID: "claude-sonnet-4-20250514", DisplayName: "Sonnet 4"},
+			{ID: "claude-opus-4-6"},
+		}},
+		{Provider: "Broken", Error: "boom"},
+	}
+
+	choices := buildModelChoices(providers)
+
+	// Claude CLI aliases first (opus, sonnet, haiku), then Anthropic IDs.
+	r.Equal("opus", choices[0].id)
+	r.Equal("sonnet", choices[1].id)
+	r.Equal("haiku", choices[2].id)
+	r.Equal("claude-sonnet-4-20250514", choices[3].id)
+	r.Contains(choices[3].label, "Sonnet 4")
+	r.Equal("claude-opus-4-6", choices[4].id)
+
+	// Errored provider contributes nothing.
+	for _, c := range choices {
+		r.NotContains(c.label, "boom")
+	}
+}
+
+func TestBuildModelChoices_empty(t *testing.T) {
+	r := require.New(t)
+	r.Empty(buildModelChoices(nil))
+}
+
+func TestApplyModelSwitch_globalPersists(t *testing.T) {
+	r := require.New(t)
+	t.Setenv("HOME", t.TempDir())
+
+	m := model{interactiveMode: true}
+	newM, cmd := m.applyModelSwitch("sonnet", true)
+	r.NotNil(cmd)
+
+	// Persisted to ~/.forge/config.toml.
+	path := filepath.Join(os.Getenv("HOME"), ".forge", "config.toml")
+	data, err := os.ReadFile(path)
+	r.NoError(err)
+	r.Contains(string(data), "sonnet")
+
+	// Output notes the global save.
+	joined := strings.Join(newM.output, "\n")
+	r.Contains(joined, "Saved model.default")
+}
+
+func TestApplyModelSwitch_sessionOnly(t *testing.T) {
+	r := require.New(t)
+	t.Setenv("HOME", t.TempDir())
+
+	m := model{interactiveMode: true}
+	newM, cmd := m.applyModelSwitch("opus", false)
+	r.NotNil(cmd)
+
+	// No config file written when not global.
+	path := filepath.Join(os.Getenv("HOME"), ".forge", "config.toml")
+	_, err := os.Stat(path)
+	r.True(os.IsNotExist(err))
+
+	joined := strings.Join(newM.output, "\n")
+	r.NotContains(joined, "Saved model.default")
+	r.Contains(joined, "Switching model to opus")
+}
+
+func TestApplyModelSwitch_gatewayRejected(t *testing.T) {
+	r := require.New(t)
+	m := model{interactiveMode: false}
+	newM, cmd := m.applyModelSwitch("opus", true)
+	r.Nil(cmd)
+	joined := strings.Join(newM.output, "\n")
+	r.Contains(joined, "not supported in gateway mode")
 }
