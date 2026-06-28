@@ -1,0 +1,5 @@
+# Learnings - 2026-06-28 16:40
+
+- PR creation enforcement in forge must key off git ground truth (git status --porcelain dirty OR rev-list --count origin/<base>..HEAD), NOT per-turn tool_use event flags. The old turnToolsUsed gate in internal/agent/worker.go silently skipped PRs when changes were produced in an earlier turn or by a phase the worker loop never saw a tool_use for (issue #234).
+- The worker's done-event interception closure in worker.go fires for BOTH the success-path emit({done}) inside runOrchestrator/runSinglePhase AND the manual error-path emit({done}) at the bottom of the loop. So a post-condition hook placed in the 'done' case runs on interrupted/errored turns too — pass turnInterrupted so you can branch (warn vs commit+PR).
+- The Edit tool fails to match old_string blocks containing em-dash (U+2014) characters in this codebase's Go comments — the match silently fails. Fall back to a python3 heredoc with explicit \u2014, or anchor edits on plain-ASCII lines. Also: worker.go switch-case bodies are indented with 4 tabs, easy to mis-count when constructing old_string.

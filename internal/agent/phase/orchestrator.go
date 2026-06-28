@@ -933,6 +933,13 @@ func detectDefaultBranchSafe(cwd string) string {
 	return "main"
 }
 
+// DetectDefaultBranchSafe is the exported wrapper around detectDefaultBranchSafe.
+// It returns the repo's base branch ("main" or "master") by checking which
+// origin ref exists, matching the base used by EnsurePR's preconditions.
+func DetectDefaultBranchSafe(cwd string) string {
+	return detectDefaultBranchSafe(cwd)
+}
+
 // resolveTaskPipeline determines the pipeline path based on hint and task size.
 // Returns (skipSpec, useIdeation).
 //
