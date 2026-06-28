@@ -225,14 +225,18 @@ func runCLI(args []string) int {
 	}
 
 	// Handle --issue: fetch GitHub issue and prepare initial prompt.
+	var issueNum int
+	var issueURL string
 	if *issue != "" {
-		prompt, title, err := fetchGitHubIssue(*issue, cwd)
+		prompt, title, num, iURL, err := fetchGitHubIssue(*issue, cwd)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render(err.Error()))
 			os.Exit(1)
 		}
 		initialPrompt = prompt
 		namingHint = title
+		issueNum = num
+		issueURL = iURL
 	}
 
 	if *gatewayFlag != "" {
@@ -257,7 +261,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath, *modelFlag, namingHint)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath, *modelFlag, namingHint, issueNum, issueURL)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)
@@ -1630,7 +1634,7 @@ func isInWorktree(dir string) bool {
 // If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
 // If branchName is set, reuses an existing worktree for that branch or creates one.
 // initialPrompt, when non-empty, is used to generate a human-readable session name via Haiku.
-func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, modelName string, namingHint string) (string, string, string, string, func(), error) {
+func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, modelName string, namingHint string, issueNum int, issueURL string) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -1654,7 +1658,14 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 		nameSource = initialPrompt
 	}
 	slug := generateSessionName(newLightweightProvider(), nameSource)
-	sessionID := time.Now().Format("20060102") + "-" + slug
+	// Inject issue number into the session ID for branch traceability.
+	// Result: "20260628-42-fix-auth-timeout" instead of "20260628-fix-auth-timeout".
+	// Only when --branch is not explicitly set (the user's branch name takes precedence).
+	datePart := time.Now().Format("20060102")
+	sessionID := datePart + "-" + slug
+	if issueNum > 0 && branchName == "" {
+		sessionID = fmt.Sprintf("%s-%d-%s", datePart, issueNum, slug)
+	}
 
 	// Check if we're in a git repo and should create a worktree
 	var worktreePath string
@@ -1796,6 +1807,9 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	}
 	if modelName != "" {
 		agentArgs = append(agentArgs, "--model", modelName)
+	}
+	if issueURL != "" {
+		agentArgs = append(agentArgs, "--issue-url", issueURL)
 	}
 	cmd := exec.Command(forgeBin, agentArgs...)
 

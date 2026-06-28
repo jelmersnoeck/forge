@@ -32,6 +32,7 @@ type PRAttributionOpts struct {
 	SessionID string // Forge session ID
 	CoAuthor  string // "Name <email>" or ""
 	Enabled   bool   // whether to prepend attribution block
+	IssueURL  string // when set, appends "Closes <url>" to PR body
 }
 
 // prGenerationTimeout is the per-attempt timeout for title/body generation.
@@ -128,6 +129,9 @@ func createNewPR(ctx context.Context, prov types.LLMProvider, cwd, specPath stri
 		log.Printf("[pr] generated description invalid (%v), using fallback", err)
 		_, body = fallbackPRContent(branch, commitLog, diffStat, specContent)
 	}
+
+	// Append "Closes <url>" for issue-driven sessions.
+	body = appendIssueClosesLine(body, attr.IssueURL)
 
 	// Prepend attribution block to the PR body.
 	body = attribution.PrependAttribution(body, attr.SessionID, attr.CoAuthor, attr.Enabled)
@@ -280,6 +284,15 @@ func fallbackPRContent(branch, commitLog, diffStat, specContent string) (string,
 	}
 
 	return title, body.String()
+}
+
+// appendIssueClosesLine appends a "Closes <url>" line to the PR body when
+// issueURL is non-empty. Uses the full URL for cross-repo compatibility.
+func appendIssueClosesLine(body, issueURL string) string {
+	if issueURL == "" {
+		return body
+	}
+	return body + "\n\nCloses " + issueURL
 }
 
 // branchToTitle converts a branch name to a PR title.

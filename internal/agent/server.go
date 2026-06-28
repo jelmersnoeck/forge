@@ -22,6 +22,7 @@ type Config struct {
 	Mode        string // "swe" (default), "spec", "code", "review"
 	SpecPath    string // path to spec file (for --spec flag)
 	Model       string // explicit model override (from --model flag)
+	IssueURL    string // GitHub issue URL for PR linking (from --issue)
 }
 
 // Start creates a Hub, starts the Worker in a background goroutine,
@@ -32,7 +33,7 @@ type Config struct {
 func Start(cfg Config) error {
 	hub := NewHub()
 
-	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir, cfg.Mode, cfg.SpecPath, cfg.Model)
+	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir, cfg.Mode, cfg.SpecPath, cfg.Model, cfg.IssueURL)
 	go worker.Run(context.Background())
 
 	mux := http.NewServeMux()
