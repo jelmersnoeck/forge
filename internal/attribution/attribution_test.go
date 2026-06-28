@@ -27,12 +27,14 @@ func TestPrependAttribution(t *testing.T) {
 			coAuthor:  "Forge <noreply+forge@siphoc.com>",
 			enabled:   true,
 			wantParts: []string{
-				"> 🤖 This PR was opened by a Forge session acting on behalf of @",
-				"> Session: `20260514-greendale`",
-				"> Co-authored by: Forge <noreply+forge@siphoc.com>",
-				"\n---\n\n",
+				"<!-- forge-attribution\n",
+				"session: 20260514-greendale\n",
+				"author: @",
+				"co-authored-by: Forge <noreply+forge@siphoc.com>\n",
+				"-->\n\n",
 				"Original PR body here.",
 			},
+			wantNot: []string{"> 🤖", "---"},
 		},
 		"enabled without coauthor": {
 			body:      "Some body.",
@@ -40,12 +42,13 @@ func TestPrependAttribution(t *testing.T) {
 			coAuthor:  "",
 			enabled:   true,
 			wantParts: []string{
-				"> 🤖 This PR was opened by a Forge session acting on behalf of @",
-				"> Session: `20260514-troy`",
-				"\n---\n\n",
+				"<!-- forge-attribution\n",
+				"session: 20260514-troy\n",
+				"author: @",
+				"-->\n\n",
 				"Some body.",
 			},
-			wantNot: []string{"Co-authored by:"},
+			wantNot: []string{"co-authored-by:"},
 		},
 		"disabled": {
 			body:      "Some body.",
@@ -53,7 +56,7 @@ func TestPrependAttribution(t *testing.T) {
 			coAuthor:  "Forge <noreply+forge@siphoc.com>",
 			enabled:   false,
 			wantParts: []string{"Some body."},
-			wantNot:   []string{"🤖"},
+			wantNot:   []string{"forge-attribution"},
 		},
 		"enabled with empty body": {
 			body:      "",
@@ -61,9 +64,10 @@ func TestPrependAttribution(t *testing.T) {
 			coAuthor:  "",
 			enabled:   true,
 			wantParts: []string{
-				"> 🤖 This PR was opened by a Forge session acting on behalf of @",
-				"> Session: `20260514-abed`",
-				"\n---\n\n",
+				"<!-- forge-attribution\n",
+				"session: 20260514-abed\n",
+				"author: @",
+				"-->\n\n",
 			},
 		},
 	}
@@ -114,7 +118,8 @@ func TestInstallCommitHook_backsUpExistingHook(t *testing.T) {
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
-	// Write a user hook
+	// Write a user hook (ensure hooks dir exists — git init may not create it)
+	r.NoError(os.MkdirAll(hooksDir, 0o755))
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho user hook"), 0o755))
 
 	r.NoError(InstallCommitHook(dir))
@@ -141,7 +146,8 @@ func TestInstallCommitHook_backupAlreadyExists(t *testing.T) {
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
-	// Write a user hook AND a pre-existing backup
+	// Write a user hook AND a pre-existing backup (ensure hooks dir exists)
+	r.NoError(os.MkdirAll(hooksDir, 0o755))
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho second hook"), 0o755))
 	r.NoError(os.WriteFile(backupPath, []byte("#!/bin/sh\necho original backup"), 0o755))
 
@@ -186,7 +192,8 @@ func TestRemoveCommitHook_restoresBackup(t *testing.T) {
 	hooksDir := filepath.Join(dir, ".git", "hooks")
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 
-	// Write user hook, install forge hook, then remove
+	// Write user hook, install forge hook, then remove (ensure hooks dir exists)
+	r.NoError(os.MkdirAll(hooksDir, 0o755))
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho user hook"), 0o755))
 	r.NoError(InstallCommitHook(dir))
 	r.NoError(RemoveCommitHook(dir))
@@ -383,6 +390,7 @@ func TestInstallCommitHook_backupAlreadyExists_forgeHookCurrent(t *testing.T) {
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
 	// Simulate: forge hook is current, backup already exists from first install.
+	r.NoError(os.MkdirAll(hooksDir, 0o755))
 	r.NoError(os.WriteFile(hookPath, []byte(hookScript), 0o755))
 	r.NoError(os.WriteFile(backupPath, []byte("#!/bin/sh\necho original user hook"), 0o755))
 
@@ -414,6 +422,7 @@ func TestInstallCommitHook_backupAlreadyExists_userHookCurrent(t *testing.T) {
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
 	// Simulate: user installed a new hook after our backup was already created.
+	r.NoError(os.MkdirAll(hooksDir, 0o755))
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho new user hook"), 0o755))
 	r.NoError(os.WriteFile(backupPath, []byte("#!/bin/sh\necho original user hook"), 0o755))
 

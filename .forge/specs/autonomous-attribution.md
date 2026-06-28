@@ -80,14 +80,15 @@ Persistent config (settable via `forge config set <key> <value>`):
 
 ### PR body prefix
 When `pr.attribution.enabled` is true, the deterministic PR-creation step
-prepends this block to the body it would otherwise produce:
+prepends an HTML comment block to the body. The comment is invisible to
+reviewers but machine-readable for auditing and tooling:
 
 ```
-> 🤖 This PR was opened by a Forge session acting on behalf of @<author>.
-> Session: `<session-id>`
-> Co-authored by: <commit.attribution.coAuthor>
-
----
+<!-- forge-attribution
+session: <session-id>
+author: @<author>
+co-authored-by: <commit.attribution.coAuthor>
+-->
 
 <original PR body>
 ```
@@ -199,6 +200,10 @@ func SetBashExtraEnv(envs []string)
 - **`commit.attribution.enabled = false`**: neither trailer is added. The
   master switch gates both. If a user wants only some trailers, they set
   config values accordingly (e.g. empty `generatedBy` suppresses that line).
+- **`.git/hooks` directory missing**: `git init` may not create
+  `.git/hooks/` when the user's `init.templateDir` is empty or missing.
+  `InstallCommitHook` creates it via `os.MkdirAll`; tests that write
+  hook files before calling `InstallCommitHook` must do likewise.
 
 ## Tests
 - `internal/attribution/attribution_test.go`: tests for PrependAttribution
