@@ -4,7 +4,6 @@
 //
 //	forge              interactive CLI (default)
 //	forge agent        run agent server
-//	forge gateway      run session gateway
 //	forge stats        show cost analytics
 //	forge mcp          manage MCP server connections
 package main
@@ -25,11 +24,6 @@ func main() {
 	switch cmd {
 	case "agent":
 		os.Exit(runAgent(os.Args[1:]))
-	case "gateway":
-		os.Exit(runGateway(os.Args[1:]))
-	case "server":
-		fmt.Fprintln(os.Stderr, "note: 'forge server' is deprecated, use 'forge gateway'")
-		os.Exit(runGateway(os.Args[1:]))
 	case "stats":
 		os.Exit(runStats(os.Args[1:]))
 	case "mcp":
@@ -56,7 +50,6 @@ func printHelp() {
 Usage:
   forge              interactive CLI (default)
   forge agent        run agent server
-  forge gateway      run session gateway
   forge stats        show cost analytics
   forge mcp          manage MCP server connections
   forge config       manage persistent configuration

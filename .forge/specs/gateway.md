@@ -1,6 +1,6 @@
 ---
 id: gateway
-status: implemented
+status: superseded
 ---
 # Forge gateway: session management proxy for persistent agents
 

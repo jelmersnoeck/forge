@@ -8,8 +8,7 @@ Forge uses a unified binary architecture with subcommands:
 
 - **Unified Binary** (`cmd/forge/`) — single entry point with subcommands:
   - **`forge` (default)** — interactive REPL (spawns agent subprocess)
-  - **`forge agent`** — run agent server (spawned by interactive mode or server mode)
-  - **`forge gateway`** — session management gateway (spawns agents via `forge agent`)
+  - **`forge agent`** — run agent server (spawned by interactive mode)
   - **`forge stats`** — cost analytics (daily/monthly/session breakdowns)
 
 ## Cost Tracking
@@ -104,7 +103,7 @@ User-level config: `~/.forge/` (settings, rules, skills).
 
 ```
 cmd/
-  forge/           unified binary (cli + gateway + agent + stats)
+  forge/           unified binary (cli + agent + stats)
 internal/
   mcp/             MCP client (Go) — connects to remote MCP servers
     client.go      JSON-RPC over Streamable HTTP transport
@@ -127,10 +126,6 @@ internal/
     loop/          ConversationLoop (agentic loop)
     cost/          cost calculation + SQLite tracker
     task/          background task & sub-agent management
-  server/
-    bus/           in-memory event pub/sub + session metadata
-    backend/       Backend interface + tmux implementation
-    gateway/       HTTP routes, SSE streaming, agent message forwarding
 ```
 
 Go module: `github.com/jelmersnoeck/forge`
@@ -141,11 +136,6 @@ Go module: `github.com/jelmersnoeck/forge`
 just build              # build unified forge binary
 just build-all          # build all binaries
 just dev                # build + run interactive CLI
-just dev-gateway         # build + run gateway (foreground)
-just dev-gateway-daemon  # build + run gateway daemon
-just stop-gateway        # stop daemon gateway
-just tail-gateway        # tail daemon gateway logs
-just gateway-status      # show daemon status (PID, alive/dead, log path)
 just test               # go test ./...
 just vet                # go vet ./...
 just clean              # remove binaries
@@ -172,22 +162,6 @@ This ensures each Forge session has its own isolated workspace, preventing confl
 
 Use `--skip-worktree` to disable this behavior and run directly in your current directory.
 
-### Gateway mode (persistent sessions)
-```bash
-cp .env.example .env        # set ANTHROPIC_API_KEY
-just dev-gateway             # local dev foreground (reads .env, builds agent first)
-just dev-gateway-daemon      # local dev daemon mode
-
-# In another terminal
-forge --gateway http://localhost:3000
-forge --gateway http://localhost:3000 --resume <session-id>
-
-# Manual daemon control:
-forge gateway -daemon                           # default: /tmp/forge/sessions/forge.{pid,log}
-forge gateway -daemon -pid-file /path/to/file   # custom paths
-kill $(cat /tmp/forge/sessions/forge.pid)      # stop
-```
-
 ### Cost analytics
 ```bash
 forge stats                    # current month
@@ -207,15 +181,6 @@ forge stats --sessions         # per-session breakdown
 6. Agent runs ConversationLoop, executes tools, talks to Anthropic
 7. On CLI exit, agent subprocess is terminated (ephemeral session)
 
-### Gateway Mode (persistent)
-1. CLI sends HTTP requests to the gateway (`--gateway` flag)
-2. Gateway creates sessions and manages metadata via an in-memory bus
-3. On first message, gateway spawns agent in tmux: `forge agent --port X`
-4. Gateway forwards messages to the agent's HTTP API
-5. Gateway relays agent SSE events back to CLI subscribers via the bus
-6. Agent runs ConversationLoop, executes tools, talks to Anthropic
-7. Sessions persist as JSONL for resume
-
 ## Key files
 
 - `internal/agent/server.go` — agent HTTP server (health, messages, events)
@@ -228,10 +193,6 @@ forge stats --sessions         # per-session breakdown
 - `internal/runtime/task/manager.go` — background task & sub-agent manager
 - `internal/tools/registry.go` — tool registry + NewDefaultRegistry()
 - `internal/tools/*.go` — tool implementations (Read, Write, Edit, Bash, Grep, Glob, WebSearch, Reflect, TaskCreate, TaskGet, TaskList, TaskStop, TaskOutput, Agent, AgentGet, AgentList, AgentStop, UseMCPTool)
-- `internal/server/backend/backend.go` — Backend interface
-- `internal/server/backend/tmux.go` — tmux backend implementation
-- `internal/server/bus/bus.go` — in-memory event pub/sub + session metadata
-- `internal/server/gateway/gateway.go` — HTTP routes, SSE streaming, agent proxy
 - `internal/types/types.go` — shared contracts
 - `internal/types/task.go` — task & sub-agent types
 
@@ -263,20 +224,11 @@ Forge includes a built-in learning mechanism for capturing actionable gotchas:
 
 ## API endpoints
 
-### Gateway — gateway mode only
-
-```
-POST   /sessions                      create session (accepts metadata)
-GET    /sessions/{sessionId}          get session info
-POST   /sessions/{sessionId}/messages send message (forwards to agent)
-GET    /sessions/{sessionId}/events   SSE stream of OutboundEvents (relayed from agent)
-```
-
-### Agent (per-session) — both modes
+### Agent (per-session)
 
 ```
 GET    /health                        health check
-POST   /messages                      receive message (from CLI or gateway)
+POST   /messages                      receive message (from CLI)
 GET    /events                        SSE stream of OutboundEvents
 POST   /model                         switch model mid-session
 GET    /models                        list available models from all providers
@@ -289,13 +241,10 @@ POST   /interrupt                     interrupt current work
 - Table-driven: `tests := map[string]struct{...}`, loop var `tc`
 - All tests use real filesystem (`t.TempDir()`), real exec — no mocks
 - Grep tests require `rg` (ripgrep) on PATH
-- Backend integration tests require `tmux` on PATH and a built `forge-agent` binary
 
 ## Environment variables
 
-- `ANTHROPIC_API_KEY` — required by the agent (not the server)
-- `GATEWAY_PORT` — gateway listen port (default: 3000)
-- `GATEWAY_HOST` — gateway listen host (default: 0.0.0.0)
+- `ANTHROPIC_API_KEY` — required by the agent
 - `WORKSPACE_DIR` — default working directory (default: /tmp/forge/workspace)
 - `SESSIONS_DIR` — JSONL session storage (default: /tmp/forge/sessions)
 - `FORGE_BIN` — path to forge binary (default: forge)
@@ -308,13 +257,9 @@ POST   /interrupt                     interrupt current work
 - `~/.forge/settings.json` may contain model aliases like `opus[1m]` that the
   Anthropic API doesn't understand. Agent filters these — only values
   starting with `claude-` are passed through.
-- Gateway loads `.env` from project root at startup (custom loader in
-  `cmd/forge/gateway.go`). Explicit env vars take precedence.
 - Anthropic API requires `tool_result` blocks immediately after `tool_use` in
   the message history. The ConversationLoop persists these to session JSONL so
   resume reconstructs valid history.
-- The gateway spawns agents using the unified `forge agent` subcommand. The
-  binary path can be customized via `FORGE_BIN` env var.
 - When referencing `httptest.Server.URL` inside its own handler closure, the
   variable isn't assigned yet — assign the handler after creating the server,
   or use a pointer indirection
@@ -351,13 +296,6 @@ POST   /interrupt                     interrupt current work
 - Claude CLI `--output-format stream-json` emits NDJSON with top-level types:
   `system`, `stream_event`, `assistant`, `result`. Tool use is internal to the
   CLI and not surfaced separately
-- The forge gateway daemon mode is broken: `daemonize()` calls `exec.Command(exe)`
-  with no subcommand args, so the child runs `runCLI` instead of `runGateway`.
-  Fix: pass `os.Args[1:]` to the child command
-- TmuxBackend has a stale agent address problem: when an agent crashes, the
-  `agents` map still holds the dead host:port. The SSE relay goroutine cleans up
-  its own `relays` map but doesn't invalidate the backend's agent entry
-
 ## Test data
 
 Use TV show Community references for fake data (Troy Barnes, Greendale
@@ -375,5 +313,4 @@ Community College, etc.).
 - Go, standard library where possible
 - `internal/` for all packages (no public API yet)
 - Platform-agnostic API: `source` is a free-form string, `metadata` is opaque
-- Adapters are external HTTP clients — the gateway has no platform-specific code
 - Configuration in `.forge/` directory (fallback: `.claude/` for backward compat)
