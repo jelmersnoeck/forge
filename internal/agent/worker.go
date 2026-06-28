@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,16 @@ type Worker struct {
 	mode        string // "swe" (default), "spec", "code", "review"
 	specPath    string // spec file path for --spec flag
 	ghAvailable bool   // cached exec.LookPath("gh") result
+	// prCheckPending is a per-worker backpressure flag for PR health checks.
+	// Set to true by enqueuePRCheck (monitor goroutine) when a synthetic
+	// pr_check_internal message is pushed into the hub, and cleared by
+	// handlePRCheck (worker loop) after the check completes. This prevents
+	// unbounded queue growth when the worker is busy processing a long turn.
+	//
+	// Thread-safety: accessed exclusively via atomic methods (CompareAndSwap,
+	// Store, Load). The monitor goroutine and worker loop may race on it —
+	// the atomic ensures visibility without a mutex.
+	prCheckPending atomic.Bool
 }
 
 // NewWorker creates a new Worker.
@@ -126,6 +137,9 @@ func (w *Worker) Run(ctx context.Context) {
 	var investigateHistoryID string
 	investigateActive := false
 
+	// PR monitor terminal state: once a PR is merged/closed, stop checking.
+	prTerminal := false
+
 	var historyID string
 	for {
 		msg, ok := w.hub.PullMessage(ctx)
@@ -133,6 +147,16 @@ func (w *Worker) Run(ctx context.Context) {
 			log.Printf("[agent:%s] worker stopped", w.sessionID)
 			return
 		}
+
+		// Internal PR health check — runs inline, serialized with all
+		// other message processing. No concurrent git access possible.
+		if msg.Source == prCheckSource {
+			if !prTerminal {
+				prTerminal = w.handlePRCheck(ctx)
+			}
+			continue
+		}
+
 		if len(msg.Text) > 100 {
 			log.Printf("[agent:%s] <- %s...", w.sessionID, msg.Text[:100])
 		} else {

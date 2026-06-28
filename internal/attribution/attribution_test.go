@@ -9,6 +9,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// ensureHooksDir creates .git/hooks inside dir if it doesn't already exist.
+// Idempotent — safe to call even when git init has already created the directory.
+func ensureHooksDir(t *testing.T, dir string) string {
+	t.Helper()
+	hooksDir := filepath.Join(dir, ".git", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("create hooks dir: %v", err)
+	}
+	return hooksDir
+}
+
 func TestPrependAttribution(t *testing.T) {
 	// Override resolveAuthor for deterministic tests by setting git env vars.
 	// PrependAttribution calls resolveAuthor() internally, which reads git config.
@@ -114,12 +125,11 @@ func TestInstallCommitHook_backsUpExistingHook(t *testing.T) {
 	cmd := exec.Command("git", "init", dir)
 	r.NoError(cmd.Run())
 
-	hooksDir := filepath.Join(dir, ".git", "hooks")
+	hooksDir := ensureHooksDir(t, dir)
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
-	// Write a user hook (ensure hooks dir exists — git init may not create it)
-	r.NoError(os.MkdirAll(hooksDir, 0o755))
+	// Write a pre-existing user hook to verify it gets backed up.
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho user hook"), 0o755))
 
 	r.NoError(InstallCommitHook(dir))
@@ -142,12 +152,11 @@ func TestInstallCommitHook_backupAlreadyExists(t *testing.T) {
 	cmd := exec.Command("git", "init", dir)
 	r.NoError(cmd.Run())
 
-	hooksDir := filepath.Join(dir, ".git", "hooks")
+	hooksDir := ensureHooksDir(t, dir)
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
-	// Write a user hook AND a pre-existing backup (ensure hooks dir exists)
-	r.NoError(os.MkdirAll(hooksDir, 0o755))
+	// Write a user hook AND a pre-existing backup
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho second hook"), 0o755))
 	r.NoError(os.WriteFile(backupPath, []byte("#!/bin/sh\necho original backup"), 0o755))
 
@@ -189,11 +198,10 @@ func TestRemoveCommitHook_restoresBackup(t *testing.T) {
 	cmd := exec.Command("git", "init", dir)
 	r.NoError(cmd.Run())
 
-	hooksDir := filepath.Join(dir, ".git", "hooks")
+	hooksDir := ensureHooksDir(t, dir)
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 
-	// Write user hook, install forge hook, then remove (ensure hooks dir exists)
-	r.NoError(os.MkdirAll(hooksDir, 0o755))
+	// Write user hook, install forge hook, then remove
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho user hook"), 0o755))
 	r.NoError(InstallCommitHook(dir))
 	r.NoError(RemoveCommitHook(dir))
@@ -385,12 +393,11 @@ func TestInstallCommitHook_backupAlreadyExists_forgeHookCurrent(t *testing.T) {
 	cmd := exec.Command("git", "init", dir)
 	r.NoError(cmd.Run())
 
-	hooksDir := filepath.Join(dir, ".git", "hooks")
+	hooksDir := ensureHooksDir(t, dir)
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
 	// Simulate: forge hook is current, backup already exists from first install.
-	r.NoError(os.MkdirAll(hooksDir, 0o755))
 	r.NoError(os.WriteFile(hookPath, []byte(hookScript), 0o755))
 	r.NoError(os.WriteFile(backupPath, []byte("#!/bin/sh\necho original user hook"), 0o755))
 
@@ -417,12 +424,11 @@ func TestInstallCommitHook_backupAlreadyExists_userHookCurrent(t *testing.T) {
 	cmd := exec.Command("git", "init", dir)
 	r.NoError(cmd.Run())
 
-	hooksDir := filepath.Join(dir, ".git", "hooks")
+	hooksDir := ensureHooksDir(t, dir)
 	hookPath := filepath.Join(hooksDir, "prepare-commit-msg")
 	backupPath := filepath.Join(hooksDir, "prepare-commit-msg.forge-backup")
 
 	// Simulate: user installed a new hook after our backup was already created.
-	r.NoError(os.MkdirAll(hooksDir, 0o755))
 	r.NoError(os.WriteFile(hookPath, []byte("#!/bin/sh\necho new user hook"), 0o755))
 	r.NoError(os.WriteFile(backupPath, []byte("#!/bin/sh\necho original user hook"), 0o755))
 
