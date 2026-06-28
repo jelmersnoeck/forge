@@ -78,11 +78,11 @@ func (h *Hub) PullMessage(ctx context.Context) (types.InboundMessage, bool) {
 
 	ch := make(chan types.InboundMessage, 1)
 	h.waiters = append(h.waiters, ch)
-	waiterReady := h.onWaiterReady
+	cb := h.onWaiterReady
 	h.qmu.Unlock()
 
-	if waiterReady != nil {
-		waiterReady()
+	if cb != nil {
+		cb()
 	}
 
 	select {
@@ -131,11 +131,11 @@ func (h *Hub) Subscribe() (<-chan types.OutboundEvent, func()) {
 
 	h.smu.Lock()
 	h.subs = append(h.subs, ch)
-	onSubscribe := h.onSubscribe
+	cb := h.onSubscribe
 	h.smu.Unlock()
 
-	if onSubscribe != nil {
-		onSubscribe()
+	if cb != nil {
+		cb()
 	}
 
 	unsub := func() {
