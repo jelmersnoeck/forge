@@ -348,3 +348,87 @@ func TestHub_PullMessage_ContextCancelled_MessageNotLost(t *testing.T) {
 		r.Equal("Don't lose me", msg.Text)
 	}
 }
+
+func TestHub_PeekSteeringMessage(t *testing.T) {
+	tests := map[string]struct {
+		setup    func(*Hub)
+		wantText string
+		wantOK   bool
+	}{
+		"empty queue": {
+			setup:  func(h *Hub) {},
+			wantOK: false,
+		},
+		"returns first queued message without consuming": {
+			setup: func(h *Hub) {
+				h.PushMessage(types.InboundMessage{Text: "Streets ahead", User: "Pierce Hawthorne"})
+				h.PushMessage(types.InboundMessage{Text: "Pop Pop!", User: "Magnitude"})
+			},
+			wantText: "Streets ahead",
+			wantOK:   true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			hub := NewHub()
+			tc.setup(hub)
+
+			text, ok := hub.PeekSteeringMessage()
+			r.Equal(tc.wantOK, ok)
+			r.Equal(tc.wantText, text)
+
+			// Peek again — should return the same result (non-destructive).
+			if tc.wantOK {
+				text2, ok2 := hub.PeekSteeringMessage()
+				r.True(ok2)
+				r.Equal(tc.wantText, text2)
+			}
+		})
+	}
+}
+
+func TestHub_ConsumeSteeringMessage(t *testing.T) {
+	tests := map[string]struct {
+		setup    func(*Hub)
+		wantText string
+		wantOK   bool
+	}{
+		"empty queue": {
+			setup:  func(h *Hub) {},
+			wantOK: false,
+		},
+		"consumes first message": {
+			setup: func(h *Hub) {
+				h.PushMessage(types.InboundMessage{Text: "Cool cool cool", User: "Abed Nadir"})
+				h.PushMessage(types.InboundMessage{Text: "That's the opposite of Batman", User: "Abed Nadir"})
+			},
+			wantText: "Cool cool cool",
+			wantOK:   true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			hub := NewHub()
+			tc.setup(hub)
+
+			text, ok := hub.ConsumeSteeringMessage()
+			r.Equal(tc.wantOK, ok)
+			r.Equal(tc.wantText, text)
+
+			// Second consume should get the next message or empty.
+			if tc.wantOK {
+				text2, ok2 := hub.ConsumeSteeringMessage()
+				r.True(ok2)
+				r.Equal("That's the opposite of Batman", text2)
+
+				// Third consume — queue exhausted.
+				_, ok3 := hub.ConsumeSteeringMessage()
+				r.False(ok3)
+			}
+		})
+	}
+}

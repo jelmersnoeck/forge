@@ -21,20 +21,21 @@ import (
 
 // Loop drives the agentic conversation with the LLM.
 type Loop struct {
-	provider     types.LLMProvider
-	tools        *tools.Registry
-	context      types.ContextBundle
-	cwd          string
-	sessionStore *session.Store
-	sessionID    string
-	model        string
-	maxTurns     int
-	historyID    string
-	history      []types.ChatMessage
-	audit        types.AuditLogger
-	budget       tokens.Budget
-	retryPolicy  retry.Policy
-	onComplete   func(history []types.ChatMessage)
+	provider       types.LLMProvider
+	tools          *tools.Registry
+	context        types.ContextBundle
+	cwd            string
+	sessionStore   *session.Store
+	sessionID      string
+	model          string
+	maxTurns       int
+	historyID      string
+	history        []types.ChatMessage
+	audit          types.AuditLogger
+	budget         tokens.Budget
+	retryPolicy    retry.Policy
+	onComplete     func(history []types.ChatMessage)
+	steeringSource func() (string, bool)
 
 	// Cumulative token usage across all turns in this session.
 	totalUsage types.TokenUsage
@@ -69,6 +70,11 @@ type Options struct {
 	// caller can build a session summary. Only called when at least one
 	// tool was executed during the turn.
 	OnComplete func(history []types.ChatMessage)
+
+	// SteeringSource is called between LLM iterations to check for
+	// mid-turn user messages. Returns (text, true) if a steering message
+	// is available. Non-blocking — must not wait for input.
+	SteeringSource func() (string, bool)
 }
 
 // New creates a new conversation loop.
@@ -89,21 +95,22 @@ func New(opts Options) *Loop {
 	}
 
 	return &Loop{
-		provider:     opts.Provider,
-		tools:        opts.Tools,
-		context:      opts.Context,
-		cwd:          opts.CWD,
-		sessionStore: opts.SessionStore,
-		sessionID:    opts.SessionID,
-		model:        opts.Model,
-		maxTurns:     opts.MaxTurns,
-		historyID:    uuid.New().String(),
-		history:      []types.ChatMessage{},
-		audit:        audit,
-		budget:       budget,
-		retryPolicy:  retryPolicy,
-		readState:    types.NewReadState(),
-		onComplete:   opts.OnComplete,
+		provider:       opts.Provider,
+		tools:          opts.Tools,
+		context:        opts.Context,
+		cwd:            opts.CWD,
+		sessionStore:   opts.SessionStore,
+		sessionID:      opts.SessionID,
+		model:          opts.Model,
+		maxTurns:       opts.MaxTurns,
+		historyID:      uuid.New().String(),
+		history:        []types.ChatMessage{},
+		audit:          audit,
+		budget:         budget,
+		retryPolicy:    retryPolicy,
+		readState:      types.NewReadState(),
+		onComplete:     opts.OnComplete,
+		steeringSource: opts.SteeringSource,
 	}
 }
 
@@ -190,6 +197,40 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		// Bail early if context is cancelled (e.g., user interrupted).
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		// ── Steering checkpoint ──────────────────────────────
+		// Consume any user messages queued mid-turn and inject them into
+		// history before the next LLM call. This lets the user steer the
+		// agent without interrupting — the LLM sees the new context on
+		// its next iteration.
+		if l.steeringSource != nil {
+			for {
+				text, ok := l.steeringSource()
+				if !ok {
+					break
+				}
+
+				steerMsg := types.ChatMessage{
+					Role: "user",
+					Content: []types.ChatContentBlock{
+						{Type: "text", Text: text},
+					},
+				}
+				l.history = append(l.history, steerMsg)
+
+				if err := l.persistMessage("user", steerMsg); err != nil {
+					return fmt.Errorf("persist steering message: %w", err)
+				}
+
+				emit(types.OutboundEvent{
+					ID:        uuid.New().String(),
+					SessionID: l.sessionID,
+					Type:      "steering",
+					Content:   text,
+					Timestamp: time.Now().Unix(),
+				})
+			}
 		}
 
 		if l.maxTurns > 0 && turnCount > l.maxTurns {
