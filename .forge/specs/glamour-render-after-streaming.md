@@ -1,6 +1,6 @@
 ---
 id: glamour-render-after-streaming
-status: draft
+status: implemented
 ---
 # Render markdown through glamour only after streaming completes
 
@@ -13,12 +13,15 @@ streaming and glamour rendering happens only once a text block is complete
 
 ## Context
 - `cmd/forge/cli.go` — the entire rendering pipeline lives here:
-  - `model.textBuf` — accumulates streamed text tokens
-  - `model.flushText()` — renders textBuf through glamour, appends to output
-  - `tickMsg` handler — calls `flushText()` every 100ms during streaming
+  - `model.textBuf` — partial-line buffer for raw text between ticks
+  - `model.streamBuf` — accumulated full text block for glamour rendering
+  - `model.streamStartIdx` — where raw streaming lines begin in m.output
+  - `model.flushRawText()` — appends raw text lines during streaming ticks
+  - `model.flushText()` — glamour-renders full block, replaces raw lines
   - `handleEvent()` — calls `flushText()` on non-text events (tool_use, done, etc.)
   - `View()` — renders `m.output` lines into terminal
   - `model.renderer` — `*glamour.TermRenderer`
+- `cmd/forge/streaming_test.go` — tests for flushRawText, flushText, streaming flows
 
 ## Behavior
 1. During streaming (`text` events arriving), raw text is appended directly to
@@ -48,16 +51,20 @@ streaming and glamour rendering happens only once a text block is complete
 ## Interfaces
 ```go
 // model gains:
-//   streamStartIdx int    // index in m.output where raw streaming lines began
+//   textBuf        string // partial-line buffer (incomplete line held between ticks)
 //   streamBuf      string // full accumulated text for glamour rendering at flush
+//   streamStartIdx int    // index in m.output where raw streaming lines began (-1 = inactive)
 //
-// flushText() changes:
-//   1. Replaces m.output[streamStartIdx:] with glamour-rendered lines
-//   2. Resets streamStartIdx and streamBuf
+// flushRawText() — called on tick:
+//   Splits textBuf by newlines, appends complete lines to m.output,
+//   keeps partial last line in textBuf.
 //
-// tickMsg handler changes:
-//   Instead of calling flushText(), appends raw text lines to m.output
-//   and tracks them for later replacement.
+// flushText() — called on non-text events:
+//   1. Appends any remaining partial line from textBuf
+//   2. Renders full streamBuf through glamour
+//   3. Replaces m.output[streamStartIdx:] with rendered lines
+//   4. Adjusts scrollOffset for viewport stability
+//   5. Resets streamStartIdx, streamBuf, textBuf
 ```
 
 ## Edge Cases
