@@ -56,7 +56,7 @@ func (w *Worker) Run(ctx context.Context) {
 	prov := selectProvider()
 	// Close persistent CLI process on worker shutdown.
 	if closer, ok := prov.(interface{ Close() error }); ok {
-		defer closer.Close()
+		defer func() { _ = closer.Close() }()
 	}
 	registry := tools.NewDefaultRegistry()
 	loader := rctx.NewLoader(w.cwd)

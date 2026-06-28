@@ -111,12 +111,12 @@ type cliEventDelta struct {
 
 // cliInputMessage is the JSON envelope sent to stdin.
 type cliInputMessage struct {
-	Type    string          `json:"type"`    // "user"
+	Type    string          `json:"type"` // "user"
 	Message cliInputPayload `json:"message"`
 }
 
 type cliInputPayload struct {
-	Role    string `json:"role"`    // "user"
+	Role    string `json:"role"` // "user"
 	Content string `json:"content"`
 }
 

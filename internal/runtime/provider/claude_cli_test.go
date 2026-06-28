@@ -358,7 +358,7 @@ func TestPersistentProcessChat(t *testing.T) {
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	p := NewClaudeCLI()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	req := types.ChatRequest{
 		Model: "opus",
@@ -393,7 +393,7 @@ func TestPersistentProcessReuse(t *testing.T) {
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	p := NewClaudeCLI()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	req := types.ChatRequest{
 		Model: "opus",
@@ -439,7 +439,7 @@ func TestPersistentProcessRespawn(t *testing.T) {
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	p := NewClaudeCLI()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	req := types.ChatRequest{
 		Model: "opus",
@@ -502,7 +502,7 @@ done
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	p := NewClaudeCLI()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// First call with opus — starts persistent process.
 	ch, err := p.Chat(context.Background(), types.ChatRequest{
@@ -607,7 +607,7 @@ done
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	p := NewClaudeCLI()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ch, err := p.Chat(context.Background(), types.ChatRequest{
 		Model: "opus",
@@ -733,7 +733,7 @@ done
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	p := NewClaudeCLI()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
