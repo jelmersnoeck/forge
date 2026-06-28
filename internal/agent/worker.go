@@ -350,6 +350,17 @@ func (w *Worker) Run(ctx context.Context) {
 		// Extract pipeline hint from message metadata.
 		pipelineHint := extractPipelineHint(msg.Metadata)
 
+		// Issue-driven sessions go straight to spec creation. The first
+		// message is the fetched issue, which is unambiguously a task —
+		// force the spec pipeline (no ideation, no spec-skip) and bypass
+		// intent classification so the agent never drifts into Q&A,
+		// investigation, or review.
+		forceTask := false
+		if w.issueURL != "" && state.Phase == PhaseIdle {
+			pipelineHint = "spec"
+			forceTask = true
+		}
+
 		// Create a cancellable context for this turn so interrupts
 		// can abort the loop without killing the entire worker.
 		turnCtx, turnCancel := context.WithCancel(ctx)
@@ -364,7 +375,7 @@ func (w *Worker) Run(ctx context.Context) {
 		// Decide execution path based on phase state.
 		switch {
 		case state.ShouldRunOrchestrator(w.mode) && w.mode == "swe":
-			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, state.QAHistoryID, state.InvestigateHistoryID, pipelineHint)
+			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, state.QAHistoryID, state.InvestigateHistoryID, pipelineHint, forceTask)
 			runErr = err
 			state = state.Transition(result)
 			log.Printf("[agent:%s] state: phase=%d, historyID=%s, qaHistoryID=%s, investigateHistoryID=%s",
@@ -446,6 +457,7 @@ func (w *Worker) runOrchestrator(
 	qaHistoryID string,
 	investigateHistoryID string,
 	pipelineHint string,
+	forceTask bool,
 ) (phase.OrchestratorResult, error) {
 	orch := phase.NewSWEOrchestrator()
 
@@ -464,6 +476,7 @@ func (w *Worker) runOrchestrator(
 		QAHistoryID:          qaHistoryID,
 		InvestigateHistoryID: investigateHistoryID,
 		PipelineHint:         pipelineHint,
+		ForceTask:            forceTask,
 		SteeringSource:       w.hub.ConsumeSteeringMessage,
 	}
 
@@ -952,7 +965,7 @@ func extractPipelineHint(metadata map[string]any) string {
 		return "auto"
 	}
 	switch hint {
-	case "ideate", "code", "auto":
+	case "ideate", "spec", "code", "auto":
 		return hint
 	default:
 		log.Printf("[worker] unknown pipeline_hint %q — defaulting to auto", hint)

@@ -46,9 +46,16 @@ type OrchestratorOpts struct {
 	InvestigateHistoryID string
 
 	// PipelineHint controls whether to run the ideation pipeline.
-	// Values: "ideate" (always ideate), "code" (skip to coding),
-	// "auto" or "" (use complexity gate to decide).
+	// Values: "ideate" (always ideate), "spec" (always single-agent spec
+	// creator), "code" (skip to coding), "auto" or "" (use complexity gate
+	// to decide).
 	PipelineHint string
+
+	// ForceTask, when true, skips intent classification entirely and treats
+	// the prompt as an actionable task. Used for issue-driven sessions where
+	// the intent is unambiguous (the user asked to implement an issue), so
+	// the agent must not drift into Q&A, investigation, or review.
+	ForceTask bool
 
 	// TransitionHistoryID carries the conversation history from a prior
 	// Q&A or investigation phase into the next phase (spec-creator or
@@ -138,7 +145,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 			Timestamp: time.Now().UnixMilli(),
 		})
 
-		if classification.Intent == IntentQuestion {
+		if classification.Intent == IntentQuestion && !opts.ForceTask {
 			historyID, err := o.runQA(ctx, opts)
 			return OrchestratorResult{
 				Intent:      IntentQuestion,
@@ -146,7 +153,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 			}, err
 		}
 
-		if classification.Intent == IntentInvestigate {
+		if classification.Intent == IntentInvestigate && !opts.ForceTask {
 			historyID, err := o.runInvestigate(ctx, opts)
 			return OrchestratorResult{
 				Intent:               IntentInvestigate,
@@ -154,7 +161,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 			}, err
 		}
 
-		if classification.Intent == IntentReview {
+		if classification.Intent == IntentReview && !opts.ForceTask {
 			o.emitPhaseStart(opts, "review")
 			_, err := o.runReviewer(ctx, opts, opts.SpecPath)
 			return OrchestratorResult{Intent: IntentReview}, err
@@ -930,6 +937,7 @@ func detectDefaultBranchSafe(cwd string) string {
 // Returns (skipSpec, useIdeation).
 //
 //	hint "ideate" → always ideate (skipSpec=false, useIdeation=true)
+//	hint "spec"   → always single-agent spec creator (skipSpec=false, useIdeation=false)
 //	hint "code"   → skip spec entirely (skipSpec=true, useIdeation=false)
 //	otherwise, size decides:
 //	  small    → skip spec (skipSpec=true, useIdeation=false)
@@ -939,6 +947,8 @@ func resolveTaskPipeline(hint string, size TaskSize) (skipSpec bool, useIdeation
 	switch hint {
 	case "ideate":
 		return false, true
+	case "spec":
+		return false, false
 	case "code":
 		return true, false
 	}
