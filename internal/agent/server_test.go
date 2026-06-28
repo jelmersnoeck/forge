@@ -110,6 +110,11 @@ func TestPostMessages_Defaults(t *testing.T) {
 
 func TestSSE_EventDelivery(t *testing.T) {
 	hub := NewHub()
+
+	// Signal when the SSE handler subscribes to the hub.
+	subscribed := make(chan struct{}, 1)
+	hub.OnSubscribe(func() { subscribed <- struct{}{} })
+
 	srv := newTestServer(hub, "paintball-101")
 	defer srv.Close()
 
@@ -120,17 +125,16 @@ func TestSSE_EventDelivery(t *testing.T) {
 
 	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
-	// Publish an event after a short delay to let the SSE handler subscribe.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		hub.PublishEvent(types.OutboundEvent{
-			ID:        "evt-paintball",
-			SessionID: "paintball-101",
-			Type:      "text",
-			Content:   "Welcome to the thunderdome.",
-			Timestamp: time.Now().UnixMilli(),
-		})
-	}()
+	// Wait for handler to subscribe before publishing.
+	<-subscribed
+
+	hub.PublishEvent(types.OutboundEvent{
+		ID:        "evt-paintball",
+		SessionID: "paintball-101",
+		Type:      "text",
+		Content:   "Welcome to the thunderdome.",
+		Timestamp: time.Now().UnixMilli(),
+	})
 
 	// Read the SSE event from the response body.
 	scanner := bufio.NewScanner(resp.Body)

@@ -11,6 +11,14 @@ import (
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
+// waitForWaiter sets up an OnWaiterReady hook and returns a function that
+// blocks until a waiter is registered. Call before launching the goroutine.
+func waitForWaiter(hub *Hub) func() {
+	ready := make(chan struct{}, 1)
+	hub.OnWaiterReady(func() { ready <- struct{}{} })
+	return func() { <-ready }
+}
+
 func TestHub_PushPull_Buffered(t *testing.T) {
 	// Push first, then pull — message should be buffered.
 	hub := NewHub()
@@ -29,6 +37,7 @@ func TestHub_PushPull_Buffered(t *testing.T) {
 func TestHub_PullPush_Waiter(t *testing.T) {
 	// Pull blocks until push delivers via waiter channel.
 	hub := NewHub()
+	awaitReady := waitForWaiter(hub)
 
 	var got types.InboundMessage
 	done := make(chan struct{})
@@ -37,8 +46,7 @@ func TestHub_PullPush_Waiter(t *testing.T) {
 		close(done)
 	}()
 
-	// Give the goroutine time to register as a waiter.
-	time.Sleep(20 * time.Millisecond)
+	awaitReady()
 
 	hub.PushMessage(types.InboundMessage{
 		Text: "Troy and Abed in the morning!",
@@ -135,6 +143,10 @@ func TestHub_ConcurrentPushPull(t *testing.T) {
 	var wg sync.WaitGroup
 	received := make([]types.InboundMessage, n)
 
+	// Track waiter registrations with a buffered channel.
+	allReady := make(chan struct{}, n)
+	hub.OnWaiterReady(func() { allReady <- struct{}{} })
+
 	// Start n pullers
 	wg.Add(n)
 	for i := 0; i < n; i++ {
@@ -144,8 +156,10 @@ func TestHub_ConcurrentPushPull(t *testing.T) {
 		}(i)
 	}
 
-	// Give pullers time to register as waiters.
-	time.Sleep(30 * time.Millisecond)
+	// Wait for all pullers to register as waiters.
+	for i := 0; i < n; i++ {
+		<-allReady
+	}
 
 	// Push n messages
 	for i := 0; i < n; i++ {
@@ -247,12 +261,11 @@ func TestHub_PushMessage_ReturnsImmediateStatus(t *testing.T) {
 	}{
 		"returns true when worker is idle (waiter exists)": {
 			setup: func(hub *Hub) {
-				// Start a goroutine that will wait for a message
+				awaitReady := waitForWaiter(hub)
 				go func() {
 					hub.PullMessage(context.Background())
 				}()
-				// Give it time to register as a waiter
-				time.Sleep(20 * time.Millisecond)
+				awaitReady()
 			},
 			expected: true,
 		},
@@ -284,6 +297,7 @@ func TestHub_PullMessage_ContextCancelled(t *testing.T) {
 	hub := NewHub()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	awaitReady := waitForWaiter(hub)
 
 	done := make(chan struct{})
 	var msg types.InboundMessage
@@ -293,8 +307,7 @@ func TestHub_PullMessage_ContextCancelled(t *testing.T) {
 		msg, ok = hub.PullMessage(ctx)
 	}()
 
-	// Give the goroutine time to register as a waiter.
-	time.Sleep(20 * time.Millisecond)
+	awaitReady()
 
 	// Cancel the context — PullMessage should return.
 	cancel()
@@ -320,6 +333,7 @@ func TestHub_PullMessage_ContextCancelled_MessageNotLost(t *testing.T) {
 	hub := NewHub()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	awaitReady := waitForWaiter(hub)
 
 	done := make(chan struct{})
 	go func() {
@@ -327,7 +341,7 @@ func TestHub_PullMessage_ContextCancelled_MessageNotLost(t *testing.T) {
 		hub.PullMessage(ctx)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	awaitReady()
 
 	// Push a message and immediately cancel — message may arrive before or after.
 	hub.PushMessage(types.InboundMessage{Text: "Don't lose me", User: "Britta"})

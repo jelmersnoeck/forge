@@ -3,8 +3,200 @@ package agent
 import (
 	"testing"
 
+	"github.com/jelmersnoeck/forge/internal/agent/phase"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWorkerStateTransition(t *testing.T) {
+	tests := map[string]struct {
+		initial WorkerState
+		result  phase.OrchestratorResult
+		want    WorkerState
+	}{
+		"idle to QA": {
+			initial: WorkerState{Phase: PhaseIdle},
+			result: phase.OrchestratorResult{
+				Intent:      phase.IntentQuestion,
+				QAHistoryID: "qa-123",
+			},
+			want: WorkerState{
+				Phase:       PhaseQA,
+				QAHistoryID: "qa-123",
+			},
+		},
+		"idle to investigate": {
+			initial: WorkerState{Phase: PhaseIdle},
+			result: phase.OrchestratorResult{
+				Intent:               phase.IntentInvestigate,
+				InvestigateHistoryID: "inv-456",
+			},
+			want: WorkerState{
+				Phase:                PhaseInvestigate,
+				InvestigateHistoryID: "inv-456",
+			},
+		},
+		"idle to task": {
+			initial: WorkerState{Phase: PhaseIdle},
+			result: phase.OrchestratorResult{
+				Intent:         phase.IntentTask,
+				CoderHistoryID: "coder-789",
+			},
+			want: WorkerState{
+				Phase:     PhaseOrchestrator,
+				HistoryID: "coder-789",
+			},
+		},
+		"idle to review": {
+			initial: WorkerState{Phase: PhaseIdle},
+			result:  phase.OrchestratorResult{Intent: phase.IntentReview},
+			want:    WorkerState{Phase: PhaseOrchestrator},
+		},
+		"QA to task clears QA state": {
+			initial: WorkerState{
+				Phase:       PhaseQA,
+				QAHistoryID: "qa-old",
+			},
+			result: phase.OrchestratorResult{
+				Intent:         phase.IntentTask,
+				CoderHistoryID: "coder-new",
+			},
+			want: WorkerState{
+				Phase:     PhaseOrchestrator,
+				HistoryID: "coder-new",
+			},
+		},
+		"investigate to task clears investigate state": {
+			initial: WorkerState{
+				Phase:                PhaseInvestigate,
+				InvestigateHistoryID: "inv-old",
+			},
+			result: phase.OrchestratorResult{
+				Intent:         phase.IntentTask,
+				CoderHistoryID: "coder-new",
+			},
+			want: WorkerState{
+				Phase:     PhaseOrchestrator,
+				HistoryID: "coder-new",
+			},
+		},
+		"QA to investigate clears QA": {
+			initial: WorkerState{
+				Phase:       PhaseQA,
+				QAHistoryID: "qa-old",
+			},
+			result: phase.OrchestratorResult{
+				Intent:               phase.IntentInvestigate,
+				InvestigateHistoryID: "inv-new",
+			},
+			want: WorkerState{
+				Phase:                PhaseInvestigate,
+				InvestigateHistoryID: "inv-new",
+			},
+		},
+		"investigate to QA clears investigate": {
+			initial: WorkerState{
+				Phase:                PhaseInvestigate,
+				InvestigateHistoryID: "inv-old",
+			},
+			result: phase.OrchestratorResult{
+				Intent:      phase.IntentQuestion,
+				QAHistoryID: "qa-new",
+			},
+			want: WorkerState{
+				Phase:       PhaseQA,
+				QAHistoryID: "qa-new",
+			},
+		},
+		"task with empty coder history preserves existing": {
+			initial: WorkerState{
+				Phase:     PhaseOrchestrator,
+				HistoryID: "existing",
+			},
+			result: phase.OrchestratorResult{
+				Intent:         phase.IntentTask,
+				CoderHistoryID: "",
+			},
+			want: WorkerState{
+				Phase:     PhaseOrchestrator,
+				HistoryID: "existing",
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got := tc.initial.Transition(tc.result)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestWorkerStateShouldRunOrchestrator(t *testing.T) {
+	tests := map[string]struct {
+		state WorkerState
+		mode  string
+		want  bool
+	}{
+		"idle with swe mode": {
+			state: WorkerState{Phase: PhaseIdle},
+			mode:  "swe",
+			want:  true,
+		},
+		"idle with spec mode": {
+			state: WorkerState{Phase: PhaseIdle},
+			mode:  "spec",
+			want:  true,
+		},
+		"idle with code mode": {
+			state: WorkerState{Phase: PhaseIdle},
+			mode:  "code",
+			want:  true,
+		},
+		"idle with empty mode": {
+			state: WorkerState{Phase: PhaseIdle},
+			mode:  "",
+			want:  false,
+		},
+		"QA with swe mode": {
+			state: WorkerState{Phase: PhaseQA},
+			mode:  "swe",
+			want:  true,
+		},
+		"QA with non-swe mode": {
+			state: WorkerState{Phase: PhaseQA},
+			mode:  "spec",
+			want:  false,
+		},
+		"investigate with swe mode": {
+			state: WorkerState{Phase: PhaseInvestigate},
+			mode:  "swe",
+			want:  true,
+		},
+		"investigate with non-swe mode": {
+			state: WorkerState{Phase: PhaseInvestigate},
+			mode:  "code",
+			want:  false,
+		},
+		"orchestrator done": {
+			state: WorkerState{Phase: PhaseOrchestrator},
+			mode:  "swe",
+			want:  false,
+		},
+		"phase done": {
+			state: WorkerState{Phase: PhaseDone},
+			mode:  "spec",
+			want:  false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, tc.state.ShouldRunOrchestrator(tc.mode))
+		})
+	}
+}
 
 func TestExtractPipelineHint(t *testing.T) {
 	tests := map[string]struct {
