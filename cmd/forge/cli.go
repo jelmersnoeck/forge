@@ -23,6 +23,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jelmersnoeck/forge/internal/config"
 	"github.com/jelmersnoeck/forge/internal/runtime/cost"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -110,6 +111,18 @@ type model struct {
 
 	// cursor blink cmd captured from ta.Focus() before model creation
 	cursorBlinkCmd tea.Cmd
+
+	// Model selector overlay (triggered by bare /model)
+	modelSelectorActive  bool          // selector overlay is showing
+	modelSelectorLoading bool          // still fetching the model list
+	modelSelectorItems   []modelChoice // selectable models
+	modelSelectorCursor  int           // highlighted index
+}
+
+// modelChoice is a single selectable entry in the /model selector overlay.
+type modelChoice struct {
+	id    string // value passed to set the model (alias or full ID)
+	label string // human-readable display label
 }
 
 type serverEvent types.OutboundEvent
@@ -421,7 +434,7 @@ func tick() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		if m.working || len(m.taskTrackers) > 0 {
+		if m.working || len(m.taskTrackers) > 0 || m.modelSelectorLoading {
 			m.spinnerFrame++
 		}
 		if m.textBuf != "" {
@@ -452,6 +465,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case modelsListMsg:
+		if m.modelSelectorActive {
+			m.modelSelectorLoading = false
+			m.modelSelectorItems = buildModelChoices(msg)
+			if m.modelSelectorCursor >= len(m.modelSelectorItems) {
+				m.modelSelectorCursor = 0
+			}
+			return m, nil
+		}
 		m.output = append(m.output, renderModelList(msg)...)
 		return m, nil
 
@@ -500,6 +521,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// Model selector overlay intercepts navigation keys before normal
+		// input handling. Picking an entry sets the model globally.
+		if m.modelSelectorActive {
+			switch msg.Type {
+			case tea.KeyUp:
+				if !m.modelSelectorLoading && m.modelSelectorCursor > 0 {
+					m.modelSelectorCursor--
+				}
+				return m, nil
+			case tea.KeyDown:
+				if !m.modelSelectorLoading && m.modelSelectorCursor < len(m.modelSelectorItems)-1 {
+					m.modelSelectorCursor++
+				}
+				return m, nil
+			case tea.KeyEsc:
+				m.modelSelectorActive = false
+				m.modelSelectorLoading = false
+				m.modelSelectorItems = nil
+				m.output = append(m.output, dimStyle.Render("Model selection cancelled"))
+				return m, nil
+			case tea.KeyEnter:
+				if m.modelSelectorLoading || len(m.modelSelectorItems) == 0 {
+					return m, nil
+				}
+				choice := m.modelSelectorItems[m.modelSelectorCursor]
+				m.modelSelectorActive = false
+				m.modelSelectorItems = nil
+				newM, cmd := m.applyModelSwitch(choice.id, true)
+				return newM, cmd
+			default:
+				// Swallow other keys while the selector is open.
+				return m, nil
+			}
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			// First exit attempt: send interrupt if agent is working
@@ -584,28 +639,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Check for /model command
 				if isModelCommand(text) {
 					arg := parseModelArg(text)
+					global := parseModelGlobal(text)
+					if global && arg == "" {
+						m.output = append(m.output, "")
+						m.output = append(m.output, errorStyle.Render("a model name is required"))
+						return m, nil
+					}
 					switch arg {
 					case "":
-						display := m.modelName
-						if display == "" {
-							display = "(not yet known)"
+						// Bare /model opens an interactive selector. Picking an entry
+						// sets the model globally (persists model.default).
+						if !m.interactiveMode {
+							display := m.modelName
+							if display == "" {
+								display = "(not yet known)"
+							}
+							m.output = append(m.output, "")
+							m.output = append(m.output, dimStyle.Render("Current model: "+display))
+							return m, nil
 						}
+						m.modelSelectorActive = true
+						m.modelSelectorLoading = true
+						m.modelSelectorItems = nil
+						m.modelSelectorCursor = 0
 						m.output = append(m.output, "")
-						m.output = append(m.output, dimStyle.Render("Current model: "+display))
-						return m, nil
+						m.output = append(m.output, dimStyle.Render("Fetching available models..."))
+						return m, m.fetchModelList()
 					case "list":
 						m.output = append(m.output, "")
 						m.output = append(m.output, dimStyle.Render("Fetching available models..."))
 						return m, m.fetchModelList()
 					default:
-						if !m.interactiveMode {
-							m.output = append(m.output, "")
-							m.output = append(m.output, errorStyle.Render("model switching is not supported in gateway mode"))
-							return m, nil
-						}
-						m.output = append(m.output, "")
-						m.output = append(m.output, dimStyle.Render("Switching model to "+arg+"..."))
-						return m, m.sendSetModel(arg)
+						newM, cmd := m.applyModelSwitch(arg, global)
+						return newM, cmd
 					}
 				}
 
@@ -891,6 +957,9 @@ func (m model) View() string {
 	}
 	if thinkingIndicator != "" {
 		parts = append(parts, thinkingIndicator)
+	}
+	if m.modelSelectorActive {
+		parts = append(parts, m.renderModelSelector())
 	}
 	if queueArea != "" {
 		parts = append(parts, queueArea)
@@ -1929,14 +1998,33 @@ func isModelCommand(text string) bool {
 	return trimmed == "/model" || strings.HasPrefix(trimmed, "/model ")
 }
 
-// parseModelArg extracts the model name from a /model command.
-// "/model sonnet" → "sonnet", "/model" → ""
+// parseModelArg extracts the model name from a /model command, stripping any
+// "--global" token.
+// "/model sonnet" → "sonnet", "/model sonnet --global" → "sonnet", "/model" → ""
 func parseModelArg(text string) string {
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "/model" {
-		return ""
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "/model"))
+	fields := strings.Fields(rest)
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f == "--global" {
+			continue
+		}
+		out = append(out, f)
 	}
-	return strings.TrimSpace(strings.TrimPrefix(trimmed, "/model"))
+	return strings.Join(out, " ")
+}
+
+// parseModelGlobal reports whether the "--global" flag is present in a /model
+// command. Position-agnostic: "/model opus --global" and "/model --global opus"
+// both report true.
+func parseModelGlobal(text string) bool {
+	for _, f := range strings.Fields(text) {
+		if f == "--global" {
+			return true
+		}
+	}
+	return false
 }
 
 // shortModelName strips the "claude-" prefix and date suffix for status bar display.
@@ -2023,6 +2111,81 @@ func shortModelName(name string) string {
 
 type modelSwitchedMsg string
 type modelsListMsg []types.ProviderModels
+
+// applyModelSwitch performs a session model switch and, when global is true,
+// persists model.default to ~/.forge/config.toml. A failed global write is
+// surfaced but the in-session switch still proceeds.
+func (m model) applyModelSwitch(arg string, global bool) (model, tea.Cmd) {
+	if !m.interactiveMode {
+		m.output = append(m.output, "")
+		m.output = append(m.output, errorStyle.Render("model switching is not supported in gateway mode"))
+		return m, nil
+	}
+	if global {
+		if err := config.SetValue("model.default", arg); err != nil {
+			m.output = append(m.output, "")
+			m.output = append(m.output, errorStyle.Render("failed to save model.default: "+err.Error()))
+		} else {
+			m.output = append(m.output, "")
+			m.output = append(m.output, dimStyle.Render("Saved model.default = "+arg+" to ~/.forge/config.toml"))
+		}
+	}
+	m.output = append(m.output, "")
+	m.output = append(m.output, dimStyle.Render("Switching model to "+arg+"..."))
+	return m, m.sendSetModel(arg)
+}
+
+// buildModelChoices flattens provider model lists into a single ordered list of
+// selectable entries for the /model selector overlay. Claude CLI aliases are
+// listed first (most common), then each provider's concrete model IDs.
+func buildModelChoices(providers []types.ProviderModels) []modelChoice {
+	var choices []modelChoice
+	for _, pm := range providers {
+		if pm.Error != "" {
+			continue
+		}
+		if pm.Provider == "Claude CLI" {
+			for _, pair := range modelAliasesForDisplay() {
+				choices = append(choices, modelChoice{
+					id:    pair[0],
+					label: fmt.Sprintf("%-10s → %s", pair[0], pair[1]),
+				})
+			}
+			continue
+		}
+		for _, e := range pm.Models {
+			label := e.ID
+			if e.DisplayName != "" {
+				label = fmt.Sprintf("%-30s %s", e.ID, e.DisplayName)
+			}
+			choices = append(choices, modelChoice{id: e.ID, label: label})
+		}
+	}
+	return choices
+}
+
+// renderModelSelector renders the interactive /model picker overlay.
+func (m model) renderModelSelector() string {
+	var lines []string
+	lines = append(lines, headerStyle.Render("Select a model")+dimStyle.Render("  (↑/↓ move · enter select · esc cancel)"))
+	switch {
+	case m.modelSelectorLoading:
+		lines = append(lines, dimStyle.Render("  "+m.spinner()+" loading models..."))
+	case len(m.modelSelectorItems) == 0:
+		lines = append(lines, dimStyle.Render("  no models available"))
+	default:
+		for i, item := range m.modelSelectorItems {
+			cursor := "  "
+			style := dimStyle
+			if i == m.modelSelectorCursor {
+				cursor = "▸ "
+				style = headerStyle
+			}
+			lines = append(lines, cursor+style.Render(item.label))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 // sendSetModel sends a model change request to the agent.
 func (m model) sendSetModel(modelName string) tea.Cmd {

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
@@ -297,6 +299,10 @@ func TestResolveModelAlias(t *testing.T) {
 }
 
 func TestWorkerResolveModel(t *testing.T) {
+	// Isolate from any real ~/.forge/config.toml so the user-config tier is
+	// empty unless a case writes one.
+	t.Setenv("HOME", t.TempDir())
+
 	tests := map[string]struct {
 		override      string
 		settingsModel string
@@ -336,6 +342,34 @@ func TestWorkerResolveModel(t *testing.T) {
 			r.Equal(tc.want, w.resolveModel(tc.settingsModel, tc.isClaudeCLI, "claude-opus-4-6"))
 		})
 	}
+}
+
+func TestWorkerResolveModel_userConfigTier(t *testing.T) {
+	r := require.New(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfgDir := filepath.Join(home, ".forge")
+	r.NoError(os.MkdirAll(cfgDir, 0o755))
+	r.NoError(os.WriteFile(filepath.Join(cfgDir, "config.toml"),
+		[]byte("[model]\ndefault = \"sonnet\"\n"), 0o644))
+
+	w := &Worker{}
+
+	// No override, no settings → user-config default (alias expanded for Anthropic).
+	r.Equal("claude-sonnet-4-20250514", w.resolveModel("", false, "claude-opus-4-6"))
+
+	// Session override beats user config.
+	w.SetModel("opus")
+	r.Equal("claude-opus-4-6", w.resolveModel("", false, "claude-opus-4-6"))
+
+	// Project settings (claude- prefix) beats user config.
+	w2 := &Worker{}
+	r.Equal("claude-haiku-4", w2.resolveModel("claude-haiku-4", false, "claude-opus-4-6"))
+
+	// Claude CLI passes the user-config alias through unchanged.
+	w3 := &Worker{}
+	r.Equal("sonnet", w3.resolveModel("", true, "claude-opus-4-6"))
 }
 
 func TestWorkerSetModelConcurrent(t *testing.T) {

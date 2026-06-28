@@ -303,6 +303,44 @@ func TestSetValue_prAttributionEnabled(t *testing.T) {
 	r.Equal("true", got)
 }
 
+func TestSetValue_modelDefault(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	// Aliases and full IDs accepted verbatim — no allowlist.
+	r.NoError(setValueAt(path, "model.default", "opus"))
+	got, err := getValueAt(path, "model.default")
+	r.NoError(err)
+	r.Equal("opus", got)
+
+	r.NoError(setValueAt(path, "model.default", "claude-sonnet-4-20250514"))
+	got, err = getValueAt(path, "model.default")
+	r.NoError(err)
+	r.Equal("claude-sonnet-4-20250514", got)
+
+	// Even a nonexistent model is accepted at set time (API is source of truth).
+	r.NoError(setValueAt(path, "model.default", "claude-opus-4-8"))
+}
+
+func TestSetValue_modelDefault_emptyRejected(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	err := setValueAt(path, "model.default", "")
+	r.Error(err)
+}
+
+func TestListValues_includesModelDefault(t *testing.T) {
+	r := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	r.NoError(setValueAt(path, "model.default", "sonnet"))
+
+	values, err := listValuesAt(path)
+	r.NoError(err)
+	r.Equal("sonnet", values["model.default"])
+}
+
 func TestLoadUserConfig_attributionDefaults(t *testing.T) {
 	r := require.New(t)
 	path := filepath.Join(t.TempDir(), "config.toml")

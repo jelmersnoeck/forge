@@ -17,6 +17,7 @@ import (
 // UserConfig represents ~/.forge/config.toml — the user's persistent preferences.
 type UserConfig struct {
 	Provider ProviderConfig   `toml:"provider"`
+	Model    ModelConfig      `toml:"model"`
 	Commit   CommitUserConfig `toml:"commit"`
 	PR       PRUserConfig     `toml:"pr"`
 }
@@ -69,12 +70,18 @@ type ProviderConfig struct {
 	Default string `toml:"default"` // "anthropic", "claude-cli", "openai"
 }
 
+// ModelConfig holds the default model preference.
+type ModelConfig struct {
+	Default string `toml:"default"` // model ID or alias, e.g. "opus" / "claude-sonnet-4-20250514"
+}
+
 // validProviders lists the accepted values for provider.default.
 var validProviders = []string{"anthropic", "claude-cli", "openai"}
 
 // validKeys maps dotted config keys to descriptions.
 var validKeys = map[string]string{
 	"provider.default":               "default LLM provider (anthropic, claude-cli, openai)",
+	"model.default":                  "default LLM model (id or alias, e.g. opus, sonnet)",
 	"commit.attribution.coAuthor":    "co-author trailer value (\"Name <email>\"), default: Forge <noreply+forge@siphoc.com>",
 	"commit.attribution.enabled":     "enable commit attribution trailers (true/false, default: true)",
 	"commit.attribution.generatedBy": "Generated-by prefix (default: forge)",
@@ -181,6 +188,8 @@ func setValueAt(path, key, value string) error {
 	switch key {
 	case "provider.default":
 		cfg.Provider.Default = value
+	case "model.default":
+		cfg.Model.Default = value
 	case "commit.attribution.coAuthor":
 		cfg.Commit.Attribution.CoAuthor = value
 	case "commit.attribution.enabled":
@@ -220,6 +229,8 @@ func getValueAt(path, key string) (string, error) {
 	switch key {
 	case "provider.default":
 		return cfg.Provider.Default, nil
+	case "model.default":
+		return cfg.Model.Default, nil
 	case "commit.attribution.coAuthor":
 		return cfg.Commit.Attribution.CoAuthor, nil
 	case "commit.attribution.enabled":
@@ -262,6 +273,7 @@ func listValuesAt(path string) (map[string]string, error) {
 
 	result := map[string]string{
 		"provider.default":               cfg.Provider.Default,
+		"model.default":                  cfg.Model.Default,
 		"commit.attribution.coAuthor":    cfg.Commit.Attribution.CoAuthor,
 		"commit.attribution.generatedBy": cfg.Commit.Attribution.GeneratedBy,
 	}
@@ -299,6 +311,13 @@ func validateValue(key, value string) error {
 			}
 		}
 		return fmt.Errorf("invalid provider %q; valid options: %s", value, strings.Join(validProviders, ", "))
+
+	case "model.default":
+		// No allowlist — models change frequently, the API is the source of
+		// truth. Reject only empty values.
+		if value == "" {
+			return fmt.Errorf("model.default must not be empty")
+		}
 
 	case "commit.attribution.coAuthor":
 		return validateCoAuthor(value)
