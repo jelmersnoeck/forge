@@ -76,7 +76,9 @@ type model struct {
 	width           int
 	height          int
 	renderer        *glamour.TermRenderer
-	textBuf         string
+	textBuf         string // not-yet-displayed raw text (partial line buffer between ticks)
+	streamBuf       string // full accumulated text block for glamour rendering at flush
+	streamStartIdx  int    // index in m.output where raw streaming lines began (-1 = inactive)
 	err             error
 	scrollOffset    int  // how many lines scrolled up from bottom
 	autoScroll      bool // auto-scroll to bottom on new content
@@ -320,6 +322,7 @@ func runCLI(args []string) int {
 		output:          []string{},
 		queue:           []string{},
 		renderer:        renderer,
+		streamStartIdx:  -1,   // no active stream
 		autoScroll:      true, // start with auto-scroll enabled
 		costTracker:     costTracker,
 		worktreePath:    worktreePath,
@@ -421,7 +424,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinnerFrame++
 		}
 		if m.textBuf != "" {
-			m.flushText()
+			m.flushRawText()
 		}
 		return m, tick()
 
@@ -671,7 +674,7 @@ func (m model) getOutputHeight() int {
 		queueHeight = len(m.queue) + 2 // header + messages + separator
 	}
 	thinkingHeight := 0
-	if m.toolProgress != "" || m.thinking || (m.working && m.textBuf == "") {
+	if m.toolProgress != "" || m.thinking || (m.working && m.streamBuf == "") {
 		thinkingHeight = 1 // thinking/progress/working indicator
 	}
 	trackerHeight := m.taskTrackerHeight()
@@ -735,7 +738,7 @@ func (m model) View() string {
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " " + m.toolProgress)
 	case m.thinking:
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
-	case m.working && m.textBuf == "":
+	case m.working && m.streamBuf == "":
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " working...")
 	}
 
@@ -882,6 +885,11 @@ func (m *model) handleEvent(event types.OutboundEvent) {
 		m.modelName = event.Content
 
 	case "text":
+		// Mark where raw streaming lines begin in output (first text event per block).
+		if m.streamStartIdx == -1 {
+			m.streamStartIdx = len(m.output)
+		}
+		m.streamBuf += event.Content
 		m.textBuf += event.Content
 
 	case "tool_use":
@@ -1274,9 +1282,42 @@ func (m model) renderTaskTrackers() string {
 
 	return strings.Join(lines, "\n")
 }
-func (m *model) flushText() {
+
+// flushRawText appends new raw text lines to output during streaming.
+// Holds incomplete lines (no trailing newline) in textBuf for the next tick.
+func (m *model) flushRawText() {
 	text := m.textBuf
-	m.textBuf = ""
+	if text == "" {
+		return
+	}
+
+	// Split into lines; keep partial last line in textBuf
+	lines := strings.Split(text, "\n")
+	if len(lines) > 0 {
+		// Last element is either "" (text ended with \n) or a partial line
+		m.textBuf = lines[len(lines)-1]
+		lines = lines[:len(lines)-1]
+	}
+
+	m.output = append(m.output, lines...)
+}
+
+// flushText renders the entire accumulated text block through glamour,
+// replacing the raw streaming lines in m.output with the rendered result.
+func (m *model) flushText() {
+	// Flush any remaining partial line first
+	if m.textBuf != "" {
+		m.output = append(m.output, m.textBuf)
+		m.textBuf = ""
+	}
+
+	text := m.streamBuf
+	startIdx := m.streamStartIdx
+
+	// Reset streaming state
+	m.streamBuf = ""
+	m.streamStartIdx = -1
+
 	if text == "" {
 		return
 	}
@@ -1287,14 +1328,30 @@ func (m *model) flushText() {
 	}
 
 	rendered, err := m.renderer.Render(text)
-	if err != nil {
-		m.output = append(m.output, text)
+	if err != nil || startIdx < 0 {
+		// Glamour failed or no stream start recorded — raw lines are already
+		// in output from flushRawText, so just leave them.
 		return
 	}
 
-	// Split into lines and add to output
-	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-	m.output = append(m.output, lines...)
+	// Replace raw streaming lines with glamour-rendered result.
+	renderedLines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+
+	// Calculate line count change for scroll offset adjustment.
+	rawLineCount := len(m.output) - startIdx
+	newLineCount := len(renderedLines)
+
+	// Replace: keep output[:startIdx], append rendered lines
+	m.output = append(m.output[:startIdx], renderedLines...)
+
+	// Adjust scroll offset so viewport stays stable if user scrolled up.
+	if m.scrollOffset > 0 {
+		delta := newLineCount - rawLineCount
+		m.scrollOffset += delta
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+	}
 }
 
 func (m model) sendMessage(text string) tea.Cmd {
