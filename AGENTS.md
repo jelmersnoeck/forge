@@ -313,6 +313,48 @@ POST   /interrupt                     interrupt current work
   resume reconstructs valid history.
 - The gateway spawns agents using the unified `forge agent` subcommand. The
   binary path can be customized via `FORGE_BIN` env var.
+- When referencing `httptest.Server.URL` inside its own handler closure, the
+  variable isn't assigned yet — assign the handler after creating the server,
+  or use a pointer indirection
+- Race condition pattern: when a Stop function sets status to 'killed' but a
+  goroutine's deferred completion handler overwrites it to 'failed', check
+  `IsTerminal` before overwriting
+- DuckDuckGo Instant Answer API is a knowledge graph, not a search engine —
+  returns HTTP 202 for bot-detected requests and empty results for real queries
+- The Anthropic SDK (v1.27.1+) supports `web_search_20250305` and
+  `web_search_20260209` server tools — use the `20260209` variant
+- For server-side tools, prefer the sub-call pattern (client tool wrapping a
+  server tool) over injecting server tools into the main conversation loop —
+  keeps history clean, allows cheaper models
+- Check Claude Code's source at `~/Projects/claude-code/` when implementing
+  features that interact with external APIs — they likely solved it already
+- MCP tool namespacing as `mcp__server__tool` prevents collisions with built-in
+  tools
+- Sub-agents share the parent's ContextBundle and LLM provider unchanged — keep
+  this in mind for isolation and rate-limiting concerns
+- The task manager uses package-level `SetTaskManager` — not ideal, but changing
+  to ToolContext injection is a larger refactor
+- `exec.CommandContext` in Go only sends SIGKILL to the direct child process —
+  grandchildren survive as orphans. Use `cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}`
+  + `cmd.Cancel` to kill the entire process group via `syscall.Kill(-pgid, SIGKILL)`
+- `cmd.Run()`/`cmd.Wait()` can block indefinitely if child processes hold
+  stdout/stderr pipes open. `cmd.WaitDelay` (Go 1.20+) provides a backstop
+  timeout for pipe cleanup
+- Go's `cmd.Cancel` and `cmd.WaitDelay` (Go 1.20+) are the modern way to handle
+  process tree cleanup — prefer over manual goroutine-based `cmd.Process.Kill()`
+- Setting `cmd.Stderr` to a `strings.Builder`/`bytes.Buffer` creates a data race:
+  `exec.Cmd` starts an internal goroutine doing `io.Copy` to the writer, racing
+  with any read of the buffer. Use `cmd.StderrPipe()` + drain goroutine with a
+  done channel to synchronize access
+- Claude CLI `--output-format stream-json` emits NDJSON with top-level types:
+  `system`, `stream_event`, `assistant`, `result`. Tool use is internal to the
+  CLI and not surfaced separately
+- The forge gateway daemon mode is broken: `daemonize()` calls `exec.Command(exe)`
+  with no subcommand args, so the child runs `runCLI` instead of `runGateway`.
+  Fix: pass `os.Args[1:]` to the child command
+- TmuxBackend has a stale agent address problem: when an agent crashes, the
+  `agents` map still holds the dead host:port. The SSE relay goroutine cleans up
+  its own `relays` map but doesn't invalidate the backend's agent entry
 
 ## Test data
 
@@ -333,17 +375,3 @@ Community College, etc.).
 - Platform-agnostic API: `source` is a free-form string, `metadata` is opaque
 - Adapters are external HTTP clients — the gateway has no platform-specific code
 - Configuration in `.forge/` directory (fallback: `.claude/` for backward compat)
-
-# Agent Learnings
-
-Actionable gotchas discovered during development sessions.
-
-- When referencing `httptest.Server.URL` inside its own handler closure, the variable isn't assigned yet — assign the handler after creating the server, or use a pointer indirection
-- Race condition pattern: when a Stop function sets status to 'killed' but a goroutine's deferred completion handler overwrites it to 'failed', check `IsTerminal` before overwriting
-- DuckDuckGo Instant Answer API is a knowledge graph, not a search engine — returns HTTP 202 for bot-detected requests and empty results for real queries
-- The Anthropic SDK (v1.27.1+) supports `web_search_20250305` and `web_search_20260209` server tools — use the `20260209` variant
-- For server-side tools, prefer the sub-call pattern (client tool wrapping a server tool) over injecting server tools into the main conversation loop — keeps history clean, allows cheaper models
-- Check Claude Code's source at `~/Projects/claude-code/` when implementing features that interact with external APIs — they likely solved it already
-- MCP tool namespacing as `mcp__server__tool` prevents collisions with built-in tools
-- Sub-agents share the parent's ContextBundle and LLM provider unchanged — keep this in mind for isolation and rate-limiting concerns
-- The task manager uses package-level `SetTaskManager` — not ideal, but changing to ToolContext injection is a larger refactor
