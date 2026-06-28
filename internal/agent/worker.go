@@ -28,13 +28,13 @@ import (
 // Worker runs the conversation loop for a single session, pulling messages
 // from the Hub and streaming events back through it.
 type Worker struct {
-	hub            *Hub
-	sessionID      string
-	cwd            string
-	sessionsDir    string
-	mode           string // "swe" (default), "spec", "code", "review"
-	specPath       string // spec file path for --spec flag
-	ghAvailable    bool   // cached exec.LookPath("gh") result
+	hub         *Hub
+	sessionID   string
+	cwd         string
+	sessionsDir string
+	mode        string // "swe" (default), "spec", "code", "review"
+	specPath    string // spec file path for --spec flag
+	ghAvailable bool   // cached exec.LookPath("gh") result
 	// prCheckPending is a per-worker backpressure flag for PR health checks.
 	// Set to true by enqueuePRCheck (monitor goroutine) when a synthetic
 	// pr_check_internal message is pushed into the hub, and cleared by
