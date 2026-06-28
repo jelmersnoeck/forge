@@ -144,6 +144,25 @@ func buildRequest(req types.ChatRequest) (anthropic.MessageNewParams, error) {
 	return params, nil
 }
 
+// ListModels queries the Anthropic API for available models and returns them
+// as ModelEntry values with ID and DisplayName.
+func (p *AnthropicProvider) ListModels(ctx context.Context) ([]types.ModelEntry, error) {
+	pager := p.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{})
+
+	var entries []types.ModelEntry
+	for pager.Next() {
+		info := pager.Current()
+		entries = append(entries, types.ModelEntry{
+			ID:          info.ID,
+			DisplayName: info.DisplayName,
+		})
+	}
+	if err := pager.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 // Chat creates a streaming messages request and returns a channel of deltas.
 func (p *AnthropicProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	streamParams, err := buildRequest(req)

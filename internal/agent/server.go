@@ -40,6 +40,7 @@ func Start(cfg Config) error {
 	mux.HandleFunc("POST /messages", handleMessages(hub, cfg.SessionID))
 	mux.HandleFunc("POST /review", handleReview(hub, cfg.SessionID))
 	mux.HandleFunc("POST /model", handleSetModel(worker, hub))
+	mux.HandleFunc("GET /models", handleListModels(worker))
 	mux.HandleFunc("POST /interrupt", handleInterrupt(hub))
 	mux.HandleFunc("GET /events", handleSSE(hub))
 
@@ -156,6 +157,17 @@ func handleSetModel(worker *Worker, hub *Hub) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"model": body.Model})
+	}
+}
+
+func handleListModels(worker *Worker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		models := worker.ListModels(r.Context())
+		if models == nil {
+			models = []types.ProviderModels{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(models)
 	}
 }
 

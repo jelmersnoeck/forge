@@ -278,6 +278,8 @@ GET    /sessions/{sessionId}/events   SSE stream of OutboundEvents (relayed from
 GET    /health                        health check
 POST   /messages                      receive message (from CLI or gateway)
 GET    /events                        SSE stream of OutboundEvents
+POST   /model                         switch model mid-session
+GET    /models                        list available models from all providers
 POST   /interrupt                     interrupt current work
 ```
 

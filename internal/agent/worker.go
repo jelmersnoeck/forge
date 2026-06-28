@@ -49,6 +49,11 @@ type Worker struct {
 
 	modelMu       sync.RWMutex
 	modelOverride string // explicit model from --model flag or /model command
+
+	// providers holds all available LLM providers keyed by display name.
+	// Populated during Run() for model listing. Not set during tests unless
+	// explicitly injected.
+	providers map[string]types.LLMProvider
 }
 
 // NewWorker creates a new Worker.
@@ -156,6 +161,48 @@ func (s WorkerState) ShouldRunOrchestrator(mode string) bool {
 	}
 }
 
+// ListModels queries each available provider for its model catalog.
+// Each provider gets a 5s timeout. Errors are captured per-provider, not fatal.
+func (w *Worker) ListModels(ctx context.Context) []types.ProviderModels {
+	if len(w.providers) == 0 {
+		return nil
+	}
+
+	// Deterministic ordering: Anthropic, OpenAI, Claude CLI
+	order := []string{"Anthropic", "OpenAI", "Claude CLI"}
+
+	var results []types.ProviderModels
+	for _, name := range order {
+		prov, ok := w.providers[name]
+		if !ok {
+			continue
+		}
+
+		pm := types.ProviderModels{Provider: name}
+
+		lister, ok := prov.(types.ModelLister)
+		if !ok {
+			// Provider doesn't support listing (e.g. Claude CLI)
+			results = append(results, pm)
+			continue
+		}
+
+		listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		models, err := lister.ListModels(listCtx)
+		cancel()
+
+		switch {
+		case err != nil:
+			pm.Error = err.Error()
+		default:
+			pm.Models = models
+		}
+		results = append(results, pm)
+	}
+
+	return results
+}
+
 // Run starts the worker message loop. It blocks until the context is cancelled.
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[agent:%s] worker started, cwd=%s", w.sessionID, w.cwd)
@@ -165,6 +212,9 @@ func (w *Worker) Run(ctx context.Context) {
 	if closer, ok := prov.(interface{ Close() error }); ok {
 		defer func() { _ = closer.Close() }()
 	}
+
+	// Populate available providers for model listing.
+	w.providers = collectProviders()
 	registry := tools.NewDefaultRegistry()
 	loader := rctx.NewLoader(w.cwd)
 	bundle, err := loader.Load([]string{"user", "project", "local"})
@@ -861,6 +911,24 @@ func providerFromName(name string) types.LLMProvider {
 		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
 		return provider.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
 	}
+}
+
+// collectProviders returns all available LLM providers keyed by display name.
+// Used for model listing — each provider that is configured gets an entry.
+func collectProviders() map[string]types.LLMProvider {
+	providers := make(map[string]types.LLMProvider)
+
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		providers["Anthropic"] = provider.NewAnthropic(key)
+	}
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		providers["OpenAI"] = provider.NewOpenAI(key)
+	}
+	if _, err := exec.LookPath("claude"); err == nil {
+		providers["Claude CLI"] = provider.NewClaudeCLI()
+	}
+
+	return providers
 }
 
 // extractPipelineHint reads the pipeline_hint from message metadata.

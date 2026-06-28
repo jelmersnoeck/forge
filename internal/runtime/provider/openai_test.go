@@ -688,3 +688,95 @@ func TestOpenAIErrorResponseNoBody(t *testing.T) {
 	// Falls back to generic message since body isn't valid JSON
 	r.True(strings.Contains(deltas[0].Text, "500"))
 }
+
+func TestOpenAIListModels(t *testing.T) {
+	tests := map[string]struct {
+		handler func(w http.ResponseWriter, r *http.Request)
+		check   func(r *require.Assertions, entries []types.ModelEntry, err error)
+	}{
+		"filters to chat-capable models": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": []map[string]string{
+						{"id": "gpt-4.1"},
+						{"id": "gpt-4.1-mini"},
+						{"id": "o1-preview"},
+						{"id": "o3-mini"},
+						{"id": "o4-mini"},
+						{"id": "text-embedding-ada-002"},
+						{"id": "whisper-1"},
+						{"id": "dall-e-3"},
+						{"id": "tts-1"},
+					},
+				})
+			},
+			check: func(r *require.Assertions, entries []types.ModelEntry, err error) {
+				r.NoError(err)
+				r.Len(entries, 5)
+				ids := make([]string, len(entries))
+				for i, e := range entries {
+					ids[i] = e.ID
+				}
+				r.Contains(ids, "gpt-4.1")
+				r.Contains(ids, "gpt-4.1-mini")
+				r.Contains(ids, "o1-preview")
+				r.Contains(ids, "o3-mini")
+				r.Contains(ids, "o4-mini")
+				// Should not contain non-chat models
+				r.NotContains(ids, "text-embedding-ada-002")
+				r.NotContains(ids, "whisper-1")
+			},
+		},
+		"API error returns error": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]string{
+						"message": "Invalid API key — Dean Pelton revoked your access",
+					},
+				})
+			},
+			check: func(r *require.Assertions, entries []types.ModelEntry, err error) {
+				r.Error(err)
+				r.Contains(err.Error(), "401")
+			},
+		},
+		"empty model list": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": []map[string]string{
+						{"id": "text-embedding-ada-002"},
+					},
+				})
+			},
+			check: func(r *require.Assertions, entries []types.ModelEntry, err error) {
+				r.NoError(err)
+				r.Empty(entries)
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			srv := httptest.NewServer(http.HandlerFunc(tc.handler))
+			defer srv.Close()
+
+			p := NewOpenAI("sk-greendale")
+			p.endpoint = srv.URL
+
+			entries, err := p.ListModels(context.Background())
+			tc.check(r, entries, err)
+		})
+	}
+}
+
+func TestOpenAIListModels_InterfaceCompliance(t *testing.T) {
+	r := require.New(t)
+	p := NewOpenAI("sk-test")
+	var _ types.ModelLister = p
+	r.NotNil(p)
+}

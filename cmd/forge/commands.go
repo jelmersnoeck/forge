@@ -10,7 +10,7 @@ type slashCommand struct {
 // slashCommands is the registry of all available slash commands.
 var slashCommands = []slashCommand{
 	{Name: "/review", Description: "Run multi-agent code review on current diff"},
-	{Name: "/model", Description: "Switch model (e.g. /model sonnet)"},
+	{Name: "/model", Description: "Switch model, show current, or list available (/model list)"},
 }
 
 // slashCommandNames returns just the command names for tab-completion.

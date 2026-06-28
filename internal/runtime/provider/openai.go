@@ -15,6 +15,7 @@ import (
 
 const openAIDefaultModel = "gpt-4.1"
 const openAIDefaultEndpoint = "https://api.openai.com/v1/chat/completions"
+const openAIModelsEndpoint = "https://api.openai.com/v1/models"
 
 // OpenAIProvider implements types.LLMProvider using the OpenAI Chat Completions
 // API with streaming SSE. Pure net/http — no SDK.
@@ -264,6 +265,72 @@ func toolResultToString(content []types.ToolResultContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ── Model Listing ───────────────────────────────────────────
+
+// oaiModelsResponse is the response from GET /v1/models.
+type oaiModelsResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// chatModelPrefixes defines the prefixes for chat-capable models.
+// Everything else (embeddings, whisper, dall-e, tts, etc.) is filtered out.
+var chatModelPrefixes = []string{"gpt-", "o1-", "o3-", "o4-"}
+
+// ListModels queries the OpenAI API for available models and returns only
+// chat-capable ones (gpt-*, o1-*, o3-*, o4-*).
+func (p *OpenAIProvider) ListModels(ctx context.Context) ([]types.ModelEntry, error) {
+	// Derive models endpoint from chat endpoint:
+	// "https://api.openai.com/v1/chat/completions" → "https://api.openai.com/v1/models"
+	modelsURL := openAIModelsEndpoint
+	if p.endpoint != openAIDefaultEndpoint {
+		// Custom endpoint — strip /chat/completions or just append /models to base
+		base := strings.TrimSuffix(p.endpoint, "/chat/completions")
+		base = strings.TrimSuffix(base, "/")
+		modelsURL = base + "/models"
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create models request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
+	}
+
+	var result oaiModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode models response: %w", err)
+	}
+
+	var entries []types.ModelEntry
+	for _, m := range result.Data {
+		if isChatModel(m.ID) {
+			entries = append(entries, types.ModelEntry{ID: m.ID})
+		}
+	}
+	return entries, nil
+}
+
+// isChatModel returns true if the model ID matches a known chat-capable prefix.
+func isChatModel(id string) bool {
+	for _, prefix := range chatModelPrefixes {
+		if strings.HasPrefix(id, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Streaming ───────────────────────────────────────────────
