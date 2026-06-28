@@ -33,6 +33,10 @@ type Hub struct {
 	// Review trigger
 	reviewCh chan string // base branch name (empty = auto-detect)
 	reviewMu sync.Mutex
+
+	// Test hooks — not safe for concurrent mutation, set before goroutines start.
+	onWaiterReady func() // called after a waiter is registered in PullMessage
+	onSubscribe   func() // called after a subscriber is added in Subscribe
 }
 
 // NewHub creates a new Hub.
@@ -74,7 +78,12 @@ func (h *Hub) PullMessage(ctx context.Context) (types.InboundMessage, bool) {
 
 	ch := make(chan types.InboundMessage, 1)
 	h.waiters = append(h.waiters, ch)
+	waiterReady := h.onWaiterReady
 	h.qmu.Unlock()
+
+	if waiterReady != nil {
+		waiterReady()
+	}
 
 	select {
 	case msg := <-ch:
@@ -122,7 +131,12 @@ func (h *Hub) Subscribe() (<-chan types.OutboundEvent, func()) {
 
 	h.smu.Lock()
 	h.subs = append(h.subs, ch)
+	onSubscribe := h.onSubscribe
 	h.smu.Unlock()
+
+	if onSubscribe != nil {
+		onSubscribe()
+	}
 
 	unsub := func() {
 		h.smu.Lock()
@@ -255,4 +269,16 @@ func (h *Hub) IsIdle() bool {
 	h.qmu.Lock()
 	defer h.qmu.Unlock()
 	return len(h.waiters) > 0
+}
+
+// OnWaiterReady registers a callback invoked after a waiter is added in PullMessage.
+// Test-only hook — not safe for concurrent calls (set before goroutines start).
+func (h *Hub) OnWaiterReady(fn func()) {
+	h.onWaiterReady = fn
+}
+
+// OnSubscribe registers a callback invoked after a subscriber is added in Subscribe.
+// Test-only hook — not safe for concurrent calls (set before goroutines start).
+func (h *Hub) OnSubscribe(fn func()) {
+	h.onSubscribe = fn
 }

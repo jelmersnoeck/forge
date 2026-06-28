@@ -80,6 +80,82 @@ func (w *Worker) ModelOverride() string {
 	return w.modelOverride
 }
 
+// WorkerPhase represents the current execution phase of the worker.
+//
+//	             ┌──────────┐
+//	             │  Idle    │  initial state
+//	             └────┬─────┘
+//	                  │ first message
+//	     ┌────────────┼────────────┐
+//	     ▼            ▼            ▼
+//	┌────────┐  ┌───────────┐  ┌──────┐
+//	│   QA   │  │Investigate│  │ Done │  (single-phase modes)
+//	└───┬────┘  └─────┬─────┘  └──────┘
+//	    │             │
+//	    │  task transition
+//	    ▼             ▼
+//	┌─────────────────────┐
+//	│   Orchestrator      │  orchestrator completed
+//	│   (coder history)   │
+//	└─────────────────────┘
+type WorkerPhase int
+
+const (
+	PhaseIdle         WorkerPhase = iota // orchestrator not yet run
+	PhaseQA                              // Q&A conversation active
+	PhaseInvestigate                     // investigation conversation active
+	PhaseOrchestrator                    // orchestrator completed, coder history available
+	PhaseDone                            // single-phase mode completed
+)
+
+// WorkerState encapsulates all phase-related variables for the worker loop.
+// All transitions go through Transition() — no ad-hoc boolean juggling.
+type WorkerState struct {
+	Phase                WorkerPhase
+	HistoryID            string // coder/plain loop history for Resume()
+	QAHistoryID          string // Q&A conversation history for Resume()
+	InvestigateHistoryID string // investigation conversation history for Resume()
+}
+
+// Transition applies an OrchestratorResult and returns the new state.
+// Pure function — no side effects, fully testable.
+func (s WorkerState) Transition(result phase.OrchestratorResult) WorkerState {
+	next := s
+	switch result.Intent {
+	case phase.IntentQuestion:
+		next.Phase = PhaseQA
+		next.QAHistoryID = result.QAHistoryID
+		next.InvestigateHistoryID = ""
+	case phase.IntentInvestigate:
+		next.Phase = PhaseInvestigate
+		next.InvestigateHistoryID = result.InvestigateHistoryID
+		next.QAHistoryID = ""
+	case phase.IntentReview:
+		next.Phase = PhaseOrchestrator
+	default: // IntentTask and anything else
+		next.Phase = PhaseOrchestrator
+		next.QAHistoryID = ""
+		next.InvestigateHistoryID = ""
+		if result.CoderHistoryID != "" {
+			next.HistoryID = result.CoderHistoryID
+		}
+	}
+	return next
+}
+
+// ShouldRunOrchestrator reports whether the next message should go through
+// the orchestrator (vs plain loop or resume).
+func (s WorkerState) ShouldRunOrchestrator(mode string) bool {
+	switch s.Phase {
+	case PhaseQA, PhaseInvestigate:
+		return mode == "swe"
+	case PhaseIdle:
+		return mode != ""
+	default:
+		return false
+	}
+}
+
 // Run starts the worker message loop. It blocks until the context is cancelled.
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[agent:%s] worker started, cwd=%s", w.sessionID, w.cwd)
@@ -138,24 +214,12 @@ func (w *Worker) Run(ctx context.Context) {
 	// Broadcast task progress every second for live CLI display.
 	go w.taskStatusBroadcaster(ctx, mgr)
 
-	// Track whether the first message has been handled by the orchestrator.
-	// After the orchestrator completes, subsequent messages use the plain loop.
-	orchestratorDone := false
-
-	// Q&A state: tracks history across question rounds for Resume().
-	// These are intentionally in-memory — a worker restart means a new session,
-	// so Q&A state doesn't need persistence beyond the process lifetime.
-	var qaHistoryID string
-	qaActive := false
-
-	// Investigation state: same lifecycle as Q&A but different tool set.
-	var investigateHistoryID string
-	investigateActive := false
+	// Phase state: tracks orchestrator/Q&A/investigate lifecycle.
+	// All transitions go through state.Transition().
+	var state WorkerState
 
 	// PR monitor terminal state: once a PR is merged/closed, stop checking.
 	prTerminal := false
-
-	var historyID string
 	for {
 		msg, ok := w.hub.PullMessage(ctx)
 		if !ok {
@@ -204,10 +268,10 @@ func (w *Worker) Run(ctx context.Context) {
 			case "tool_use":
 				turnToolsUsed = true
 				// After any tool use, execute immediate queue
-				w.executeImmediateQueue(ctx, registry, historyID, emit)
+				w.executeImmediateQueue(ctx, registry, state.HistoryID, emit)
 			case "done":
 				// Before done event, execute completion queue
-				w.executeCompletionQueue(ctx, registry, historyID, emit)
+				w.executeCompletionQueue(ctx, registry, state.HistoryID, emit)
 				// Deterministic PR ensure step — runs before done reaches CLI.
 				// Skip when the turn was interrupted: the user pressed Ctrl+C,
 				// so spending up to 30s on PR operations would feel stuck.
@@ -240,44 +304,20 @@ func (w *Worker) Run(ctx context.Context) {
 			}
 		}()
 
-		// Decide execution path: orchestrator, single phase, or plain loop.
-		useOrchestrator := !orchestratorDone && w.mode != ""
+		// Decide execution path based on phase state.
 		switch {
-		case (useOrchestrator || qaActive || investigateActive) && w.mode == "swe":
-			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, qaHistoryID, investigateHistoryID, pipelineHint)
+		case state.ShouldRunOrchestrator(w.mode) && w.mode == "swe":
+			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, state.QAHistoryID, state.InvestigateHistoryID, pipelineHint)
 			runErr = err
+			state = state.Transition(result)
+			log.Printf("[agent:%s] state: phase=%d, historyID=%s, qaHistoryID=%s, investigateHistoryID=%s",
+				w.sessionID, state.Phase, state.HistoryID, state.QAHistoryID, state.InvestigateHistoryID)
 
-			switch result.Intent {
-			case phase.IntentQuestion:
-				qaHistoryID = result.QAHistoryID
-				qaActive = true
-				investigateActive = false
-				investigateHistoryID = ""
-				log.Printf("[agent:%s] state: Q&A active, historyID=%s", w.sessionID, qaHistoryID)
-			case phase.IntentInvestigate:
-				investigateHistoryID = result.InvestigateHistoryID
-				investigateActive = true
-				qaActive = false
-				qaHistoryID = ""
-				log.Printf("[agent:%s] state: investigate active, historyID=%s", w.sessionID, investigateHistoryID)
-			case phase.IntentReview:
-				orchestratorDone = true
-				log.Printf("[agent:%s] state: review complete", w.sessionID)
-			default:
-				orchestratorDone = true
-				qaActive = false
-				investigateActive = false
-				if result.CoderHistoryID != "" {
-					historyID = result.CoderHistoryID
-				}
-				log.Printf("[agent:%s] state: orchestrator done, coderHistoryID=%s", w.sessionID, historyID)
-			}
-
-		case useOrchestrator && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):
+		case state.ShouldRunOrchestrator(w.mode) && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):
 			runErr = w.runSinglePhase(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
-			orchestratorDone = true
+			state.Phase = PhaseDone
 
-		case historyID != "":
+		case state.HistoryID != "":
 			// Resume the coder conversation with coder phase config.
 			coderBundle := phase.InjectPhasePrompt(bundle, "code")
 			l := loop.New(loop.Options{
@@ -292,8 +332,8 @@ func (w *Worker) Run(ctx context.Context) {
 				AuditLogger:    &StdAuditLogger{},
 				SteeringSource: w.hub.ConsumeSteeringMessage,
 			})
-			runErr = l.Resume(turnCtx, historyID, msg.Text, emit)
-			historyID = l.HistoryID()
+			runErr = l.Resume(turnCtx, state.HistoryID, msg.Text, emit)
+			state.HistoryID = l.HistoryID()
 
 		default:
 			l := loop.New(loop.Options{
@@ -309,7 +349,7 @@ func (w *Worker) Run(ctx context.Context) {
 				SteeringSource: w.hub.ConsumeSteeringMessage,
 			})
 			runErr = l.Send(turnCtx, msg.Text, emit)
-			historyID = l.HistoryID()
+			state.HistoryID = l.HistoryID()
 		}
 
 		turnCancel() // clean up goroutine
