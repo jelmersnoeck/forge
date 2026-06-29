@@ -3,9 +3,13 @@ package loop
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +48,24 @@ type Loop struct {
 	// Cache tracking for break detection
 	lastCacheRead int
 	callCount     int
+
+	// Hashes + serialized content of the previous request's cacheable
+	// components, used to report what changed when the cache breaks.
+	lastSystemHash string
+	lastToolsHash  string
+	lastMsgsHash   string
+	lastSystemRaw  string
+	lastToolsRaw   string
+	lastMsgsRaw    string
+
+	// Hashes of the in-flight request's components, computed just before
+	// the provider call and compared against last* on cache break.
+	currSystemHash string
+	currToolsHash  string
+	currMsgsHash   string
+	currSystemRaw  string
+	currToolsRaw   string
+	currMsgsRaw    string
 
 	// Per-session file read dedup state, shared across all tool calls.
 	readState *types.ReadState
@@ -314,6 +336,12 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 			MaxTokens: 8192,
 			Stream:    true,
 		}
+
+		// Hash the cacheable components before sending so a cache break
+		// (detected later via the usage delta) can report what changed.
+		l.currSystemHash, l.currSystemRaw = hashComponent(systemBlocks)
+		l.currToolsHash, l.currToolsRaw = hashComponent(toolSchemas)
+		l.currMsgsHash, l.currMsgsRaw = hashComponent(messagePrefix(messagesWithCache))
 
 		// ── Retry-wrapped provider call ────────────────────────
 		var deltaChan <-chan types.ChatDelta
@@ -759,13 +787,16 @@ func (l *Loop) persistMessage(msgType string, msg types.ChatMessage) error {
 }
 
 // checkCacheHealth detects unexpected cache invalidation.
-// Logs a warning when cache_read_tokens drops significantly (>5% and >2K tokens).
+// Logs a warning when cache_read_tokens drops significantly (>5% and >2K tokens),
+// naming which request component changed (system, tools, or messages) and
+// writing a full diff to a temp file for manual inspection.
 func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.OutboundEvent)) {
 	l.callCount++
 
-	// First call - just record baseline
+	// First call - just record baseline (tokens + component hashes).
 	if l.lastCacheRead == 0 {
 		l.lastCacheRead = usage.CacheReadTokens
+		l.promoteCacheHashes()
 		return
 	}
 
@@ -774,24 +805,145 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 	percentDrop := float64(l.lastCacheRead-usage.CacheReadTokens) / float64(l.lastCacheRead)
 
 	if percentDrop > 0.05 && tokenDrop > 2000 {
-		// Cache broke unexpectedly
+		changes := l.diffCacheComponents()
+
+		detail := "changed: none (cache break with identical request prefix — likely TTL expiry or provider-side eviction)"
+		if len(changes) > 0 {
+			parts := make([]string, len(changes))
+			for i, c := range changes {
+				parts[i] = fmt.Sprintf("%s (%s→%s)", c.Name, c.OldHash, c.NewHash)
+			}
+			detail = "changed: " + strings.Join(parts, ", ")
+
+			if path, err := writeCacheBreakDiff(changes); err != nil {
+				// Non-fatal: surface why the diff is missing instead of
+				// swallowing the error (disk full, permissions, etc.).
+				detail += fmt.Sprintf(" — diff write failed: %v", err)
+			} else if path != "" {
+				detail += " — diff: " + path
+			}
+		}
+
 		emit(types.OutboundEvent{
 			ID:        uuid.New().String(),
 			SessionID: l.sessionID,
 			Type:      "warning",
 			Content: fmt.Sprintf(
-				"[CACHE BREAK] Call #%d: %d → %d tokens (-%d, -%.0f%%) - Check for system prompt or tool schema changes",
+				"[CACHE BREAK] Call #%d: %d → %d tokens (-%d, -%.0f%%) - %s",
 				l.callCount,
 				l.lastCacheRead,
 				usage.CacheReadTokens,
 				tokenDrop,
 				percentDrop*100,
+				detail,
 			),
 			Timestamp: time.Now().Unix(),
 		})
 	}
 
 	l.lastCacheRead = usage.CacheReadTokens
+	l.promoteCacheHashes()
+}
+
+// cacheComponentChange records a single changed request component.
+type cacheComponentChange struct {
+	Name    string // "system" | "tools" | "messages"
+	OldHash string
+	NewHash string
+	OldRaw  string
+	NewRaw  string
+}
+
+// diffCacheComponents compares the previous request's component hashes against
+// the in-flight request's and returns the set that changed.
+func (l *Loop) diffCacheComponents() []cacheComponentChange {
+	var changes []cacheComponentChange
+	if l.currSystemHash != l.lastSystemHash {
+		changes = append(changes, cacheComponentChange{"system", l.lastSystemHash, l.currSystemHash, l.lastSystemRaw, l.currSystemRaw})
+	}
+	if l.currToolsHash != l.lastToolsHash {
+		changes = append(changes, cacheComponentChange{"tools", l.lastToolsHash, l.currToolsHash, l.lastToolsRaw, l.currToolsRaw})
+	}
+	if l.currMsgsHash != l.lastMsgsHash {
+		changes = append(changes, cacheComponentChange{"messages", l.lastMsgsHash, l.currMsgsHash, l.lastMsgsRaw, l.currMsgsRaw})
+	}
+	return changes
+}
+
+// promoteCacheHashes copies the in-flight request's component hashes into the
+// last* fields so the next call diffs against this one.
+func (l *Loop) promoteCacheHashes() {
+	l.lastSystemHash, l.lastSystemRaw = l.currSystemHash, l.currSystemRaw
+	l.lastToolsHash, l.lastToolsRaw = l.currToolsHash, l.currToolsRaw
+	l.lastMsgsHash, l.lastMsgsRaw = l.currMsgsHash, l.currMsgsRaw
+}
+
+// hashComponent serializes v to stable JSON and returns a short sha256 hash
+// (first 6 hex chars) plus the raw JSON for diffing.
+func hashComponent(v any) (hash string, raw string) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "error", ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])[:6], string(b)
+}
+
+// messagePrefix returns the messages up to and including the cache-breakpoint
+// message, with CacheControl stripped, so hashing reflects content only and not
+// the positional breakpoint metadata (which moves every call by design).
+//
+// The breakpoint is message-level, not block-level: addMessageCacheControl only
+// ever tags a single block (the last) of a single message, so a message is the
+// breakpoint if ANY of its blocks carries CacheControl. All blocks of that
+// message are retained (they are part of the cached prefix); enumeration stops
+// after that message. This intentionally does not cut blocks mid-message — the
+// cache prefix granularity is the message boundary.
+func messagePrefix(messages []types.ChatMessage) []types.ChatMessage {
+	prefix := make([]types.ChatMessage, 0, len(messages))
+	for _, msg := range messages {
+		stripped := types.ChatMessage{Role: msg.Role}
+		stripped.Content = make([]types.ChatContentBlock, len(msg.Content))
+		breakpoint := false
+		for i, block := range msg.Content {
+			if block.CacheControl != nil {
+				breakpoint = true
+			}
+			block.CacheControl = nil
+			stripped.Content[i] = block
+		}
+		prefix = append(prefix, stripped)
+		if breakpoint {
+			break
+		}
+	}
+	return prefix
+}
+
+// writeCacheBreakDiff dumps the old and new serialized content for each changed
+// component to a temp file and returns its path. Returns ("", nil) when there is
+// nothing to diff, or ("", err) when the file write fails — callers must treat
+// the diff as best-effort and surface (not swallow) any error.
+func writeCacheBreakDiff(changes []cacheComponentChange) (string, error) {
+	if len(changes) == 0 {
+		return "", nil
+	}
+
+	var b strings.Builder
+	for _, c := range changes {
+		fmt.Fprintf(&b, "=== %s: %s → %s ===\n", c.Name, c.OldHash, c.NewHash)
+		fmt.Fprintf(&b, "--- old\n%s\n", c.OldRaw)
+		fmt.Fprintf(&b, "+++ new\n%s\n\n", c.NewRaw)
+	}
+
+	// 0600: the dump contains raw system/tool/message content that may be
+	// sensitive. Restrict to the owner so other users on a shared host or
+	// shared TMPDIR cannot read it.
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("forge-cache-break-%d.diff", time.Now().UnixNano()))
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return "", fmt.Errorf("write cache-break diff to %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // addMessageCacheControl adds cache_control breakpoints to conversation history.
