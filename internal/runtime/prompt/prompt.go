@@ -127,9 +127,20 @@ matches what was implemented — types may have evolved, edge cases may have bee
 discovered, files may have been added.
 `
 
+// now returns the current time. It is a package var so tests can pin it to a
+// fixed instant, making Assemble fully deterministic. Production code never
+// reassigns it.
+var now = time.Now
+
 // Assemble creates the system prompt blocks from a context bundle.
 // Max 4 cache_control blocks total across system + tools + messages.
 // Strategy: 2 system blocks + 1 tool + 1 message = 4 total
+//
+// Determinism note: Assemble is deterministic for a fixed bundle within a
+// single calendar day in the local timezone. The current date (see the dynamic
+// block below) is the only time-varying input; it is sourced from the package
+// var now so tests can pin it. Across a day boundary the date string changes,
+// busting only the small dynamic block — never the large static block.
 func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	var blocks []types.SystemBlock
 
@@ -162,8 +173,12 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		staticContent.WriteString(phasePrompt)
 	}
 
-	fmt.Fprintf(&staticContent, "\n\nEnvironment Information:\n- Working directory: %s\n- Platform: %s\n- Current date: %s",
-		cwd, runtime.GOOS, time.Now().Format("2006-01-02"))
+	// Working directory and platform are stable across the session, so they
+	// stay in the global static block. The current date is intentionally
+	// excluded here — it changes daily and would bust this large, cross-session
+	// cache block. It lives in the dynamic block instead (see below).
+	fmt.Fprintf(&staticContent, "\n\nEnvironment Information:\n- Working directory: %s\n- Platform: %s",
+		cwd, runtime.GOOS)
 
 	if len(instructions) > 0 {
 		staticContent.WriteString("\n\n<system-reminder>\n")
@@ -198,6 +213,9 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	if len(learnings) > 0 {
 		bundledContent.WriteString("<system-reminder>\n")
 		bundledContent.WriteString("Self-improvement learnings from previous sessions:\n\n")
+		slices.SortFunc(learnings, func(a, b types.AgentsMDEntry) int {
+			return cmp.Compare(a.Path, b.Path)
+		})
 		for _, entry := range learnings {
 			fmt.Fprintf(&bundledContent, "## From %s (%s)\n\n", entry.Path, entry.Level)
 			bundledContent.WriteString(entry.Content)
@@ -212,6 +230,9 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	if len(bundle.Rules) > 0 {
 		bundledContent.WriteString("<system-reminder>\n")
 		bundledContent.WriteString("Additional rules and guidelines:\n\n")
+		slices.SortFunc(bundle.Rules, func(a, b types.RuleEntry) int {
+			return cmp.Compare(a.Path, b.Path)
+		})
 		for _, rule := range bundle.Rules {
 			fmt.Fprintf(&bundledContent, "## Rule: %s\n\n", rule.Path)
 			bundledContent.WriteString(rule.Content)
@@ -224,6 +245,9 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	// Skills
 	if len(bundle.SkillDescriptions) > 0 {
 		bundledContent.WriteString("Available Skills:\n\n")
+		slices.SortFunc(bundle.SkillDescriptions, func(a, b types.SkillDescription) int {
+			return cmp.Compare(a.Name, b.Name)
+		})
 		for _, skill := range bundle.SkillDescriptions {
 			invocable := "system-only"
 			if skill.IsUserInvocable {
@@ -270,6 +294,13 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 			hasContent = true
 		}
 	}
+
+	// Current date is appended last in the dynamic block. It changes daily and
+	// is deliberately kept out of the large cross-session static block to avoid
+	// a daily cache break of that block. Placing it at the end keeps the rest of
+	// the dynamic prefix byte-stable within a day.
+	fmt.Fprintf(&bundledContent, "Current date: %s\n", now().Format("2006-01-02"))
+	hasContent = true
 
 	// Add bundled block with cache control if we have any content
 	if hasContent {
