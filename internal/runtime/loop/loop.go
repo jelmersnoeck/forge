@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,18 +56,22 @@ type Loop struct {
 	lastSystemHash string
 	lastToolsHash  string
 	lastMsgsHash   string
+	lastParamsHash string
 	lastSystemRaw  string
 	lastToolsRaw   string
 	lastMsgsRaw    string
+	lastParamsRaw  string
 
 	// Hashes of the in-flight request's components, computed just before
 	// the provider call and compared against last* on cache break.
 	currSystemHash string
 	currToolsHash  string
 	currMsgsHash   string
+	currParamsHash string
 	currSystemRaw  string
 	currToolsRaw   string
 	currMsgsRaw    string
+	currParamsRaw  string
 
 	// Per-session file read dedup state, shared across all tool calls.
 	readState *types.ReadState
@@ -339,9 +345,11 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 
 		// Hash the cacheable components before sending so a cache break
 		// (detected later via the usage delta) can report what changed.
-		l.currSystemHash, l.currSystemRaw = hashComponent(systemBlocks)
-		l.currToolsHash, l.currToolsRaw = hashComponent(toolSchemas)
-		l.currMsgsHash, l.currMsgsRaw = hashComponent(messagePrefix(messagesWithCache))
+		// Side effects: writes the curr* hash fields and, on a marshal failure,
+		// emits a "warning" OutboundEvent, logs to stderr, and bumps the
+		// CacheHashFailures counter. It never returns an error or aborts the turn
+		// (hashing is diagnostics-only, never on the critical path).
+		l.hashCacheComponents(systemBlocks, toolSchemas, messagePrefix(messagesWithCache), cacheParams{Model: req.Model, MaxTokens: req.MaxTokens}, emit)
 
 		// ── Retry-wrapped provider call ────────────────────────
 		var deltaChan <-chan types.ChatDelta
@@ -807,7 +815,10 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 	if percentDrop > 0.05 && tokenDrop > 2000 {
 		changes := l.diffCacheComponents()
 
-		detail := "changed: none (cache break with identical request prefix — likely TTL expiry or provider-side eviction)"
+		detail := fmt.Sprintf(
+			"changed: none (TTL expiry or provider eviction?) — hashes: system=%s, tools=%s, msgs=%s, params=%s",
+			l.currSystemHash, l.currToolsHash, l.currMsgsHash, l.currParamsHash,
+		)
 		if len(changes) > 0 {
 			parts := make([]string, len(changes))
 			for i, c := range changes {
@@ -847,7 +858,7 @@ func (l *Loop) checkCacheHealth(usage *types.TokenUsage, emit func(types.Outboun
 
 // cacheComponentChange records a single changed request component.
 type cacheComponentChange struct {
-	Name    string // "system" | "tools" | "messages"
+	Name    string // "system" | "tools" | "messages" | "params"
 	OldHash string
 	NewHash string
 	OldRaw  string
@@ -867,6 +878,9 @@ func (l *Loop) diffCacheComponents() []cacheComponentChange {
 	if l.currMsgsHash != l.lastMsgsHash {
 		changes = append(changes, cacheComponentChange{"messages", l.lastMsgsHash, l.currMsgsHash, l.lastMsgsRaw, l.currMsgsRaw})
 	}
+	if l.currParamsHash != l.lastParamsHash {
+		changes = append(changes, cacheComponentChange{"params", l.lastParamsHash, l.currParamsHash, l.lastParamsRaw, l.currParamsRaw})
+	}
 	return changes
 }
 
@@ -876,17 +890,98 @@ func (l *Loop) promoteCacheHashes() {
 	l.lastSystemHash, l.lastSystemRaw = l.currSystemHash, l.currSystemRaw
 	l.lastToolsHash, l.lastToolsRaw = l.currToolsHash, l.currToolsRaw
 	l.lastMsgsHash, l.lastMsgsRaw = l.currMsgsHash, l.currMsgsRaw
+	l.lastParamsHash, l.lastParamsRaw = l.currParamsHash, l.currParamsRaw
 }
 
-// hashComponent serializes v to stable JSON and returns a short sha256 hash
-// (first 6 hex chars) plus the raw JSON for diffing.
-func hashComponent(v any) (hash string, raw string) {
+// cacheParams is the typed view of the request parameters that participate in
+// the prompt cache key. Using an explicit struct (instead of a map[string]any
+// with magic keys) keeps the serialized set closed: only Model and MaxTokens —
+// both forge-controlled scalars, never free-form user input — are ever hashed or
+// written to the diff file, so the temp dump cannot leak arbitrary request data.
+type cacheParams struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"maxTokens"`
+}
+
+// cacheComponent names a single hashable request component plus a setter that
+// writes the computed hash/raw into the matching curr* fields. A setter (rather
+// than *string pointers) keeps the writes explicit and lets the caller skip the
+// write entirely on a marshal error.
+type cacheComponent struct {
+	name  string
+	value any
+	set   func(hash, raw string)
+}
+
+// cacheHashFailures counts component marshal failures across the process so
+// operators can monitor them (a hash failure silently degrades cache-break
+// diagnostics). Exposed via CacheHashFailures.
+var cacheHashFailures atomic.Uint64
+
+// CacheHashFailures returns the cumulative number of cache-component hashing
+// failures observed since process start, for metrics/monitoring.
+func CacheHashFailures() uint64 { return cacheHashFailures.Load() }
+
+// hashCacheComponents hashes each cacheable request component and stores the
+// results into the curr* fields for later break diffing. On a marshal error the
+// curr* fields are left untouched (no invalid/sentinel data is written) and the
+// failure is surfaced three ways: an ephemeral warning event, a persistent
+// stderr log line (so a missed event doesn't lose operational context), and an
+// incremented CacheHashFailures metric counter. Errors keep their per-component
+// association by name so debugging a join isn't ambiguous.
+func (l *Loop) hashCacheComponents(system, tools, messages, params any, emit func(types.OutboundEvent)) {
+	components := []cacheComponent{
+		{"system", system, func(h, r string) { l.currSystemHash, l.currSystemRaw = h, r }},
+		{"tools", tools, func(h, r string) { l.currToolsHash, l.currToolsRaw = h, r }},
+		{"messages", messages, func(h, r string) { l.currMsgsHash, l.currMsgsRaw = h, r }},
+		{"params", params, func(h, r string) { l.currParamsHash, l.currParamsRaw = h, r }},
+	}
+
+	var hashErrs []error
+	for _, c := range components {
+		hash, raw, err := hashComponent(c.value)
+		if err != nil {
+			hashErrs = append(hashErrs, fmt.Errorf("%s: %w", c.name, err))
+			continue
+		}
+		c.set(hash, raw)
+	}
+
+	if len(hashErrs) == 0 {
+		return
+	}
+
+	cacheHashFailures.Add(uint64(len(hashErrs)))
+	joined := errors.Join(hashErrs...)
+	// Persistent record: an SSE warning can be missed, a log line on stderr
+	// survives for post-hoc inspection / log aggregation.
+	log.Printf("[CACHE HASH] session=%s failed to hash %d request component(s): %v", l.sessionID, len(hashErrs), joined)
+	emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: l.sessionID,
+		Type:      "warning",
+		Content:   fmt.Sprintf("[CACHE HASH] failed to hash %d request component(s): %v", len(hashErrs), joined),
+		Timestamp: time.Now().Unix(),
+	})
+}
+
+// hashComponent serializes v to JSON and returns a short sha256 hash (first 6
+// hex chars), the raw JSON for diffing, and any marshal error. Serialization is
+// deterministic for identical content: encoding/json sorts struct fields by
+// declaration order and map keys lexically (guaranteed since Go 1.12), so equal
+// values always produce byte-identical JSON and therefore identical hashes — no
+// spurious cache-break reports from ordering.
+//
+// On marshal failure the error is returned explicitly (callers surface it via a
+// warning event rather than ignoring it); the hash falls back to "error" and the
+// raw to the error text so the failure is still visible in any diff dump.
+func hashComponent(v any) (hash string, raw string, err error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return "error", ""
+		return "error", fmt.Sprintf("hashComponent marshal error: %v", err), err
 	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])[:6], string(b)
+	return hex.EncodeToString(sum[:])[:6], string(b), nil
 }
 
 // messagePrefix returns the messages up to and including the cache-breakpoint
