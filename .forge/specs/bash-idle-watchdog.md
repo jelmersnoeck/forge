@@ -1,25 +1,34 @@
 ---
 id: bash-idle-watchdog
-status: implemented
+status: active
 ---
-# Bash tool: idle watchdog, progress events, and proper process cleanup
+# Bash tool: idle watchdog, progress events, real-time output, and process cleanup
 
 ## Description
-Three related improvements to the Bash tool:
+Four related improvements to the Bash tool:
 1. When a command produces no output for a configurable idle period, gather
    process diagnostics and return them to the LLM for reasoning (don't just
    kill blindly).
 2. Emit progress events to the TUI so users see that a command is running.
-3. Fix process cleanup: use process groups so Ctrl+C / context cancellation
+3. Stream live output to the TUI in real time so users see build/test/download
+   progress instead of an opaque "running..." line (issue #252).
+4. Fix process cleanup: use process groups so Ctrl+C / context cancellation
    actually kills child processes instead of orphaning them.
 
 ## Context
-- `internal/tools/bash.go` — bashHandler rewritten with streaming + watchdog
+- `internal/tools/bash.go` — bashHandler with streaming + watchdog +
+  live-output tool_progress emits; `lastNonEmptyLine` helper extracts the
+  latest output line; `bashStreamThrottle` const bounds emit rate
 - `internal/tools/bash_procgroup_unix.go` — setProcGroup (Setpgid + SIGTERM)
 - `internal/tools/bash_procgroup_other.go` — no-op for Windows
-- `internal/tools/bash_watchdog_test.go` — new tests for all behaviors
-- `cmd/forge/cli.go` — tool_progress event rendering + spinner for progress
+- `internal/tools/bash_watchdog_test.go` — tests for all behaviors, incl.
+  TestBashLiveOutputStreaming and TestLastNonEmptyLine
+- `cmd/forge/cli.go` — tool_progress sets model.toolProgress (spinner line)
+- `cmd/forge/events.go` — tool_progress handled (no output mutation; surfaced
+  via model.toolProgress)
 - `internal/types/types.go` — OutboundEvent (unchanged, uses existing shape)
+- `internal/agent/worker.go` — `executeQueuedCommand` wraps emit to drop
+  `tool_progress` events for queued (immediate/completion) bash tasks
 
 ## Behavior
 
@@ -35,11 +44,26 @@ Three related improvements to the Bash tool:
    stdout/stderr into a ring buffer via `io.Pipe` / scanner.
 2. Each chunk of output resets the idle timer.
 
-### C. TUI progress events
-1. While the command is running, emit `tool_progress` events via
-   `ctx.Emit()` every ~10s so the TUI shows:
-   "Bash: running command... (Xs elapsed, last output Ys ago)"
-2. The TUI renders these as an updating status line beneath the tool_use line.
+### C. TUI progress events and real-time output streaming
+1. While the command is running with no new output, emit a heartbeat
+   `tool_progress` event via `ctx.Emit()` every ~10s
+   (`bashProgressInterval`):
+   "command... (Xs elapsed, no output for Ys)".
+2. As output arrives, emit a live `tool_progress` event carrying the most
+   recent non-empty output line:
+   "command (Xs elapsed) <latest output line>".
+3. Live-output emits are throttled to at most one per `bashStreamThrottle`
+   (100ms). This is the backpressure mechanism: the TUI status line is
+   last-write-wins, so a fast producer can never flood the client — extra
+   chunks are coalesced into the buffer and only the latest line is shown
+   at the next throttle window.
+4. The TUI renders all `tool_progress` events as an updating single-line
+   status beneath the spinner (model.toolProgress in cmd/forge/cli.go).
+   No new event type or TUI scrollback rendering is required — live output
+   reuses the existing `tool_progress` path.
+5. The full output is still captured in the buffer and returned in the final
+   ToolResult (truncated to bashMaxOutputBuffer for LLM context); streaming
+   only affects what the user sees live, not what the LLM receives.
 
 ### D. Idle watchdog with LLM investigation
 1. Configurable idle timeout (default 30s). Timer resets every time new
@@ -71,17 +95,40 @@ Three related improvements to the Bash tool:
 - Process diagnostics must not themselves hang — use short timeouts on ps/lsof.
 - Process group kill must be SIGTERM first, then SIGKILL after WaitDelay.
   Never just SIGKILL — give processes a chance to clean up (docker stop, etc.).
+- Live-output streaming must NOT introduce a new event type or new TUI
+  scrollback rendering — reuse the existing `tool_progress` single-line
+  status path. (Rationale: minimal surface area, automatic backpressure.)
+- Live-output emits must be throttled (>= bashStreamThrottle between emits)
+  so a fast producer cannot flood the event stream.
+- Streaming must not change what the LLM receives: the final ToolResult
+  content is identical to the non-streaming behavior.
+- The concurrent read of the latest output line and the buffer must be
+  guarded by the same mutex (outputMu) — no data race (verified with -race).
 
 ## Interfaces
 
-New event type emitted during execution:
+New event types emitted during execution:
 ```go
-// Emitted periodically while Bash command is running
+// Heartbeat (no recent output) — every bashProgressInterval
 types.OutboundEvent{
     Type:     "tool_progress",
     ToolName: "Bash",
-    Content:  "docker run --rm image cmd (45s elapsed, last output 12s ago)",
+    Content:  "docker run --rm image cmd (45s elapsed, no output for 12s)",
 }
+
+// Live output — on output arrival, throttled to bashStreamThrottle
+types.OutboundEvent{
+    Type:     "tool_progress",
+    ToolName: "Bash",
+    Content:  "go test ./... (8s elapsed) ok  github.com/foo/bar  0.4s",
+}
+```
+
+Live-output line extraction helper:
+```go
+// lastNonEmptyLine returns the last non-empty, whitespace/CR-trimmed line
+// in a chunk of output, or "" if none. Used for the live status line.
+func lastNonEmptyLine(chunk []byte) string
 ```
 
 TUI rendering in cli.go handleEvent:
@@ -127,3 +174,19 @@ The process is still running. You can:
   Darwin and Linux. Windows gets no-op via build tags.
 - **Context cancellation (Ctrl+C)**: SIGTERM sent to process group via
   cmd.Cancel. WaitDelay of 5s gives cleanup time before SIGKILL.
+- **Fast producer floods output**: Live-output emits are throttled to one per
+  bashStreamThrottle; intermediate chunks are coalesced in the buffer and only
+  the newest line is shown at the next window. No event-stream flooding.
+- **Output chunk with no printable line** (only whitespace/newlines):
+  lastNonEmptyLine returns "" and no live-output event is emitted; the idle
+  timer still resets since bytes arrived.
+- **Output split mid-line across reads**: The live line shows whatever the
+  latest chunk's last non-empty line is; it may be a partial line until the
+  next chunk. This is acceptable for a transient status display.
+- **Binary/no-newline output**: lastNonEmptyLine returns the trimmed chunk as
+  a single line; truncated to 80 chars for display.
+- **Queued (immediate/completion) bash commands**: these run as background
+  tasks, not the interactive foreground tool call. `Worker.executeQueuedCommand`
+  wraps the emit func to drop `tool_progress` events so the queued path emits
+  only `queued_task_result`/`queued_task_error` — preserving the queued event
+  contract that worker tests assert on.

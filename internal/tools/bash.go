@@ -18,8 +18,14 @@ const (
 	// bashIdleTimeout is how long we wait with no output before investigating.
 	bashIdleTimeout = 30 * time.Second
 
-	// bashProgressInterval is how often we emit progress events to the TUI.
+	// bashProgressInterval is how often we emit elapsed-time progress events
+	// (the heartbeat) when no new output is arriving.
 	bashProgressInterval = 10 * time.Second
+
+	// bashStreamThrottle is the minimum gap between live-output progress
+	// events. It provides backpressure: fast producers can't flood the TUI
+	// faster than this since the status line is last-write-wins.
+	bashStreamThrottle = 100 * time.Millisecond
 
 	// bashMaxOutputBuffer caps captured output to avoid memory issues.
 	bashMaxOutputBuffer = 100 * 1024 // 100KB
@@ -142,7 +148,10 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 	execCtx, cancel := context.WithTimeout(ctx.Ctx, timeout)
-	defer cancel()
+	// cancel is deliberately NOT deferred. On idle timeout we leave the
+	// process running and return diagnostics to the LLM (which decides
+	// whether to kill it via a follow-up Bash call). The completion path
+	// cancels explicitly; the idle path detaches a reaper goroutine instead.
 
 	cmd := exec.CommandContext(execCtx, "bash", "-l", "-c", command)
 	cmd.Dir = ctx.CWD
@@ -164,6 +173,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	cmd.Stderr = outWriter
 
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return errResultf("Failed to start command: %v", err)
 	}
 
@@ -172,6 +182,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		outputBuf  bytes.Buffer
 		outputMu   sync.Mutex
 		truncated  bool
+		lastLine   string                   // most recent non-empty output line (for live display)
 		outputCh   = make(chan struct{}, 1) // signals new output arrived
 		readerDone = make(chan struct{})    // closed when reader goroutine exits
 	)
@@ -190,6 +201,9 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 					// In practice we just stop appending.
 				} else {
 					outputBuf.Write(buf[:n])
+				}
+				if line := lastNonEmptyLine(buf[:n]); line != "" {
+					lastLine = line
 				}
 				outputMu.Unlock()
 
@@ -218,6 +232,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	progressTicker := time.NewTicker(bashProgressInterval)
 	defer progressTicker.Stop()
 	lastOutputTime := startTime
+	var lastStreamEmit time.Time
 
 	emit := ctx.Emit
 
@@ -226,6 +241,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		case err := <-waitDone:
 			// Command finished — wait for reader goroutine to drain all output.
 			<-readerDone
+			cancel()
 			return bashResult(cmd, err, execCtx, &outputBuf, &outputMu, truncated, timeoutMs)
 
 		case <-outputCh:
@@ -238,6 +254,23 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 				}
 			}
 			idleTimer.Reset(bashIdleTimeout)
+
+			// Stream the latest output line to the TUI, throttled so a fast
+			// producer can't flood the client (status line is last-write-wins).
+			if emit != nil && time.Since(lastStreamEmit) >= bashStreamThrottle {
+				lastStreamEmit = time.Now()
+				outputMu.Lock()
+				line := lastLine
+				outputMu.Unlock()
+				if line != "" {
+					elapsed := time.Since(startTime).Round(time.Second)
+					emit(types.OutboundEvent{
+						Type:     "tool_progress",
+						ToolName: "Bash",
+						Content:  fmt.Sprintf("%s (%s elapsed) %s", truncateCommand(command, 30), elapsed, truncateCommand(line, 80)),
+					})
+				}
+			}
 
 		case <-progressTicker.C:
 			// Periodic TUI progress update.
@@ -257,7 +290,9 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 			}
 
 		case <-idleTimer.C:
-			// No output for bashIdleTimeout. Investigate and report.
+			// No output for bashIdleTimeout. Investigate but DO NOT kill —
+			// the process keeps running and the LLM decides next steps via a
+			// follow-up Bash call (e.g. `kill <pid>`).
 			pid := 0
 			if cmd.Process != nil {
 				pid = cmd.Process.Pid
@@ -268,21 +303,18 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 			captured := outputBuf.String()
 			outputMu.Unlock()
 
-			// Cancel the exec context to kill the process tree.
-			// The process group setup (setProcGroup) ensures SIGKILL
-			// reaches all children. WaitDelay gives them 5s to exit.
-			cancel()
-
-			// Wait for the command to actually exit so we don't leak
-			// the goroutine or leave zombie processes.
-			<-waitDone
-			<-readerDone
+			// Detach: keep the process running but make sure we don't leak the
+			// wait/reader goroutines or the context. A background reaper drains
+			// waitDone/readerDone and cancels the context once the process
+			// eventually exits (or the hard timeout/parent ctx fires).
+			go func() {
+				<-waitDone
+				<-readerDone
+				cancel()
+			}()
 
 			var result strings.Builder
-			fmt.Fprintf(&result, "Command produced no new output for %s and was killed.\n", bashIdleTimeout)
-			if pid > 0 {
-				fmt.Fprintf(&result, "PID: %d\n", pid)
-			}
+			fmt.Fprintf(&result, "Command produced no new output for %s but is still running.\n", bashIdleTimeout)
 			result.WriteString("\n--- Output so far ---\n")
 			if truncated {
 				result.WriteString("(output truncated to 100KB)\n")
@@ -296,17 +328,24 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 				}
 			}
 			result.WriteString("\n--- Process diagnostics ---\n")
+			if pid > 0 {
+				fmt.Fprintf(&result, "PID: %d\n", pid)
+			}
 			result.WriteString(diag)
-			result.WriteString("\nThe process was killed after being idle. Consider:\n")
-			result.WriteString("- Using TaskCreate for long-running commands\n")
-			result.WriteString("- Adding non-interactive flags (e.g., -y, --batch)\n")
-			result.WriteString("- Checking if the command is waiting for input\n")
+			result.WriteString("\nThe process is still running. You can:\n")
+			if pid > 0 {
+				fmt.Fprintf(&result, "- Kill it: kill %d\n", pid)
+				fmt.Fprintf(&result, "- Re-check it: ps -p %d\n", pid)
+			} else {
+				result.WriteString("- Investigate the process tree shown above\n")
+			}
+			result.WriteString("- Investigate logs (e.g. docker logs <container>)\n")
 
 			if emit != nil {
 				emit(types.OutboundEvent{
 					Type:     "tool_progress",
 					ToolName: "Bash",
-					Content:  fmt.Sprintf("%s (idle for %s — killed, returning diagnostics to LLM)", truncateCommand(command, 40), bashIdleTimeout),
+					Content:  fmt.Sprintf("%s (idle for %s — still running, returning diagnostics to LLM)", truncateCommand(command, 40), bashIdleTimeout),
 				})
 			}
 
@@ -407,6 +446,22 @@ func truncateCommand(cmd string, maxLen int) string {
 		return cmd
 	}
 	return cmd[:maxLen-3] + "..."
+}
+
+// lastNonEmptyLine returns the last non-empty line in a chunk of output,
+// with surrounding whitespace and carriage returns trimmed. Used to surface
+// live progress on the TUI status line. Returns "" if the chunk has no
+// printable line.
+func lastNonEmptyLine(chunk []byte) string {
+	lines := strings.Split(string(chunk), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimRight(lines[i], "\r")
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // checkInteractiveCommand detects if a command is likely to be interactive
