@@ -2,7 +2,9 @@ package tools
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,22 +107,27 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	// ── Dedup: return stub if file unchanged since last read ──
 	//
-	//   Read("foo.go")  → 25K tokens of content, store mtime
-	//   Read("foo.go")  → ~30 tokens stub (same params, same mtime)
+	//   Read("foo.go")  → 25K tokens of content, store mtime + content hash
+	//   Read("foo.go")  → ~30 tokens stub (same params, same mtime)        [fast path]
+	//   Read("foo.go")  → ~30 tokens stub (new mtime, identical bytes)     [hash path]
 	//
 	// Only applies to text reads. Edit/Write invalidate the entry
 	// so the next Read after a mutation always returns fresh content.
+	var dedupEntry types.ReadFileEntry
+	var haveDedupEntry bool
 	if ctx.ReadState != nil {
-		if entry, exists := ctx.ReadState.Get(filePath); exists {
-			if entry.Offset == offset && entry.Limit == limit {
-				if info.ModTime().Unix() == entry.MtimeUnix {
-					return types.ToolResult{
-						Content: []types.ToolResultContent{{
-							Type: "text",
-							Text: FileUnchangedStub,
-						}},
-					}, nil
-				}
+		if entry, exists := ctx.ReadState.Get(filePath); exists &&
+			entry.Offset == offset && entry.Limit == limit {
+			dedupEntry = entry
+			haveDedupEntry = true
+			// Fast path: stat proves the file is untouched, no need to read it.
+			if info.ModTime().Unix() == entry.MtimeUnix {
+				return types.ToolResult{
+					Content: []types.ToolResultContent{{
+						Type: "text",
+						Text: FileUnchangedStub,
+					}},
+				}, nil
 			}
 		}
 	}
@@ -154,12 +161,55 @@ func readHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		return types.ToolResult{IsError: true}, err
 	}
 
+	// content is the line-numbered, normalized window returned to the model:
+	// each scanned line (CR/LF stripped by bufio.Scanner) re-joined with "\n".
+	// The hash is therefore over this normalized representation, NOT the raw
+	// file bytes — two files differing only in line endings (e.g. CRLF vs LF)
+	// produce the same content here and dedup as identical. This is intended:
+	// dedup operates on exactly the bytes the model saw, which is the same
+	// normalized form on every read, so dedup is internally consistent.
+	content := strings.Join(lines, "\n")
+	contentHash := hashContent(content)
+
+	// Hash fallback: mtime moved but the windowed content is identical
+	// (touch, no-op save, git checkout round-trip, idempotent formatter).
+	// Return the stub and refresh the stored mtime so the next identical read
+	// takes the cheap fast path again.
+	if haveDedupEntry && dedupEntry.ContentHash == contentHash {
+		dedupEntry.MtimeUnix = info.ModTime().Unix()
+		ctx.ReadState.Set(filePath, dedupEntry)
+		if ctx.Emit != nil {
+			ctx.Emit(types.OutboundEvent{
+				Type:      "debug",
+				SessionID: ctx.SessionID,
+				Content: fmt.Sprintf(
+					"Read dedup (hash path): %s unchanged content despite new mtime; returning stub",
+					filePath),
+			})
+		}
+		return types.ToolResult{
+			Content: []types.ToolResultContent{{
+				Type: "text",
+				Text: FileUnchangedStub,
+			}},
+		}, nil
+	}
+
 	// Store state for dedup on subsequent reads.
 	ctx.ReadState.Set(filePath, types.ReadFileEntry{
-		MtimeUnix: info.ModTime().Unix(),
-		Offset:    offset,
-		Limit:     limit,
+		MtimeUnix:   info.ModTime().Unix(),
+		Offset:      offset,
+		Limit:       limit,
+		ContentHash: contentHash,
 	})
 
-	return textResult(strings.Join(lines, "\n")), nil
+	return textResult(content), nil
+}
+
+// hashContent returns the sha256 hex digest of s, used to detect identical
+// re-reads whose mtime changed. s is the normalized, line-numbered window
+// (not the raw file bytes), so the hash is line-ending-agnostic.
+func hashContent(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
