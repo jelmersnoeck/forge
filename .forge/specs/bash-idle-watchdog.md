@@ -27,6 +27,8 @@ Four related improvements to the Bash tool:
 - `cmd/forge/events.go` — tool_progress handled (no output mutation; surfaced
   via model.toolProgress)
 - `internal/types/types.go` — OutboundEvent (unchanged, uses existing shape)
+- `internal/agent/worker.go` — `executeQueuedCommand` wraps emit to drop
+  `tool_progress` events for queued (immediate/completion) bash tasks
 
 ## Behavior
 
@@ -183,3 +185,8 @@ The process is still running. You can:
   next chunk. This is acceptable for a transient status display.
 - **Binary/no-newline output**: lastNonEmptyLine returns the trimmed chunk as
   a single line; truncated to 80 chars for display.
+- **Queued (immediate/completion) bash commands**: these run as background
+  tasks, not the interactive foreground tool call. `Worker.executeQueuedCommand`
+  wraps the emit func to drop `tool_progress` events so the queued path emits
+  only `queued_task_result`/`queued_task_error` — preserving the queued event
+  contract that worker tests assert on.
