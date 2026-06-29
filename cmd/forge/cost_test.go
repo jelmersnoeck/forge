@@ -154,3 +154,32 @@ func TestClampNonNegative(t *testing.T) {
 	})
 	r.Equal(types.TokenUsage{InputTokens: 0, OutputTokens: 5, CacheCreationTokens: 0, CacheReadTokens: 0}, got)
 }
+
+func TestCostAccumulatorRecordWarnsOnUnpricedModelWithTokens(t *testing.T) {
+	r := require.New(t)
+	// Force offline so the unknown model is genuinely unpriced.
+	t.Setenv("LITELLM_MODEL_COST_MAP_URL", "http://127.0.0.1:1/offline")
+	tr := newTestTracker(t)
+	acc := &CostAccumulator{}
+
+	// Unique model name so the once-per-process dedup doesn't suppress this run.
+	model := "senor-chang-model-" + t.Name()
+	w := acc.Record(types.OutboundEvent{Usage: usage(1000, 500, 0, 0), Model: model}, tr, "session-chang")
+	r.Contains(w, "no pricing")
+	r.Contains(w, model)
+
+	// Second call for the same model is deduped to empty.
+	w2 := acc.Record(types.OutboundEvent{Usage: usage(2000, 1000, 0, 0), Model: model}, tr, "session-chang")
+	r.Empty(w2)
+}
+
+func TestCostAccumulatorRecordNoWarnOnPricedModel(t *testing.T) {
+	r := require.New(t)
+	t.Setenv("LITELLM_MODEL_COST_MAP_URL", "http://127.0.0.1:1/offline")
+	tr := newTestTracker(t)
+	acc := &CostAccumulator{}
+
+	// sonnet alias target is priced (the issue #278 fix) -> no warning.
+	w := acc.Record(types.OutboundEvent{Usage: usage(1000, 500, 0, 0), Model: "claude-sonnet-4-20250514"}, tr, "s")
+	r.Empty(w)
+}

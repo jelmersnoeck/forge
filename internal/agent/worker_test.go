@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
+	"github.com/jelmersnoeck/forge/internal/runtime/cost"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/stretchr/testify/require"
 
@@ -330,7 +331,7 @@ func TestResolveModelAlias(t *testing.T) {
 		},
 		"haiku alias": {
 			name: "haiku", isClaudeCLI: false,
-			want: "claude-haiku-4-20250506",
+			want: "claude-haiku-4-5-20251001",
 		},
 		"full model ID passes through": {
 			name: "claude-sonnet-4-20250514", isClaudeCLI: false,
@@ -351,6 +352,22 @@ func TestResolveModelAlias(t *testing.T) {
 			r := require.New(t)
 			r.Equal(tc.want, ResolveModelAlias(tc.name, tc.isClaudeCLI))
 		})
+	}
+}
+
+// TestModelAliasesArePriced guards against alias/pricing desync (issue #278):
+// every modelAliases target must resolve to a non-zero price. This is the CI
+// gate that would have caught the original sonnet/haiku $0 bug.
+func TestModelAliasesArePriced(t *testing.T) {
+	r := require.New(t)
+	// Force offline resolution so the assertion holds in air-gapped CI: an
+	// unreachable URL makes cost fall back to its embedded litellm snapshot.
+	t.Setenv("LITELLM_MODEL_COST_MAP_URL", "http://127.0.0.1:1/offline")
+	for alias, model := range modelAliases {
+		p, ok := cost.LookupPricing(model)
+		r.Truef(ok, "alias %q -> %q has no pricing", alias, model)
+		r.Greaterf(p.Input, 0.0, "alias %q -> %q has zero input price", alias, model)
+		r.Greaterf(p.Output, 0.0, "alias %q -> %q has zero output price", alias, model)
 	}
 }
 

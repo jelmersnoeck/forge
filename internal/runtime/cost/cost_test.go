@@ -1,11 +1,21 @@
 package cost
 
 import (
+	"os"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain forces cost tests offline so the litellm resolver is deterministic:
+// an unreachable URL and an empty HOME make resolvePricing fall back to the
+// embedded snapshot (+ supplemental map) with no network dependency.
+func TestMain(m *testing.M) {
+	_ = os.Setenv("HOME", os.TempDir()+"/forge-cost-test-home")
+	_ = os.Setenv(litellmURLEnv, "http://127.0.0.1:1/offline")
+	os.Exit(m.Run())
+}
 
 func TestIsAliasModel(t *testing.T) {
 	tests := map[string]struct {
@@ -335,4 +345,38 @@ func TestCalculateUnknownModelReturnsZero(t *testing.T) {
 	r.Equal(0.0, got)
 	// Calling again must not panic (sync.Once dedup); still 0.0.
 	r.Equal(0.0, Calculate("gpt-5-greendale", types.TokenUsage{InputTokens: 5}))
+}
+
+// TestSonnetAliasTargetPriced is the direct regression for issue #278: the
+// sonnet alias target used to be absent from the pricing map, so a session that
+// burned 100M tokens reported $0.00. It must now resolve to a non-zero cost via
+// the litellm-sourced table (embedded snapshot when offline).
+func TestSonnetAliasTargetPriced(t *testing.T) {
+	r := require.New(t)
+	got := Calculate("claude-sonnet-4-20250514", types.TokenUsage{InputTokens: 100_000_000})
+	r.Greater(got, 0.0, "sonnet alias target must not report $0 on real usage")
+}
+
+// aliasTargets enumerates every model ID an alias (or review default) can
+// resolve to. Kept in sync with internal/agent/worker.go modelAliases,
+// cmd/forge/cli.go modelAliasesForDisplay, and the review orchestrator default.
+// Duplicated here (not imported) to avoid an import cycle; the CI assertion
+// below catches alias/pricing desync regardless.
+var aliasTargets = []string{
+	"claude-opus-4-6",           // opus alias
+	"claude-sonnet-4-20250514",  // sonnet alias + review default
+	"claude-haiku-4-5-20251001", // haiku alias (fixed from bogus 20250506)
+}
+
+// TestAllAliasTargetsPriced guards against future alias/pricing desync — the
+// exact class of bug in issue #278. Every alias target must resolve to a
+// non-zero price in the loaded table.
+func TestAllAliasTargetsPriced(t *testing.T) {
+	r := require.New(t)
+	for _, model := range aliasTargets {
+		p, ok := LookupPricing(model)
+		r.Truef(ok, "alias target %q has no pricing — fix the alias or add the model", model)
+		r.Greaterf(p.Input, 0.0, "alias target %q has zero input price", model)
+		r.Greaterf(p.Output, 0.0, "alias target %q has zero output price", model)
+	}
 }
