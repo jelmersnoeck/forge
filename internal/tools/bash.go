@@ -148,7 +148,10 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 	execCtx, cancel := context.WithTimeout(ctx.Ctx, timeout)
-	defer cancel()
+	// cancel is deliberately NOT deferred. On idle timeout we leave the
+	// process running and return diagnostics to the LLM (which decides
+	// whether to kill it via a follow-up Bash call). The completion path
+	// cancels explicitly; the idle path detaches a reaper goroutine instead.
 
 	cmd := exec.CommandContext(execCtx, "bash", "-l", "-c", command)
 	cmd.Dir = ctx.CWD
@@ -170,6 +173,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	cmd.Stderr = outWriter
 
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return errResultf("Failed to start command: %v", err)
 	}
 
@@ -237,6 +241,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		case err := <-waitDone:
 			// Command finished — wait for reader goroutine to drain all output.
 			<-readerDone
+			cancel()
 			return bashResult(cmd, err, execCtx, &outputBuf, &outputMu, truncated, timeoutMs)
 
 		case <-outputCh:
@@ -285,7 +290,9 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 			}
 
 		case <-idleTimer.C:
-			// No output for bashIdleTimeout. Investigate and report.
+			// No output for bashIdleTimeout. Investigate but DO NOT kill —
+			// the process keeps running and the LLM decides next steps via a
+			// follow-up Bash call (e.g. `kill <pid>`).
 			pid := 0
 			if cmd.Process != nil {
 				pid = cmd.Process.Pid
@@ -296,21 +303,18 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 			captured := outputBuf.String()
 			outputMu.Unlock()
 
-			// Cancel the exec context to kill the process tree.
-			// The process group setup (setProcGroup) ensures SIGKILL
-			// reaches all children. WaitDelay gives them 5s to exit.
-			cancel()
-
-			// Wait for the command to actually exit so we don't leak
-			// the goroutine or leave zombie processes.
-			<-waitDone
-			<-readerDone
+			// Detach: keep the process running but make sure we don't leak the
+			// wait/reader goroutines or the context. A background reaper drains
+			// waitDone/readerDone and cancels the context once the process
+			// eventually exits (or the hard timeout/parent ctx fires).
+			go func() {
+				<-waitDone
+				<-readerDone
+				cancel()
+			}()
 
 			var result strings.Builder
-			fmt.Fprintf(&result, "Command produced no new output for %s and was killed.\n", bashIdleTimeout)
-			if pid > 0 {
-				fmt.Fprintf(&result, "PID: %d\n", pid)
-			}
+			fmt.Fprintf(&result, "Command produced no new output for %s but is still running.\n", bashIdleTimeout)
 			result.WriteString("\n--- Output so far ---\n")
 			if truncated {
 				result.WriteString("(output truncated to 100KB)\n")
@@ -324,17 +328,24 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 				}
 			}
 			result.WriteString("\n--- Process diagnostics ---\n")
+			if pid > 0 {
+				fmt.Fprintf(&result, "PID: %d\n", pid)
+			}
 			result.WriteString(diag)
-			result.WriteString("\nThe process was killed after being idle. Consider:\n")
-			result.WriteString("- Using TaskCreate for long-running commands\n")
-			result.WriteString("- Adding non-interactive flags (e.g., -y, --batch)\n")
-			result.WriteString("- Checking if the command is waiting for input\n")
+			result.WriteString("\nThe process is still running. You can:\n")
+			if pid > 0 {
+				fmt.Fprintf(&result, "- Kill it: kill %d\n", pid)
+				fmt.Fprintf(&result, "- Re-check it: ps -p %d\n", pid)
+			} else {
+				result.WriteString("- Investigate the process tree shown above\n")
+			}
+			result.WriteString("- Investigate logs (e.g. docker logs <container>)\n")
 
 			if emit != nil {
 				emit(types.OutboundEvent{
 					Type:     "tool_progress",
 					ToolName: "Bash",
-					Content:  fmt.Sprintf("%s (idle for %s — killed, returning diagnostics to LLM)", truncateCommand(command, 40), bashIdleTimeout),
+					Content:  fmt.Sprintf("%s (idle for %s — still running, returning diagnostics to LLM)", truncateCommand(command, 40), bashIdleTimeout),
 				})
 			}
 

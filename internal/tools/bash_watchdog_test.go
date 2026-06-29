@@ -259,8 +259,10 @@ func TestBashTruncateCommand(t *testing.T) {
 // then go silent, with the hard timeout set high enough that the idle
 // detection runs first.
 //
+// Per the spec, on idle the watchdog INVESTIGATES and returns diagnostics +
+// PID to the LLM but does NOT kill the process — the LLM decides next steps.
+//
 // NOTE: This test takes ~35s due to the 30s default idle timeout.
-// It's here for correctness but marked with a build tag comment.
 func TestBashIdleWatchdogFires(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping idle watchdog test in short mode (takes ~35s)")
@@ -270,7 +272,8 @@ func TestBashIdleWatchdogFires(t *testing.T) {
 
 	start := time.Now()
 	result, err := bashHandler(map[string]any{
-		// Print output, then sleep forever. Idle watchdog should fire at ~30s.
+		// Print output, then sleep past the idle timeout. The idle watchdog
+		// should fire at ~30s and return diagnostics without killing.
 		"command": "echo 'Dean Pelton'; sleep 120",
 		"timeout": float64(120000), // 2 min hard timeout — watchdog should fire first
 	}, types.ToolContext{
@@ -285,13 +288,15 @@ func TestBashIdleWatchdogFires(t *testing.T) {
 	output := result.Content[0].Text
 	r.Contains(output, "Dean Pelton", "captured output should be present")
 	r.Contains(output, "no new output", "should mention idle detection")
-	r.Contains(output, "was killed", "should say process was killed")
+	r.Contains(output, "still running", "should say process is still running")
 	r.Contains(output, "Process diagnostics", "should include diagnostics")
+	r.NotContains(output, "was killed", "process must NOT be killed on idle")
 
 	// Should have returned in ~30-35s, not 120s.
 	r.Less(elapsed, 50*time.Second,
 		"should return after idle timeout (~30s), not hard timeout (120s)")
 
-	// Verify it mentions the PID.
+	// Verify it mentions the PID so the LLM can kill it via a follow-up.
 	r.Contains(output, "PID:", "should provide PID")
+	r.Contains(output, "kill", "should suggest how to kill the process")
 }
