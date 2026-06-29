@@ -15,8 +15,16 @@ on `SubAgent`, honored by the worker's `makeAgentRunner`) and add
 `phase.RunMultiPhase`, a sequential coordinator that, for each sub-issue, creates
 a worktree + branch, spawns a full-access sub-agent in that worktree, ensures a
 PR, and cleans up before moving to the next. A phase failure halts the pipeline;
-PR and cleanup failures are non-fatal. Merge coordination between phases is #223
-(out of scope here). This is part of the multi-phase orchestrator (issue #220).
+PR and cleanup failures are non-fatal. Merge coordination between phases is #223.
+This is part of the multi-phase orchestrator (issue #220).
+
+Phase 3 (#223): Add cross-phase merge coordination. A `phase.WaitForMerge` poller
+blocks on a phase's PR until it merges (continue), closes (halt), or times out
+(halt), rebasing + force-pushing on each OPEN poll to clear merge conflicts.
+`RunMultiPhase` gains an opt-in `WaitForMerge` flag that inserts a merge-wait +
+sub-issue-close + base-pull step between phases, so each subsequent phase
+branches from a base that includes all prior merged changes. Wiring the flag into
+the real orchestrator/worker is deferred to a later phase of #220.
 
 ## Context
 - `internal/agent/phase/decompose.go` — new: decompose LLM call + sub-issue creation
@@ -34,6 +42,13 @@ PR and cleanup failures are non-fatal. Merge coordination between phases is #223
   worktree helpers, branch/slug helpers, sub-issue prompt formatting
 - (Phase 2) `internal/agent/phase/multi_test.go` — new: coordinator + git worktree tests
 - (Phase 2) `internal/agent/phase/pr.go` — `EnsurePR` reused per phase (unchanged)
+- (Phase 3) `internal/agent/phase/merge_poller.go` — new: `WaitForMerge` poller,
+  `PRState` parse, `ghPRState`, `rebasePRBranch`
+- (Phase 3) `internal/agent/phase/merge_poller_test.go` — new: poller + parse tests
+- (Phase 3) `internal/agent/phase/multi.go` — merge-wait integration in
+  `RunMultiPhase` (opt-in `WaitForMerge` flag), `gitPullBase`, `ghCloseIssue`,
+  `extractPRNumberFromURL` helpers
+- (Phase 3) `internal/agent/phase/multi_test.go` — merge-wait integration tests
 
 ## Behavior
 - `Decompose(ctx, provider, issueBody) ([]SubTask, error)` runs a lightweight LLM
@@ -102,6 +117,42 @@ PR and cleanup failures are non-fatal. Merge coordination between phases is #223
 - `SlugifyTitle(title, maxLen)` lowercases, collapses non-alphanumeric runs to
   single hyphens, trims hyphens, and truncates to `maxLen` (0 = no truncation).
 
+### Phase 3 (#223) — Cross-phase merge coordination
+- `WaitForMerge(ctx, opts)` polls a PR until terminal: probes once immediately
+  (an already-merged PR returns with no wait), then on each `PollInterval` tick
+  (default 30s) until `Timeout` (default 2h).
+- State is fetched via `QueryState` (default `ghPRState`, which runs
+  `gh pr view <number> --json state,mergedAt` and parses JSON). A PR is treated
+  as merged when `state == "MERGED"` OR `mergedAt` is non-empty (legacy `gh`
+  reports merged PRs as `CLOSED` + non-empty `mergedAt`).
+- `MERGED` → `(MergeOutcomeMerged, nil)`; `CLOSED`-unmerged →
+  `(MergeOutcomeClosed, err)`; timeout → `(MergeOutcomeTimeout, err)`; parent
+  context cancel → `(MergeOutcomeTimeout, ctx.Err())` (error contains "cancelled",
+  distinct from the timeout message).
+- On every `OPEN` poll the poller calls `Rebase` (default `rebasePRBranch`:
+  `git fetch origin <base>` → `git rebase origin/<base>` → `git push
+  --force-with-lease`, aborting a failed rebase) to clear merge conflicts.
+  A rebase error is logged at warn and polling continues (non-fatal).
+- A `QueryState` error is logged at warn and retried on the next tick — transient
+  gh/network failures must not abort a long wait. Only a terminal state or the
+  timeout/cancel ends the loop.
+- `RunMultiPhase` gains an opt-in `WaitForMerge bool`. When false the legacy
+  Phase-2 behavior is unchanged (no merge wait; each phase branches from
+  `BaseBranch` independently). When true, after `EnsurePRFn` the coordinator:
+  1. Extracts the PR number from the PR URL (`extractPRNumberFromURL`).
+  2. If no PR was created (`pr.Error != nil` or number 0) → halts the pipeline
+     (don't run the next phase on a stale base).
+  3. Calls `WaitForMergeFn` (default `WaitForMerge`); a non-nil error halts the
+     pipeline naming the phase index, title, and outcome.
+  4. On merge, closes the sub-issue via `CloseSubIssue` (default `ghCloseIssue`,
+     `gh issue close <n>`; skipped when `Number == 0`) — non-fatal.
+  5. Pulls the merged changes into the local base via `PullBase` (default
+     `gitPullBase`: `git fetch origin <base>` + `git pull origin <base>`) —
+     non-fatal — so the next phase's worktree (still branched from `BaseBranch`)
+     includes them.
+- `MergePollInterval`/`MergeTimeout` on `MultiPhaseOpts` override the poller's
+  interval/timeout; zero uses the poller defaults.
+
 ## Constraints
 - Do not add orchestration, worktree creation, CWD overrides, or multi-phase
   routing — those are later phases of #220. Only the three primitives ship here.
@@ -123,6 +174,20 @@ PR and cleanup failures are non-fatal. Merge coordination between phases is #223
   worktree-creation or sub-agent failure halts it.
 - The CWD override must default to the parent worker's cwd when `SubAgent.CWD`
   is empty — existing single-worktree sub-agent behavior is unchanged.
+
+### Phase 3 constraints (#223)
+- `WaitForMerge` (the flag) must be opt-in: with it false, `RunMultiPhase` is
+  byte-for-byte the Phase-2 behavior (no merge wait, no sub-issue close, no
+  base pull). All Phase-2 tests must keep passing unchanged.
+- The poller must NOT abort on a transient `QueryState` error — log + retry on
+  the next tick. Only `MERGED`/`CLOSED`/timeout/cancel are terminal.
+- A rebase, sub-issue-close, or base-pull failure must NOT halt the pipeline —
+  only a closed/timed-out/cancelled merge wait (or a missing PR) halts it.
+- Tests must NOT invoke `gh` or hit the network: poller state is fed via injected
+  `QueryState`/`WaitForMergeFn`/`Rebase`/`PullBase`/`CloseSubIssue` fakes;
+  `parsePRState` is tested against fixture JSON strings.
+- A merged-PR detection must accept the legacy `gh` shape (`CLOSED` + non-empty
+  `mergedAt`), not only `state == "MERGED"`.
 
 ## Interfaces
 ```go
@@ -191,6 +256,52 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error
 func SlugifyTitle(title string, maxLen int) string
 ```
 
+### Phase 3 interfaces (#223)
+```go
+// internal/agent/phase/merge_poller.go
+type PRState struct {
+    State    string `json:"state"`    // "OPEN" | "MERGED" | "CLOSED"
+    MergedAt string `json:"mergedAt"`
+}
+
+type MergeOutcome int
+const (
+    MergeOutcomeMerged MergeOutcome = iota
+    MergeOutcomeClosed
+    MergeOutcomeTimeout
+)
+
+type PRStateFunc func(ctx context.Context, cwd string, prNumber int) (PRState, error)
+type RebaseFunc func(ctx context.Context, cwd string) error
+
+type WaitForMergeOpts struct {
+    CWD          string
+    PRNumber     int
+    PollInterval time.Duration // default 30s
+    Timeout      time.Duration // default 2h
+    QueryState   PRStateFunc   // nil → ghPRState
+    Rebase       RebaseFunc    // nil → rebasePRBranch
+    Emit         func(content string)
+}
+
+func WaitForMerge(ctx context.Context, opts WaitForMergeOpts) (MergeOutcome, error)
+
+// internal/agent/phase/multi.go (Phase 3 additions to MultiPhaseOpts)
+type WaitForMergeFunc func(ctx context.Context, opts WaitForMergeOpts) (MergeOutcome, error)
+type PullBaseFunc func(ctx context.Context, repoRoot, baseBranch string) error
+type CloseSubIssueFunc func(ctx context.Context, repoRoot string, number int) error
+
+// MultiPhaseOpts gains:
+//   WaitForMerge      bool             // opt-in cross-phase merge coordination
+//   MergePollInterval time.Duration    // override poller interval
+//   MergeTimeout      time.Duration    // override poller timeout
+//   WaitForMergeFn    WaitForMergeFunc // nil → WaitForMerge
+//   PullBase          PullBaseFunc     // nil → gitPullBase
+//   CloseSubIssue     CloseSubIssueFunc// nil → ghCloseIssue
+
+func extractPRNumberFromURL(prURL string) int // 0 when none found
+```
+
 ## Edge Cases
 - Empty / whitespace-only issue body → `Decompose` returns `(nil, err)`, no LLM call.
 - LLM returns a single-element array (single-phase decomposition) → returned as a
@@ -230,3 +341,29 @@ func SlugifyTitle(title string, maxLen int) string
   `<base>/jelmer-x-1`).
 - `gitCreateWorktree` when the branch already exists → falls back to
   `git worktree add <path> <branch>` (checkout existing branch).
+
+### Phase 3 edge cases (#223)
+- PR already merged on the first probe → `WaitForMerge` returns
+  `(MergeOutcomeMerged, nil)` after a single query, no interval wait.
+- PR `OPEN` for several polls then `MERGED` → poller loops, rebases each OPEN
+  poll, returns merged.
+- PR `CLOSED` unmerged → `(MergeOutcomeClosed, err)` containing
+  "closed without merging".
+- Legacy `gh` reports `CLOSED` + non-empty `mergedAt` → treated as merged.
+- `Timeout` elapses while `OPEN` → `(MergeOutcomeTimeout, err)` containing
+  "timed out".
+- Parent context cancelled mid-wait → `(MergeOutcomeTimeout, err)` containing
+  "cancelled" (distinct from timeout).
+- Transient `QueryState` error → logged, retried next tick; a later `MERGED`
+  still succeeds.
+- `Rebase` returns an error on an OPEN poll → logged, polling continues.
+- `parsePRState` on malformed JSON or an empty `{}` object → error.
+- `extractPRNumberFromURL` on empty/non-PR URL → 0.
+- `RunMultiPhase` with `WaitForMerge` true but a phase produced no PR
+  (`pr.Error != nil` or number 0) → pipeline halts with "no PR was created".
+- `RunMultiPhase` merge wait returns closed/timeout → pipeline halts naming the
+  phase + outcome; later phases never start.
+- `CloseSubIssue` or `PullBase` failure after a merge → logged, pipeline
+  continues to the next phase.
+- `RunMultiPhase` with `WaitForMerge` false → no merge wait, close, or pull
+  occurs (Phase-2 behavior preserved).
