@@ -95,7 +95,7 @@ func TestWaitForMerge_MergedImmediately(t *testing.T) {
 			calls++
 			return PRState{State: "MERGED"}, nil
 		},
-		Rebase: func(context.Context, string) error { return nil },
+		Rebase: func(context.Context, string, string) error { return nil },
 	})
 	r.NoError(err)
 	r.Equal(MergeOutcomeMerged, outcome)
@@ -125,7 +125,7 @@ func TestWaitForMerge_MergesAfterPolling(t *testing.T) {
 			}
 			return st, nil
 		},
-		Rebase: func(context.Context, string) error { rebases++; return nil },
+		Rebase: func(context.Context, string, string) error { rebases++; return nil },
 	})
 	r.NoError(err)
 	r.Equal(MergeOutcomeMerged, outcome)
@@ -143,7 +143,7 @@ func TestWaitForMerge_ClosedHalts(t *testing.T) {
 		QueryState: func(context.Context, string, int) (PRState, error) {
 			return PRState{State: "CLOSED"}, nil
 		},
-		Rebase: func(context.Context, string) error { return nil },
+		Rebase: func(context.Context, string, string) error { return nil },
 	})
 	r.Error(err)
 	r.Equal(MergeOutcomeClosed, outcome)
@@ -161,7 +161,7 @@ func TestWaitForMerge_Timeout(t *testing.T) {
 		QueryState: func(context.Context, string, int) (PRState, error) {
 			return PRState{State: "OPEN"}, nil
 		},
-		Rebase: func(context.Context, string) error { return nil },
+		Rebase: func(context.Context, string, string) error { return nil },
 	})
 	r.Error(err)
 	r.Equal(MergeOutcomeTimeout, outcome)
@@ -187,7 +187,7 @@ func TestWaitForMerge_QueryErrorRetries(t *testing.T) {
 				return PRState{State: "MERGED"}, nil
 			}
 		},
-		Rebase: func(context.Context, string) error { return nil },
+		Rebase: func(context.Context, string, string) error { return nil },
 	})
 	r.NoError(err)
 	r.Equal(MergeOutcomeMerged, outcome)
@@ -208,7 +208,7 @@ func TestWaitForMerge_ContextCancelled(t *testing.T) {
 			cancel()
 			return PRState{State: "OPEN"}, nil
 		},
-		Rebase: func(context.Context, string) error { return nil },
+		Rebase: func(context.Context, string, string) error { return nil },
 	})
 	r.Error(err)
 	r.Equal(MergeOutcomeTimeout, outcome)
@@ -233,7 +233,7 @@ func TestWaitForMerge_RebaseFailureNonFatal(t *testing.T) {
 			}
 			return st, nil
 		},
-		Rebase: func(context.Context, string) error {
+		Rebase: func(context.Context, string, string) error {
 			return errors.New("merge conflict in jeff's car")
 		},
 	})

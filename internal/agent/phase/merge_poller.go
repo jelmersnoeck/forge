@@ -36,6 +36,18 @@ func (s PRState) closed() bool {
 	return strings.EqualFold(s.State, "CLOSED") && !s.merged()
 }
 
+// known reports whether State is a recognized GitHub PR state enum value
+// ("OPEN", "MERGED", "CLOSED"). An unrecognized value (empty or from an
+// evolving API) is treated as OPEN by the poller but logged via this check.
+func (s PRState) known() bool {
+	switch strings.ToUpper(strings.TrimSpace(s.State)) {
+	case "OPEN", "MERGED", "CLOSED":
+		return true
+	default:
+		return false
+	}
+}
+
 // PRStateFunc fetches the current state of a PR. The real implementation calls
 // `gh pr view <number> --json state,mergedAt`; tests inject a fake that returns
 // canned states. cwd is the worktree the PR's branch lives in.
