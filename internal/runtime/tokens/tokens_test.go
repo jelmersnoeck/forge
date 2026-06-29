@@ -385,3 +385,69 @@ func TestSanitizeHistory(t *testing.T) {
 		})
 	}
 }
+
+func bigHistory(n int) []types.ChatMessage {
+	var h []types.ChatMessage
+	for i := 0; i < n; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		h = append(h, types.ChatMessage{
+			Role:    role,
+			Content: []types.ChatContentBlock{{Type: "text", Text: strings.Repeat("Greendale Community College ", 350)}},
+		})
+	}
+	return h
+}
+
+func TestDropSet(t *testing.T) {
+	r := require.New(t)
+	tiny := Budget{ContextWindow: 10000, OutputReserve: 1000, Buffer: 500}
+
+	// Short history: nothing to drop.
+	r.Nil(DropSet(bigHistory(2), tiny, 500, 500))
+
+	// Long history: drop set equals history[1:keepFromIdx] and excludes the
+	// first message and the recent tail.
+	h := bigHistory(20)
+	drop := DropSet(h, tiny, 500, 500)
+	r.NotEmpty(drop)
+	// First dropped message is h[1] (first message always retained).
+	r.Equal(h[1].Content[0].Text, drop[0].Content[0].Text)
+
+	// Removed count from Compact must equal len(drop).
+	_, removed := Compact(h, tiny, 500, 500)
+	r.Equal(removed, len(drop))
+}
+
+func TestCompactWithSummary(t *testing.T) {
+	r := require.New(t)
+	tiny := Budget{ContextWindow: 10000, OutputReserve: 1000, Buffer: 500}
+	h := bigHistory(20)
+
+	// Empty summary → byte-identical to legacy Compact.
+	legacy, lr := Compact(h, tiny, 500, 500)
+	withEmpty, er := CompactWithSummary(h, tiny, 500, 500, "")
+	r.Equal(lr, er)
+	r.Equal(legacy[1].Content[0].Text, withEmpty[1].Content[0].Text)
+
+	// Non-empty summary → embedded in the boundary marker.
+	summary := "Troy and Abed planned the Greendale paintball assault."
+	withSummary, sr := CompactWithSummary(h, tiny, 500, 500, summary)
+	r.Equal(lr, sr)
+	r.Contains(withSummary[1].Content[0].Text, "Summary of")
+	r.Contains(withSummary[1].Content[0].Text, summary)
+	r.Contains(withSummary[1].Content[0].Text, "conversation continues below")
+}
+
+func TestBoundaryText(t *testing.T) {
+	r := require.New(t)
+	// Empty/whitespace summary uses legacy count-only text.
+	r.Contains(boundaryText(5, ""), "5 earlier messages were removed")
+	r.Contains(boundaryText(5, "   "), "5 earlier messages were removed")
+	// Summary present.
+	out := boundaryText(3, "key decision: use SQLite")
+	r.Contains(out, "Summary of 3 earlier messages")
+	r.Contains(out, "key decision: use SQLite")
+}
