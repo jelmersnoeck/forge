@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
+	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -525,4 +526,98 @@ func TestTurnErrorClassification_BuggyPattern(t *testing.T) {
 
 	// After turnCancel(), turnCtx.Err() is ALWAYS context.Canceled
 	r.Equal(context.Canceled, turnCtx.Err(), "turnCancel() makes Err() always return Canceled — the bug")
+}
+
+// collectEvents returns an emit func and a pointer to the captured events.
+func collectEvents() (func(types.OutboundEvent), *[]types.OutboundEvent) {
+	var events []types.OutboundEvent
+	emit := func(e types.OutboundEvent) { events = append(events, e) }
+	return emit, &events
+}
+
+func newQueueWorker(t *testing.T) *Worker {
+	t.Helper()
+	return NewWorker(NewHub(), "queue-101", t.TempDir(), t.TempDir(), "swe", "", "", "")
+}
+
+func TestWorker_ExecuteQueuedCommand_Success(t *testing.T) {
+	r := require.New(t)
+	w := newQueueWorker(t)
+	registry := tools.NewDefaultRegistry()
+	emit, events := collectEvents()
+
+	w.executeQueuedCommand(context.Background(), registry, "hist-1",
+		"echo Troy and Abed in the morning", "immediate", emit)
+
+	r.Len(*events, 1)
+	r.Equal("queued_task_result", (*events)[0].Type)
+	r.Contains((*events)[0].Content, "Troy and Abed in the morning")
+	r.Contains((*events)[0].Content, "[immediate queue]")
+}
+
+func TestWorker_ExecuteQueuedCommand_Failure(t *testing.T) {
+	r := require.New(t)
+	w := newQueueWorker(t)
+	// Registry without a Bash tool → Execute returns a "tool not found" error,
+	// exercising the queued_task_error branch. (A nonzero exit code is surfaced
+	// as an IsError result, not a Go error, so it would not hit this path.)
+	registry := tools.NewRegistry()
+	emit, events := collectEvents()
+
+	w.executeQueuedCommand(context.Background(), registry, "hist-1",
+		"echo nope", "completion", emit)
+
+	r.Len(*events, 1)
+	r.Equal("queued_task_error", (*events)[0].Type)
+	r.Contains((*events)[0].Content, "[completion queue]")
+}
+
+func TestWorker_ExecuteImmediateQueue_RunsAllAndPersists(t *testing.T) {
+	r := require.New(t)
+	w := newQueueWorker(t)
+	registry := tools.NewDefaultRegistry()
+	emit, events := collectEvents()
+
+	w.hub.EnqueueImmediate("echo first")
+	w.hub.EnqueueImmediate("echo second")
+
+	w.executeImmediateQueue(context.Background(), registry, "hist-1", emit)
+
+	r.Len(*events, 2)
+	r.Contains((*events)[0].Content, "first")
+	r.Contains((*events)[1].Content, "second")
+
+	// Immediate queue persists across turns — not cleared.
+	r.Equal([]string{"echo first", "echo second"}, w.hub.GetImmediateQueue())
+}
+
+func TestWorker_ExecuteCompletionQueue_RunsAllAndClears(t *testing.T) {
+	r := require.New(t)
+	w := newQueueWorker(t)
+	registry := tools.NewDefaultRegistry()
+	emit, events := collectEvents()
+
+	w.hub.EnqueueCompletion("echo done-one")
+	w.hub.EnqueueCompletion("echo done-two")
+
+	w.executeCompletionQueue(context.Background(), registry, "hist-1", emit)
+
+	r.Len(*events, 2)
+
+	// Completion queue is cleared after execution — second call is a no-op.
+	emit2, events2 := collectEvents()
+	w.executeCompletionQueue(context.Background(), registry, "hist-1", emit2)
+	r.Empty(*events2, "completion queue should be empty after first run")
+}
+
+func TestWorker_ExecuteQueues_EmptyAreNoops(t *testing.T) {
+	r := require.New(t)
+	w := newQueueWorker(t)
+	registry := tools.NewDefaultRegistry()
+
+	emit, events := collectEvents()
+	w.executeImmediateQueue(context.Background(), registry, "hist-1", emit)
+	w.executeCompletionQueue(context.Background(), registry, "hist-1", emit)
+
+	r.Empty(*events, "empty queues emit nothing")
 }

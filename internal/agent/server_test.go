@@ -20,6 +20,8 @@ func newTestServer(hub *Hub, sessionID string) *httptest.Server {
 	mux.HandleFunc("GET /health", handleHealth(sessionID))
 	mux.HandleFunc("POST /messages", handleMessages(hub, sessionID))
 	mux.HandleFunc("GET /events", handleSSE(hub))
+	mux.HandleFunc("POST /review", handleReview(hub, sessionID))
+	mux.HandleFunc("POST /interrupt", handleInterrupt(hub))
 	return httptest.NewServer(mux)
 }
 
@@ -164,6 +166,68 @@ func TestSSE_EventDelivery(t *testing.T) {
 	require.Equal(t, "paintball-101", event.SessionID)
 	require.Equal(t, "text", event.Type)
 	require.Equal(t, "Welcome to the thunderdome.", event.Content)
+}
+
+func TestPostReview_Endpoint(t *testing.T) {
+	tests := map[string]struct {
+		body string
+		want string
+	}{
+		"explicit base":  {body: `{"base":"main"}`, want: "main"},
+		"empty body":     {body: ``, want: ""},
+		"malformed JSON": {body: `{oops`, want: ""},
+		"feature base":   {body: `{"base":"jelmer/greendale"}`, want: "jelmer/greendale"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			hub := NewHub()
+			srv := newTestServer(hub, "review-101")
+			defer srv.Close()
+
+			resp, err := http.Post(srv.URL+"/review", "application/json", strings.NewReader(tc.body))
+			r.NoError(err)
+			defer func() { _ = resp.Body.Close() }()
+
+			r.Equal(http.StatusAccepted, resp.StatusCode)
+
+			var out map[string]string
+			r.NoError(json.NewDecoder(resp.Body).Decode(&out))
+			r.Equal("review_started", out["status"])
+
+			select {
+			case got := <-hub.ReviewChannel():
+				r.Equal(tc.want, got)
+			case <-time.After(time.Second):
+				r.Fail("review channel did not receive value")
+			}
+		})
+	}
+}
+
+func TestPostInterrupt_Endpoint(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+	srv := newTestServer(hub, "interrupt-101")
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/interrupt", "application/json", strings.NewReader(""))
+	r.NoError(err)
+	defer func() { _ = resp.Body.Close() }()
+
+	r.Equal(http.StatusAccepted, resp.StatusCode)
+
+	var out map[string]string
+	r.NoError(json.NewDecoder(resp.Body).Decode(&out))
+	r.Equal("interrupted", out["status"])
+
+	select {
+	case <-hub.InterruptChannel():
+		// good — interrupt delivered
+	case <-time.After(time.Second):
+		r.Fail("interrupt channel did not receive signal")
+	}
 }
 
 func TestSetModel_Endpoint(t *testing.T) {
