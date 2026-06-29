@@ -1054,11 +1054,15 @@ func (w *Worker) makeAgentRunner(
 		}
 		// 0 = unlimited, positive = explicit limit
 
+		// CWD override lets a sub-agent run in its own worktree (multi-phase
+		// orchestrator). Empty falls back to the parent worker's cwd.
+		cwd := subAgentCWD(w.cwd, agent)
+
 		opts := loop.Options{
 			Provider:     prov,
 			Tools:        subRegistry,
 			Context:      bundle,
-			CWD:          w.cwd,
+			CWD:          cwd,
 			SessionStore: store,
 			SessionID:    agent.SessionID,
 			Model:        model,
@@ -1085,6 +1089,16 @@ func (w *Worker) makeAgentRunner(
 		agent.Output = output.String()
 		return nil
 	}
+}
+
+// subAgentCWD returns the working directory for a sub-agent: the agent's CWD
+// override when set, otherwise the parent worker's cwd. This lets multi-phase
+// runs place each sub-agent in its own worktree.
+func subAgentCWD(parentCWD string, agent *types.SubAgent) string {
+	if agent.CWD != "" {
+		return agent.CWD
+	}
+	return parentCWD
 }
 
 // resolveSubAgentRegistry builds the tool registry for a sub-agent.

@@ -67,6 +67,7 @@ type SubAgent struct {
 	DisallowedTools []string               `json:"disallowedTools,omitempty"` // Denylist
 	MaxTurns        int                    `json:"maxTurns,omitempty"`        // Max conversation turns
 	TurnCount       int                    `json:"turnCount"`                 // Current turn count
+	CWD             string                 `json:"cwd,omitempty"`             // Working-directory override (e.g. a phase worktree); falls back to the parent worker's cwd when empty
 	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 	Output          string                 `json:"output,omitempty"`    // Final output
 	Error           string                 `json:"error,omitempty"`     // Error message
