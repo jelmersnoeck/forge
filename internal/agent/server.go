@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -120,8 +122,13 @@ func handleReview(hub *Hub, sessionID string) http.HandlerFunc {
 		var body struct {
 			Base string `json:"base"`
 		}
-		// Body is optional — base defaults to empty (auto-detect)
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		// Body is optional — base defaults to empty (auto-detect). An empty
+		// body yields io.EOF, which is expected and not logged. Any other
+		// decode error means a malformed (non-empty) body — log it for
+		// operational visibility, then proceed with auto-detect.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			log.Printf("[agent] session=%s warning: malformed POST /review body, ignoring and auto-detecting base: %v", sessionID, err)
+		}
 
 		hub.TriggerReview(body.Base)
 

@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -201,6 +203,62 @@ func TestPostReview_Endpoint(t *testing.T) {
 				r.Equal(tc.want, got)
 			case <-time.After(time.Second):
 				r.Fail("review channel did not receive value")
+			}
+		})
+	}
+}
+
+// TestPostReview_MalformedBody_LogsWarning verifies that a malformed (non-empty)
+// POST /review body is surfaced via a warning log for operational visibility,
+// while still returning 202 and auto-detecting the base. An empty body (the
+// common case) must NOT log, since it is expected.
+func TestPostReview_MalformedBody_LogsWarning(t *testing.T) {
+	tests := map[string]struct {
+		body        string
+		wantLogged  bool
+		wantContent string
+	}{
+		"malformed body logs": {body: `{oops`, wantLogged: true, wantContent: "malformed POST /review body"},
+		"empty body silent":   {body: ``, wantLogged: false},
+		"valid body silent":   {body: `{"base":"greendale"}`, wantLogged: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			var logBuf bytes.Buffer
+			origOut := log.Writer()
+			origFlags := log.Flags()
+			log.SetOutput(&logBuf)
+			log.SetFlags(0)
+			defer func() {
+				log.SetOutput(origOut)
+				log.SetFlags(origFlags)
+			}()
+
+			hub := NewHub()
+			srv := newTestServer(hub, "review-malformed-101")
+			defer srv.Close()
+
+			resp, err := http.Post(srv.URL+"/review", "application/json", strings.NewReader(tc.body))
+			r.NoError(err)
+			defer func() { _ = resp.Body.Close() }()
+			r.Equal(http.StatusAccepted, resp.StatusCode)
+
+			// Drain the review trigger so the handler's TriggerReview does not leak.
+			select {
+			case <-hub.ReviewChannel():
+			case <-time.After(time.Second):
+				r.Fail("review channel did not receive value")
+			}
+
+			logged := logBuf.String()
+			if tc.wantLogged {
+				r.Contains(logged, tc.wantContent)
+				r.Contains(logged, "review-malformed-101")
+			} else {
+				r.Empty(logged, "expected no log output for non-malformed body")
 			}
 		})
 	}
