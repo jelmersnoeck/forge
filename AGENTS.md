@@ -254,6 +254,12 @@ POST   /interrupt                     interrupt current work
 
 ## Gotchas
 
+- Anthropic streams two `usage` deltas per call: `message_start` carries
+  cache_read/cache_creation/input; `message_delta` carries output tokens only
+  (cache fields zero). Cache-health detection must run ONLY on the cache-bearing
+  delta — gate via `hasCacheSignal` in `internal/runtime/loop/loop.go`. Feeding
+  the output-only delta to `checkCacheHealth` produces bogus `[CACHE BREAK] X→0`
+  warnings every call and resets the baseline to 0, blinding real-break detection.
 - `~/.forge/settings.json` may contain model aliases like `opus[1m]` that the
   Anthropic API doesn't understand. Agent filters these — only values
   starting with `claude-` are passed through.

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -321,4 +322,77 @@ func TestWriteCacheBreakDiff_NoChanges(t *testing.T) {
 	path, err := writeCacheBreakDiff(nil)
 	r.NoError(err)
 	r.Empty(path)
+}
+
+func TestHasCacheSignal(t *testing.T) {
+	tests := map[string]struct {
+		usage types.TokenUsage
+		want  bool
+	}{
+		"message_start with cache read": {types.TokenUsage{CacheReadTokens: 2128, InputTokens: 5}, true},
+		"message_start cold cache":      {types.TokenUsage{InputTokens: 5000}, true},
+		"message_start cache creation":  {types.TokenUsage{CacheCreationTokens: 2128, InputTokens: 5}, true},
+		"message_delta output only":     {types.TokenUsage{OutputTokens: 412}, false},
+		"empty usage":                   {types.TokenUsage{}, false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			u := tc.usage
+			r.Equal(tc.want, hasCacheSignal(&u))
+		})
+	}
+}
+
+// collectWarnings runs fn against a Loop and returns any CACHE BREAK warning
+// strings emitted.
+func collectCacheBreaks(usages []types.TokenUsage) []string {
+	l := &Loop{}
+	var breaks []string
+	emit := func(ev types.OutboundEvent) {
+		if ev.Type == "warning" && strings.Contains(ev.Content, "[CACHE BREAK]") {
+			breaks = append(breaks, ev.Content)
+		}
+	}
+	for i := range usages {
+		u := usages[i]
+		if hasCacheSignal(&u) {
+			l.checkCacheHealth(&u, emit)
+		}
+	}
+	return breaks
+}
+
+func TestCheckCacheHealth_MessageDeltaDoesNotFalseBreak(t *testing.T) {
+	r := require.New(t)
+
+	// Two real API calls, each followed by an output-only message_delta.
+	// The message_delta carries cache_read=0 but MUST NOT trigger a break.
+	usages := []types.TokenUsage{
+		{CacheReadTokens: 2128, InputTokens: 10},  // call 1: message_start
+		{OutputTokens: 100},                       // call 1: message_delta
+		{CacheReadTokens: 20182, InputTokens: 10}, // call 2: message_start (cache grew)
+		{OutputTokens: 200},                       // call 2: message_delta
+	}
+
+	breaks := collectCacheBreaks(usages)
+	r.Empty(breaks, "output-only message_delta must not produce a cache break")
+}
+
+func TestCheckCacheHealth_RealBreakStillFires(t *testing.T) {
+	r := require.New(t)
+
+	// Call 1 warms a big cache; call 2 is genuinely evicted (cache_read→0 but
+	// input present). The interleaved message_delta must not corrupt baseline.
+	usages := []types.TokenUsage{
+		{CacheReadTokens: 20000, InputTokens: 10}, // call 1: message_start
+		{OutputTokens: 100},                       // call 1: message_delta
+		{CacheReadTokens: 0, InputTokens: 20100},  // call 2: message_start, evicted
+		{OutputTokens: 200},                       // call 2: message_delta
+	}
+
+	breaks := collectCacheBreaks(usages)
+	r.Len(breaks, 1, "a genuine eviction between real calls must still warn")
+	r.Contains(breaks[0], "20000 → 0")
 }
