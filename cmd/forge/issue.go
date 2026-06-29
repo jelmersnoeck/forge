@@ -67,6 +67,56 @@ func fetchGitHubIssue(ref string, cwd string) (prompt string, title string, issu
 	return formatIssuePrompt(issue), issue.Title, num, issue.URL, nil
 }
 
+// fetchSubIssues fetches the sub-issues attached to a parent issue, in the
+// order the GitHub sub-issues API returns them (position order). cwd is used to
+// resolve a relative issue reference against the current repo.
+//
+// Returns (nil, nil) when the parent has no sub-issues.
+func fetchSubIssues(ref string, cwd string) ([]ghIssue, error) {
+	if _, lookErr := exec.LookPath("gh"); lookErr != nil {
+		return nil, fmt.Errorf("--issue requires the GitHub CLI (gh) — install from https://cli.github.com")
+	}
+
+	normalized := normalizeIssueRef(ref)
+	// A full URL ref won't substitute into {owner}/{repo}; reduce it to the
+	// bare issue number so gh resolves the placeholders against cwd's repo.
+	if strings.Contains(normalized, "/") {
+		if n := extractIssueNumber(ref); n > 0 {
+			normalized = strconv.Itoa(n)
+		}
+	}
+
+	cmd := exec.Command("gh", "api", "repos/{owner}/{repo}/issues/"+normalized+"/sub_issues")
+	cmd.Dir = cwd
+
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+
+	return parseSubIssues(out)
+}
+
+// parseSubIssues unmarshals the GitHub sub-issues API response into ghIssue
+// slices, preserving the API's position order. Empty input returns (nil, nil).
+func parseSubIssues(raw []byte) ([]ghIssue, error) {
+	var subs []ghIssue
+	if err := json.Unmarshal(raw, &subs); err != nil {
+		return nil, fmt.Errorf("parsing gh sub-issues output: %w", err)
+	}
+	if len(subs) == 0 {
+		return nil, nil
+	}
+	return subs, nil
+}
+
 // normalizeIssueRef strips leading `#` and whitespace from an issue reference.
 // Full URLs are passed through unchanged.
 func normalizeIssueRef(ref string) string {
