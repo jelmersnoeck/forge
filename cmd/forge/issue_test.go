@@ -137,3 +137,61 @@ func TestNormalizeIssueRef(t *testing.T) {
 		})
 	}
 }
+
+func TestParseSubIssues(t *testing.T) {
+	tests := map[string]struct {
+		raw     string
+		want    []ghIssue
+		wantErr bool
+	}{
+		"two sub-issues in position order": {
+			raw: `[
+				{"title":"Phase 1","body":"foundation","url":"https://github.com/greendale/community/issues/11","number":11},
+				{"title":"Phase 2","body":"build on it","url":"https://github.com/greendale/community/issues/12","number":12}
+			]`,
+			want: []ghIssue{
+				{Title: "Phase 1", Body: "foundation", URL: "https://github.com/greendale/community/issues/11", Number: 11},
+				{Title: "Phase 2", Body: "build on it", URL: "https://github.com/greendale/community/issues/12", Number: 12},
+			},
+		},
+		"single sub-issue": {
+			raw: `[{"title":"Only phase","body":"x","url":"u","number":7}]`,
+			want: []ghIssue{
+				{Title: "Only phase", Body: "x", URL: "u", Number: 7},
+			},
+		},
+		"empty array": {
+			raw:  `[]`,
+			want: nil,
+		},
+		"malformed json": {
+			raw:     `[{"title": `,
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got, err := parseSubIssues([]byte(tc.raw))
+			if tc.wantErr {
+				r.Error(err)
+				r.Nil(got)
+				return
+			}
+			r.NoError(err)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestFetchSubIssuesNoGH(t *testing.T) {
+	// Force gh to be absent by emptying PATH; fetchSubIssues must return the
+	// install-guidance error rather than panicking or invoking a real command.
+	t.Setenv("PATH", "")
+	r := require.New(t)
+	got, err := fetchSubIssues("42", t.TempDir())
+	r.Error(err)
+	r.Nil(got)
+	r.Contains(err.Error(), "GitHub CLI")
+}
