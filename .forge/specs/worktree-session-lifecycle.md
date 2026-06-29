@@ -25,7 +25,8 @@ starting cold. Conversation turns themselves continue to replay from JSONL via
 - `cmd/forge/worktree_session.go` — `SessionInfo`, read/write `.forge-session`, `warnIfStateStale` (issue #211)
 - `cmd/forge/worktree_session_test.go` — tests for session metadata and resumable session scanning
 - `cmd/forge/worktree_test.go` — worktree helper tests
-- `internal/sessionstate/` — `.forge-state` State type + atomic Write/Read (issue #211)
+- `internal/sessionstate/` — `.forge/.forge-state` State type + atomic Write/Read,
+  legacy-root read fallback, `.forge/.gitignore` seeding (issue #211; relocated)
 - `internal/agent/worker.go` — `initialState`/`persistState`, phase↔name mapping, persist every turn (issue #211)
 - `.gitignore` — added `.forge-session` and `.forge-state` entries
 - Session JSONL lives at `/tmp/forge/sessions/<sessionID>.jsonl`
@@ -131,8 +132,14 @@ type SessionInfo struct {
 }
 ```
 
-### `.forge-state` file (in worktree root) — issue #211
-Routing metadata only (~200 bytes). Lives in `internal/sessionstate`.
+### `.forge-state` file (in `.forge/`) — issue #211
+Routing metadata only (~200 bytes). Lives in `internal/sessionstate`. Stored at
+`<worktreeRoot>/.forge/.forge-state` (relocated from the worktree root so it sits
+alongside the rest of forge's per-project state and inherits `.forge/`'s gitignore
+directives). `Read` falls back to the legacy `<worktreeRoot>/.forge-state` when the
+new path is absent, so pre-relocation worktrees resume cleanly; the next `Write`
+migrates the file to `.forge/` and leaves the legacy file untouched (no destructive
+migration).
 ```json
 {
   "version": 1,
@@ -150,8 +157,9 @@ Routing metadata only (~200 bytes). Lives in `internal/sessionstate`.
 ```go
 package sessionstate
 
-const StateFile = ".forge-state"
-const Version = 1
+const StateFile = ".forge-state" // bare filename (unchanged)
+const StateDir  = ".forge"       // subdirectory under the worktree root
+const Version   = 1
 
 type State struct {
     Version          int
@@ -165,8 +173,18 @@ type State struct {
     UpdatedAt        time.Time
 }
 
-func Write(worktreeRoot string, s State) error // atomic (tmp + rename)
-func Read(worktreeRoot string) (State, error)  // os.ErrNotExist when absent
+func RelPath() string // ".forge/.forge-state", for callers/tests locating the file
+
+// Write atomically persists to <worktreeRoot>/.forge/.forge-state (tmp + rename,
+// temp file kept inside .forge/), creating .forge/ if absent and idempotently
+// seeding .forge/.gitignore with a ".forge-state" line. gitignore seeding is
+// best-effort: a seed failure is logged, not returned, when the state write itself
+// succeeded.
+func Write(worktreeRoot string, s State) error
+// Read loads <worktreeRoot>/.forge/.forge-state, falling back to the legacy
+// <worktreeRoot>/.forge-state only on os.ErrNotExist (parse/version errors do not
+// trigger fallback). Returns os.ErrNotExist when neither file exists.
+func Read(worktreeRoot string) (State, error)
 ```
 
 Worker (`internal/agent/worker.go`):
@@ -234,3 +252,59 @@ the conversation history still replays; the user is just told it may be stale.
   single source of truth for turns; `.forge-state` holds only routing metadata.
 - A missing/corrupt/version-mismatched `.forge-state` must never be fatal.
 - Writes must be atomic (tmp file + rename) to avoid torn reads on crash.
+
+### Relocation into `.forge/` (issue #261)
+The state file moved from the worktree root to `<worktreeRoot>/.forge/.forge-state`
+so it lives alongside the rest of forge's per-project state and inherits `.forge/`'s
+gitignore directives. forge additionally guarantees `.forge/.gitignore` always
+ignores `.forge-state`, so the transient routing file is never committed even when
+`.forge/` itself is tracked. (Distinct from `respect-gitignored-forge`, which
+governs git staging in the reflect tool; this only relocates the state file and
+seeds `.forge/.gitignore`.)
+
+Behavior:
+- `Write` creates `<worktreeRoot>/.forge/` (mode 0o755) if absent, writes the state
+  atomically (temp file inside `.forge/`, then rename), then idempotently ensures
+  `.forge/.gitignore` contains an exact `.forge-state` line: create it if absent,
+  append the line if missing (no duplicate, no blank-line churn, preserving any
+  existing entries). gitignore seeding is best-effort — a seed failure is logged,
+  not returned, when the state write succeeded.
+- `Read` reads the new path first; on `os.ErrNotExist` it falls back to the legacy
+  root path. Parse and version errors from the new file do NOT trigger fallback.
+- The next `Write` after a legacy-only read migrates the file to `.forge/`; the
+  legacy root file is left in place (non-destructive).
+- `StateFile` stays the bare `.forge-state`; `StateDir` (`.forge`) and `RelPath()`
+  (`.forge/.forge-state`) are exported for callers/tests.
+
+Relocation constraints:
+- Do not change `Read`/`Write` signatures (callers keep passing the worktree root).
+- Do not delete the legacy root `.forge-state` (no destructive migration).
+- Idempotent gitignore seeding — never write duplicate `.forge-state` lines.
+- gitignore seeding failure must never abort a turn — log only.
+- Atomic temp file must stay inside `.forge/` (rename stays on the same dir).
+- Seed only the `.forge-state` entry — never presume to ignore all of `.forge/`.
+
+### E11: Legacy-only state on resume (issue #261)
+A worktree created before relocation has `<root>/.forge-state` but no
+`.forge/.forge-state`. `Read` returns the legacy state; the next `Write` migrates
+to `.forge/` and leaves the legacy file on disk (harmless, becomes stale).
+
+### E12: Both new and legacy state present (issue #261)
+`Read` returns the new-location state and ignores the legacy file — deterministic
+toward the new path.
+
+### E13: `.forge/.gitignore` already ignores `.forge-state` (issue #261)
+`Write` leaves the gitignore byte-identical — no duplicate line, no trailing-newline
+churn. Existing entries (e.g. `settings.local.json`) are preserved when appending.
+
+### E14: gitignore seed fails but state write succeeds (issue #261)
+`Write` returns nil and logs the seed failure; state is still persisted and
+resumable.
+
+### E15: `.forge/` exists as a file, not a directory (issue #261)
+`MkdirAll` errors; `Write` returns that error (fails loudly, not swallowed).
+
+### E16: Corrupt or version-mismatched new-location file (issue #261)
+`Read` returns the parse/version error and does NOT fall back to legacy — only
+`os.ErrNotExist` triggers fallback. `initialState()` still treats this as fresh
+(E8), so it remains non-fatal.
