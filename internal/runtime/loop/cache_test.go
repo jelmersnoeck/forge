@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"os"
 	"testing"
 
 	"github.com/jelmersnoeck/forge/internal/types"
@@ -197,4 +198,111 @@ func TestAddMessageCacheControl(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHashComponent_DeterministicAndContentSensitive(t *testing.T) {
+	r := require.New(t)
+
+	a := []types.SystemBlock{{Type: "text", Text: "Greendale Community College"}}
+	b := []types.SystemBlock{{Type: "text", Text: "Greendale Community College"}}
+	c := []types.SystemBlock{{Type: "text", Text: "Señor Chang teaches Spanish"}}
+
+	ha, rawA := hashComponent(a)
+	hb, _ := hashComponent(b)
+	hc, _ := hashComponent(c)
+
+	r.Equal(ha, hb, "identical content must hash identically")
+	r.NotEqual(ha, hc, "different content must hash differently")
+	r.Len(ha, 6, "short hash is 6 hex chars")
+	r.NotEmpty(rawA)
+}
+
+func TestMessagePrefix_StripsCacheControlAndStopsAtBreakpoint(t *testing.T) {
+	r := require.New(t)
+
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Troy Barnes"}}},
+		{Role: "assistant", Content: []types.ChatContentBlock{
+			{Type: "text", Text: "Abed Nadir", CacheControl: &types.CacheControl{Type: "ephemeral", TTL: "1h"}},
+		}},
+		{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Britta Perry"}}},
+	}
+
+	prefix := messagePrefix(msgs)
+
+	r.Len(prefix, 2, "stops after the breakpoint message")
+	for _, m := range prefix {
+		for _, b := range m.Content {
+			r.Nil(b.CacheControl, "cache_control must be stripped")
+		}
+	}
+}
+
+func TestMessagePrefix_CacheControlOnlyDiffYieldsSameHash(t *testing.T) {
+	r := require.New(t)
+
+	base := []types.ChatMessage{
+		{Role: "user", Content: []types.ChatContentBlock{{Type: "text", Text: "Greendale"}}},
+	}
+	withCC := []types.ChatMessage{
+		{Role: "user", Content: []types.ChatContentBlock{
+			{Type: "text", Text: "Greendale", CacheControl: &types.CacheControl{Type: "ephemeral"}},
+		}},
+	}
+
+	h1, _ := hashComponent(messagePrefix(base))
+	h2, _ := hashComponent(messagePrefix(withCC))
+	r.Equal(h1, h2, "differing only in cache_control must not change the hash")
+}
+
+func TestMessagePrefix_EmptyHistory(t *testing.T) {
+	r := require.New(t)
+	prefix := messagePrefix(nil)
+	r.Empty(prefix)
+	h, _ := hashComponent(prefix)
+	r.Len(h, 6)
+}
+
+func TestDiffCacheComponents(t *testing.T) {
+	r := require.New(t)
+
+	l := &Loop{
+		lastSystemHash: "aaa111", lastSystemRaw: "old-sys",
+		lastToolsHash: "bbb222", lastToolsRaw: "old-tools",
+		lastMsgsHash: "ccc333", lastMsgsRaw: "old-msgs",
+		currSystemHash: "aaa111", currSystemRaw: "old-sys",
+		currToolsHash: "ddd444", currToolsRaw: "new-tools",
+		currMsgsHash: "ccc333", currMsgsRaw: "old-msgs",
+	}
+
+	changes := l.diffCacheComponents()
+	r.Len(changes, 1)
+	r.Equal("tools", changes[0].Name)
+	r.Equal("bbb222", changes[0].OldHash)
+	r.Equal("ddd444", changes[0].NewHash)
+}
+
+func TestWriteCacheBreakDiff(t *testing.T) {
+	r := require.New(t)
+
+	changes := []cacheComponentChange{
+		{Name: "system", OldHash: "aaa", NewHash: "bbb", OldRaw: "Jeff Winger", NewRaw: "Dean Pelton"},
+	}
+	path, err := writeCacheBreakDiff(changes)
+	r.NoError(err)
+	r.NotEmpty(path)
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	data, err := os.ReadFile(path)
+	r.NoError(err)
+	r.Contains(string(data), "system: aaa → bbb")
+	r.Contains(string(data), "Jeff Winger")
+	r.Contains(string(data), "Dean Pelton")
+}
+
+func TestWriteCacheBreakDiff_NoChanges(t *testing.T) {
+	r := require.New(t)
+	path, err := writeCacheBreakDiff(nil)
+	r.NoError(err)
+	r.Empty(path)
 }
