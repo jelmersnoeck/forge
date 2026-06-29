@@ -359,11 +359,11 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 	}()
 
-	// Pick model: explicit override > settings > default.
-	// Only pass real API model IDs to the Anthropic provider.
-	// Claude CLI accepts aliases (sonnet, opus, etc.).
+	// Pick model: explicit override > settings > user config > provider default.
+	// The provider supplies its own default so non-Anthropic providers never
+	// receive a claude- model via the default path.
 	_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
-	const defaultModel = "claude-opus-4-6"
+	defaultModel := provider.DefaultModel(prov)
 	settingsModel := bundle.Settings.Model
 
 	// Listen for review triggers in a separate goroutine.
@@ -938,18 +938,8 @@ func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.
 		w.hub.PublishEvent(event)
 	}
 
-	// Collect available providers.
-	providers := make(map[string]types.LLMProvider)
-
-	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
-		providers["anthropic"] = provider.NewAnthropic(key)
-	}
-	if key, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
-		providers["openai"] = provider.NewOpenAI(key)
-	}
-	if _, err := exec.LookPath("claude"); err == nil {
-		providers["claude-cli"] = provider.NewClaudeCLI()
-	}
+	// Collect available providers (canonical names shared with the review pkg).
+	providers := phase.CollectReviewProviders()
 
 	if len(providers) == 0 {
 		emit(types.OutboundEvent{
@@ -1054,9 +1044,8 @@ func (w *Worker) makeAgentRunner(
 
 		model := agent.Model
 		if model == "" {
-			const defaultModel = "claude-opus-4-6"
 			_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
-			model = resolveDefaultModel(bundle.Settings.Model, isClaudeCLI, defaultModel)
+			model = resolveDefaultModel(bundle.Settings.Model, isClaudeCLI, provider.DefaultModel(prov))
 		}
 
 		maxTurns := agent.MaxTurns
@@ -1177,6 +1166,59 @@ func providerFromName(name string) types.LLMProvider {
 		key, _ := credentials.Default().Get(credentials.AnthropicAPIKey)
 		return provider.NewAnthropic(key)
 	}
+}
+
+// resolveProviderName reports which provider selectProvider would pick, using
+// the same priority (FORGE_PROVIDER > user config > auto-detect). Returns the
+// canonical name ("anthropic", "openai", "claude-cli") without constructing a
+// provider. Used for provider-aware startup warnings.
+func resolveProviderName() string {
+	if envProv := os.Getenv("FORGE_PROVIDER"); envProv != "" {
+		return canonicalProviderName(envProv)
+	}
+	if userCfg, err := config.LoadUserConfig(); err == nil && userCfg.Provider.Default != "" {
+		return canonicalProviderName(userCfg.Provider.Default)
+	}
+	if _, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
+		return "anthropic"
+	}
+	if _, err := exec.LookPath("claude"); err == nil {
+		return "claude-cli"
+	}
+	// No keys, no CLI — selectProvider falls back to Anthropic with empty key.
+	return "anthropic"
+}
+
+// canonicalProviderName normalizes a configured provider name to its canonical
+// form, falling back to "anthropic" for unknown names (matching providerFromName).
+func canonicalProviderName(name string) string {
+	switch name {
+	case "anthropic", "openai", "claude-cli":
+		return name
+	default:
+		return "anthropic"
+	}
+}
+
+// StartupKeyWarning returns a provider-aware warning when the resolved
+// provider's API key is missing, or "" when no warning is needed. The Claude
+// CLI provider needs no key. Used by `forge agent` startup.
+func StartupKeyWarning() string {
+	switch resolveProviderName() {
+	case "openai":
+		if _, ok := credentials.Default().Get(credentials.OpenAIAPIKey); !ok {
+			return fmt.Sprintf("warning: %s not set — agent will start but cannot connect to OpenAI",
+				credentials.EnvVarName(credentials.OpenAIAPIKey))
+		}
+	case "claude-cli":
+		// CLI manages its own auth; nothing to warn about.
+	default: // anthropic
+		if _, ok := credentials.Default().Get(credentials.AnthropicAPIKey); !ok {
+			return fmt.Sprintf("warning: %s not set — agent will start but cannot connect to Anthropic",
+				credentials.EnvVarName(credentials.AnthropicAPIKey))
+		}
+	}
+	return ""
 }
 
 // collectProviders returns all available LLM providers keyed by display name.
@@ -1370,13 +1412,12 @@ func (w *Worker) resolveModel(settingsModel string, isClaudeCLI bool, defaultMod
 }
 
 // resolveDefaultModel resolves the model without a session override, with
-// priority: settings (claude- prefix) > userConfig.Model.Default > default.
-// Shared by the main loop and sub-agent runner.
+// priority: settings > userConfig.Model.Default > provider default.
+// A non-empty settings model passes through to whatever provider is active,
+// regardless of prefix — the active provider owns model validation. Shared by
+// the main loop and sub-agent runner.
 func resolveDefaultModel(settingsModel string, isClaudeCLI bool, defaultModel string) string {
-	switch {
-	case isClaudeCLI && settingsModel != "":
-		return settingsModel
-	case settingsModel != "" && strings.HasPrefix(settingsModel, "claude-"):
+	if settingsModel != "" {
 		return settingsModel
 	}
 

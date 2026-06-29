@@ -81,7 +81,7 @@ func drainTextDeltas(deltaChan <-chan types.ChatDelta) (string, error) {
 }
 
 // generateSessionName uses an LLM provider to create a kebab-case slug
-// summarizing the prompt. Tries each model in types.LightweightModels,
+// summarizing the prompt. Tries each model in the provider's lightweight list,
 // falling through on error. Falls back to a random adjective-noun pair
 // when provider is nil, prompt is empty, or all models fail.
 func generateSessionName(prov types.LLMProvider, prompt string) string {
@@ -95,13 +95,14 @@ func generateSessionName(prov types.LLMProvider, prompt string) string {
 		prompt = prompt[:maxPromptLen] + "..."
 	}
 
-	for _, model := range types.LightweightModels {
+	models := provider.LightweightModels(prov)
+	for _, model := range models {
 		if slug := trySessionNameModel(prov, model, prompt); slug != "" {
 			return slug
 		}
 	}
 
-	log.Printf("[session-name] all %d models failed (tried %v) — falling back to random name", len(types.LightweightModels), types.LightweightModels)
+	log.Printf("[session-name] all %d models failed (tried %v) — falling back to random name", len(models), models)
 	return fallbackSessionName()
 }
 

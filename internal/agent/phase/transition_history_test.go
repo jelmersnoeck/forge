@@ -158,7 +158,7 @@ func TestOrchestrator_QAToTaskTransitionCarriesHistory(t *testing.T) {
 		responses: map[string][]types.ChatDelta{},
 	}
 	// Lightweight models return question first, then task/small.
-	for _, m := range types.LightweightModels {
+	for _, m := range testLightweightModels {
 		prov.responses[m] = []types.ChatDelta{
 			{Type: "text_delta", Text: `{"intent":"question","size":"","spec_match":""}`},
 		}
@@ -182,7 +182,7 @@ func TestOrchestrator_QAToTaskTransitionCarriesHistory(t *testing.T) {
 	_ = callCount
 
 	// Now switch classifier to return task/small for the follow-up.
-	for _, m := range types.LightweightModels {
+	for _, m := range testLightweightModels {
 		prov.responses[m] = []types.ChatDelta{
 			{Type: "text_delta", Text: `{"intent":"task","size":"small","spec_match":""}`},
 		}
@@ -213,7 +213,7 @@ func TestOrchestrator_InvestigateToTaskTransitionCarriesHistory(t *testing.T) {
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{},
 	}
-	for _, m := range types.LightweightModels {
+	for _, m := range testLightweightModels {
 		prov.responses[m] = []types.ChatDelta{
 			{Type: "text_delta", Text: `{"intent":"investigate","size":"","spec_match":""}`},
 		}
@@ -246,7 +246,7 @@ func TestOrchestrator_InvestigateToTaskTransitionCarriesHistory(t *testing.T) {
 	r.NotEmpty(result.InvestigateHistoryID)
 
 	// Switch to task.
-	for _, m := range types.LightweightModels {
+	for _, m := range testLightweightModels {
 		prov.responses[m] = []types.ChatDelta{
 			{Type: "text_delta", Text: `{"intent":"task","size":"small","spec_match":""}`},
 		}

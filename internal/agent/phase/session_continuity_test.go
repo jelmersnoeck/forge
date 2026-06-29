@@ -259,7 +259,7 @@ func TestOrchestratorResult_Investigate(t *testing.T) {
 		responses: map[string][]types.ChatDelta{},
 	}
 	// Set up lightweight models to return investigate.
-	for _, m := range types.LightweightModels {
+	for _, m := range testLightweightModels {
 		classifyProv.responses[m] = []types.ChatDelta{
 			{Type: "text_delta", Text: `{"intent": "investigate"}`},
 		}

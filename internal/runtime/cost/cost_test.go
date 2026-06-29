@@ -294,3 +294,45 @@ func TestFormatNumberWithPercent(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateOpenAI(t *testing.T) {
+	r := require.New(t)
+
+	tests := map[string]struct {
+		model string
+		usage types.TokenUsage
+		want  float64
+	}{
+		"gpt-4.1 input+output": {
+			model: "gpt-4.1",
+			usage: types.TokenUsage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
+			want:  10.0, // 2.00 + 8.00
+		},
+		"gpt-4.1-mini": {
+			model: "gpt-4.1-mini",
+			usage: types.TokenUsage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
+			want:  2.0, // 0.40 + 1.60
+		},
+		"o3": {
+			model: "o3",
+			usage: types.TokenUsage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
+			want:  10.0, // 2.00 + 8.00
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r.InDelta(tc.want, Calculate(tc.model, tc.usage), 1e-9)
+		})
+	}
+}
+
+func TestCalculateUnknownModelReturnsZero(t *testing.T) {
+	r := require.New(t)
+	// An unpriced model (e.g. brand-new gpt-5) returns 0.0 — the warning is
+	// additive and must not change the return value.
+	got := Calculate("gpt-5-greendale", types.TokenUsage{InputTokens: 1000, OutputTokens: 1000})
+	r.Equal(0.0, got)
+	// Calling again must not panic (sync.Once dedup); still 0.0.
+	r.Equal(0.0, Calculate("gpt-5-greendale", types.TokenUsage{InputTokens: 5}))
+}

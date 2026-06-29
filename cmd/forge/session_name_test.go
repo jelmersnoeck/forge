@@ -97,6 +97,16 @@ type sessionNameMockProvider struct {
 	models   []string // records which models were requested
 }
 
+// testLightweightModels mirrors the Anthropic cheap-model list; both mocks
+// report it via types.LightweightModeler so provider.LightweightModels()
+// returns the names the tests assert on.
+var testLightweightModels = []string{
+	"claude-haiku-4-5",
+	"claude-haiku-4-5-20251001",
+}
+
+func (m *sessionNameMockProvider) LightweightModels() []string { return testLightweightModels }
+
 func (m *sessionNameMockProvider) Chat(_ context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	m.calls++
 	m.models = append(m.models, req.Model)
@@ -116,6 +126,8 @@ type sessionNameModelAwareMock struct {
 	responses map[string][]types.ChatDelta
 	calls     []string
 }
+
+func (m *sessionNameModelAwareMock) LightweightModels() []string { return testLightweightModels }
 
 func (m *sessionNameModelAwareMock) Chat(_ context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	m.calls = append(m.calls, req.Model)
@@ -160,15 +172,15 @@ func TestGenerateSessionName_ProviderSuccess(t *testing.T) {
 	name := generateSessionName(prov, "Fix the authentication timeout in the login flow")
 	r.Equal("fix-auth-timeout", name)
 	r.Equal(1, prov.calls)
-	r.Equal(types.LightweightModels[0], prov.models[0], "should use first lightweight model")
+	r.Equal(testLightweightModels[0], prov.models[0], "should use first lightweight model")
 }
 
 func TestGenerateSessionName_ModelFallback(t *testing.T) {
 	r := require.New(t)
-	r.GreaterOrEqual(len(types.LightweightModels), 2, "need at least 2 models for fallback test")
+	r.GreaterOrEqual(len(testLightweightModels), 2, "need at least 2 models for fallback test")
 
 	// Only the last model succeeds
-	lastModel := types.LightweightModels[len(types.LightweightModels)-1]
+	lastModel := testLightweightModels[len(testLightweightModels)-1]
 	prov := &sessionNameModelAwareMock{
 		responses: map[string][]types.ChatDelta{
 			lastModel: {
@@ -179,7 +191,7 @@ func TestGenerateSessionName_ModelFallback(t *testing.T) {
 
 	name := generateSessionName(prov, "Plan the annual Greendale paintball game")
 	r.Equal("paintball-episode", name)
-	r.Len(prov.calls, len(types.LightweightModels), "should try all models")
+	r.Len(prov.calls, len(testLightweightModels), "should try all models")
 }
 
 func TestGenerateSessionName_AllModelsFail(t *testing.T) {
@@ -191,7 +203,7 @@ func TestGenerateSessionName_AllModelsFail(t *testing.T) {
 
 	name := generateSessionName(prov, "This will fail across all models")
 	r.Regexp(`^[a-z]+-[a-z]+$`, name, "should fallback to random: %s", name)
-	r.Len(prov.calls, len(types.LightweightModels), "should try all models before giving up")
+	r.Len(prov.calls, len(testLightweightModels), "should try all models before giving up")
 }
 
 func TestGenerateSessionName_ProviderReturnsGarbage(t *testing.T) {

@@ -63,6 +63,10 @@ func TestWebSearchHandler_NoAPIKey(t *testing.T) {
 	result, err := tool.Handler(map[string]any{"query": "Greendale Community College"}, ctx)
 	r.NoError(err) // handler returns error in result, not as Go error
 	r.True(result.IsError)
+	// Provider-agnostic message: web search is unavailable, not a hard
+	// "requires ANTHROPIC_API_KEY" failure, but still names the key that
+	// would enable the Anthropic backend.
+	r.Contains(result.Content[0].Text, "unavailable for the active provider")
 	r.Contains(result.Content[0].Text, "ANTHROPIC_API_KEY")
 }
 

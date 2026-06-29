@@ -66,3 +66,33 @@ func TestClassify(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthMessageProviderAware(t *testing.T) {
+	tests := map[string]struct {
+		err  error
+		want string
+	}{
+		"openai mentioned": {
+			err:  errors.New("OpenAI: invalid api key"),
+			want: "OPENAI_API_KEY",
+		},
+		"anthropic mentioned": {
+			err:  errors.New("anthropic: unauthorized"),
+			want: "ANTHROPIC_API_KEY",
+		},
+		"unknown provider is generic": {
+			err:  errors.New("authentication failed"),
+			want: "provider's API key",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			ce := Classify(tc.err, 401)
+			r.NotNil(ce)
+			r.Equal(CategoryAuth, ce.Category)
+			r.Contains(ce.Message, tc.want)
+		})
+	}
+}

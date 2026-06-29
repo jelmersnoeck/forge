@@ -91,7 +91,7 @@ func TestDecomposeSuccess(t *testing.T) {
 	r := require.New(t)
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			types.LightweightModels[0]: {
+			testLightweightModels[0]: {
 				{Type: "text_delta", Text: `[{"title":"Build the cannon","body":"for the paintball war","depends_on":[]}]`},
 			},
 		},
@@ -106,9 +106,9 @@ func TestDecomposeSuccess(t *testing.T) {
 
 func TestDecomposeModelFallback(t *testing.T) {
 	r := require.New(t)
-	r.GreaterOrEqual(len(types.LightweightModels), 2, "need at least 2 models for fallback test")
+	r.GreaterOrEqual(len(testLightweightModels), 2, "need at least 2 models for fallback test")
 
-	lastModel := types.LightweightModels[len(types.LightweightModels)-1]
+	lastModel := testLightweightModels[len(testLightweightModels)-1]
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
 			lastModel: {
@@ -120,7 +120,7 @@ func TestDecomposeModelFallback(t *testing.T) {
 	got, err := Decompose(t.Context(), prov, "Some large multi-phase issue body.")
 	r.NoError(err)
 	r.Len(got, 1)
-	r.Len(prov.calls, len(types.LightweightModels), "should try every model until one succeeds")
+	r.Len(prov.calls, len(testLightweightModels), "should try every model until one succeeds")
 }
 
 func TestDecomposeAllModelsFail(t *testing.T) {
@@ -130,7 +130,7 @@ func TestDecomposeAllModelsFail(t *testing.T) {
 	got, err := Decompose(t.Context(), prov, "Some issue body.")
 	r.Error(err)
 	r.Nil(got)
-	r.Len(prov.calls, len(types.LightweightModels))
+	r.Len(prov.calls, len(testLightweightModels))
 }
 
 func TestExtractIssueNumberFromURL(t *testing.T) {

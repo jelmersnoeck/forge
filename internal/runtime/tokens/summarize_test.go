@@ -17,6 +17,16 @@ type fakeProvider struct {
 	calls     []string
 }
 
+// testLightweightModels mirrors the Anthropic cheap-model list; fakeProvider
+// reports it via types.LightweightModeler so provider.LightweightModels()
+// returns the names the tests key responses on.
+var testLightweightModels = []string{
+	"claude-haiku-4-5",
+	"claude-haiku-4-5-20251001",
+}
+
+func (f *fakeProvider) LightweightModels() []string { return testLightweightModels }
+
 func (f *fakeProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	f.calls = append(f.calls, req.Model)
 	deltas, ok := f.responses[req.Model]
@@ -38,8 +48,8 @@ func userMsg(text string) types.ChatMessage {
 }
 
 func TestSummarize(t *testing.T) {
-	primary := types.LightweightModels[0]
-	fallback := types.LightweightModels[1]
+	primary := testLightweightModels[0]
+	fallback := testLightweightModels[1]
 
 	tests := map[string]struct {
 		provider *fakeProvider

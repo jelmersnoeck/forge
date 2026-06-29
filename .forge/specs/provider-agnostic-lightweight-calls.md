@@ -12,6 +12,10 @@ nonexistent model ID (`claude-haiku-4-20250414`), and session naming bypasses th
 provider abstraction entirely by importing the Anthropic SDK directly. Both must
 work with any configured provider (Anthropic API, Claude CLI, OpenAI).
 
+Superseded in scope by `eliminate-provider-coupling`, which adds per-provider
+lightweight model lists (this spec made the *flow* provider-agnostic but left the
+model list Anthropic-only in `types.LightweightModels`). See that spec for Phase 2.
+
 ## Context
 
 Files that change:

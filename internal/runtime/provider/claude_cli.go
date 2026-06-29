@@ -57,6 +57,13 @@ func NewClaudeCLI() *ClaudeCLIProvider {
 	return &ClaudeCLIProvider{}
 }
 
+// DefaultModel returns the empty string — the CLI resolves its own default.
+func (p *ClaudeCLIProvider) DefaultModel() string { return "" }
+
+// LightweightModels returns a single empty entry so callers send no model and
+// let the CLI pick its own.
+func (p *ClaudeCLIProvider) LightweightModels() []string { return []string{""} }
+
 // ── NDJSON types from `claude -p --output-format stream-json` ──
 
 // cliMessage is the top-level NDJSON envelope.

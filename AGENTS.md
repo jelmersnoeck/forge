@@ -268,7 +268,14 @@ POST   /interrupt                     interrupt current work
 
 ## Environment variables
 
-- `ANTHROPIC_API_KEY` — required by the agent
+- `ANTHROPIC_API_KEY` — Anthropic provider key (the default provider).
+- `OPENAI_API_KEY` — OpenAI provider key (when `FORGE_PROVIDER=openai` or
+  auto-detected). Either key satisfies the agent; the Claude CLI provider needs
+  no key. The startup warning names the env var for the *resolved* provider, not
+  always Anthropic. Each provider supplies its own default model and lightweight
+  (cheap-call) model list via the optional `types.ModelDefaulter` /
+  `types.LightweightModeler` interfaces, so classification, session naming,
+  and summarization no longer assume Claude models.
 
 LLM API keys are resolved through `internal/credentials` (logical keys like
 `anthropic.api_key` → env vars). The source order is configurable via

@@ -37,8 +37,8 @@ func runAgent(args []string) int {
 		credentials.SetDefault(credentials.Resolve(userCfg.Credentials.Sources))
 	}
 
-	if _, ok := credentials.Default().Get(credentials.AnthropicAPIKey); !ok {
-		fmt.Fprintln(os.Stderr, "warning: ANTHROPIC_API_KEY not set — agent will start but cannot connect to Anthropic")
+	if warning := agent.StartupKeyWarning(); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 	if *sessionID == "" {
 		fmt.Fprintln(os.Stderr, "fatal: --session-id is required")

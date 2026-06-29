@@ -96,6 +96,22 @@ var (
 	}
 )
 
+// authMessage builds a provider-aware auth error message. It sniffs the
+// lowercased error text for a provider hint and names that provider's env var;
+// when no provider can be identified it returns a generic instruction. The
+// classifier has no provider handle, so this best-effort sniff is the most
+// specific guidance available without hardcoding Anthropic.
+func authMessage(lowerErrMsg string) string {
+	switch {
+	case strings.Contains(lowerErrMsg, "openai"):
+		return "API key invalid or expired. Please check your OPENAI_API_KEY."
+	case strings.Contains(lowerErrMsg, "anthropic"):
+		return "API key invalid or expired. Please check your ANTHROPIC_API_KEY."
+	default:
+		return "API key invalid or expired. Please check your provider's API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY)."
+	}
+}
+
 // Classify analyzes an error and returns classification metadata.
 func Classify(err error, statusCode int) *ClassifiedError {
 	if err == nil {
@@ -169,7 +185,7 @@ func Classify(err error, statusCode int) *ClassifiedError {
 			return &ClassifiedError{
 				Original:    err,
 				Category:    CategoryAuth,
-				Message:     "API key invalid or expired. Please check your ANTHROPIC_API_KEY.",
+				Message:     authMessage(errMsg),
 				StatusCode:  statusCode,
 				IsRetryable: false,
 			}

@@ -161,7 +161,7 @@ func (o *Orchestrator) consolidate(ctx context.Context, results []ReviewResult, 
 	resultCh := make(chan consolidationResult, len(providerPairs))
 	for _, pp := range providerPairs {
 		go func(name string, prov types.LLMProvider) {
-			model := modelForProvider(name)
+			model := modelForProvider(name, prov)
 			consolidateCtx, cancel := context.WithTimeout(ctx, consolidationTimeout)
 			defer cancel()
 
@@ -325,7 +325,7 @@ func (o *Orchestrator) runSingle(
 	userMessage := buildUserMessage(rev, req)
 
 	chatReq := types.ChatRequest{
-		Model: modelForProvider(providerName),
+		Model: modelForProvider(providerName, provider),
 		System: []types.SystemBlock{
 			{Type: "text", Text: rev.SystemPrompt()},
 		},
@@ -479,15 +479,19 @@ func stripCodeFences(text string) string {
 	return text
 }
 
-// modelForProvider returns the model to use for a given provider name.
-func modelForProvider(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.Contains(lower, "openai"):
-		return "gpt-4.1"
-	default:
-		return "claude-sonnet-4-20250514"
+// modelForProvider returns the review model for a provider. It prefers the
+// provider's own DefaultModel() (registry-driven); when the provider doesn't
+// implement types.ModelDefaulter (e.g. a test fake) it falls back to a
+// name-based heuristic. An empty DefaultModel() (Claude CLI) passes through so
+// the provider resolves its own model.
+func modelForProvider(name string, prov types.LLMProvider) string {
+	if d, ok := prov.(types.ModelDefaulter); ok {
+		return d.DefaultModel()
 	}
+	if strings.Contains(strings.ToLower(name), "openai") {
+		return "gpt-4.1"
+	}
+	return "claude-sonnet-4-20250514"
 }
 
 func emitError(emit func(types.OutboundEvent), msg string) {

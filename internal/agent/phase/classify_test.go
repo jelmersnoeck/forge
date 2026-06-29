@@ -19,6 +19,17 @@ type mockProvider struct {
 	calls []string
 }
 
+// testLightweightModels mirrors the Anthropic provider's cheap-model list. The
+// mock implements types.LightweightModeler so provider.LightweightModels()
+// returns these, letting tests key responses on the same model names.
+var testLightweightModels = []string{
+	"claude-haiku-4-5",
+	"claude-haiku-4-5-20251001",
+}
+
+// LightweightModels makes mockProvider satisfy types.LightweightModeler.
+func (m *mockProvider) LightweightModels() []string { return testLightweightModels }
+
 func (m *mockProvider) Chat(_ context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	m.calls = append(m.calls, req.Model)
 
@@ -153,7 +164,7 @@ func TestClassifyIntentSuccess(t *testing.T) {
 			r := require.New(t)
 			prov := &mockProvider{
 				responses: map[string][]types.ChatDelta{
-					types.LightweightModels[0]: {
+					testLightweightModels[0]: {
 						{Type: "text_delta", Text: tc.response},
 					},
 				},
@@ -169,10 +180,10 @@ func TestClassifyIntentSuccess(t *testing.T) {
 
 func TestClassifyIntentModelFallback(t *testing.T) {
 	r := require.New(t)
-	r.GreaterOrEqual(len(types.LightweightModels), 2, "need at least 2 models for fallback test")
+	r.GreaterOrEqual(len(testLightweightModels), 2, "need at least 2 models for fallback test")
 
 	// Only the last model succeeds; all others are absent from mock → return error.
-	lastModel := types.LightweightModels[len(types.LightweightModels)-1]
+	lastModel := testLightweightModels[len(testLightweightModels)-1]
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
 			lastModel: {
@@ -184,7 +195,7 @@ func TestClassifyIntentModelFallback(t *testing.T) {
 	got, err := ClassifyIntent(t.Context(), prov, "what files handle MCP?")
 	r.NoError(err)
 	r.Equal(IntentQuestion, got)
-	r.Len(prov.calls, len(types.LightweightModels), "should try all models before succeeding")
+	r.Len(prov.calls, len(testLightweightModels), "should try all models before succeeding")
 }
 
 func TestClassifyIntentAllModelsFail(t *testing.T) {
@@ -207,7 +218,7 @@ func TestClassifyIntentStreamError(t *testing.T) {
 	// Model returns an error delta in the stream.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			types.LightweightModels[0]: {
+			testLightweightModels[0]: {
 				{Type: "error", Text: "rate limited, Troy Barnes"},
 			},
 		},
@@ -225,7 +236,7 @@ func TestClassifyIntentGarbageResponse(t *testing.T) {
 	// Model returns valid stream but garbage content.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			types.LightweightModels[0]: {
+			testLightweightModels[0]: {
 				{Type: "text_delta", Text: "I don't understand, I'm the Human Being mascot"},
 			},
 		},
@@ -248,7 +259,7 @@ func TestClassifyIntentPromptTruncation(t *testing.T) {
 	var capturedPrompt string
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			types.LightweightModels[0]: {
+			testLightweightModels[0]: {
 				{Type: "text_delta", Text: `{"intent": "task"}`},
 			},
 		},
@@ -275,6 +286,10 @@ type promptCapturingProvider struct {
 	capturedPrompt *string
 	capturedSystem *string
 }
+
+// LightweightModels forwards the inner mock's list so provider.LightweightModels
+// resolves through the wrapper.
+func (p *promptCapturingProvider) LightweightModels() []string { return p.inner.LightweightModels() }
 
 func (p *promptCapturingProvider) Chat(ctx context.Context, req types.ChatRequest) (<-chan types.ChatDelta, error) {
 	if p.capturedPrompt != nil && len(req.Messages) > 0 && len(req.Messages[0].Content) > 0 {
@@ -340,8 +355,8 @@ func TestTruncateAtWordBoundary(t *testing.T) {
 
 func TestLightweightModelsUsed(t *testing.T) {
 	r := require.New(t)
-	r.NotEmpty(types.LightweightModels, "types.LightweightModels must have at least one model")
-	for _, m := range types.LightweightModels {
+	r.NotEmpty(testLightweightModels, "testLightweightModels must have at least one model")
+	for _, m := range testLightweightModels {
 		r.NotEmpty(m, "model name must not be empty")
 	}
 }
@@ -554,7 +569,7 @@ func TestClassifySuccess(t *testing.T) {
 			r := require.New(t)
 			prov := &mockProvider{
 				responses: map[string][]types.ChatDelta{
-					types.LightweightModels[0]: {
+					testLightweightModels[0]: {
 						{Type: "text_delta", Text: tc.response},
 					},
 				},
@@ -577,7 +592,7 @@ func TestClassifyWithSpecs(t *testing.T) {
 	var capturedSystem string
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			types.LightweightModels[0]: {
+			testLightweightModels[0]: {
 				{Type: "text_delta", Text: `{"intent":"task","size":"standard","spec_match":"paintball"}`},
 			},
 		},
@@ -608,7 +623,7 @@ func TestClassifySpecMatchValidation(t *testing.T) {
 	// Provider returns a spec_match that doesn't exist in the provided specs.
 	prov := &mockProvider{
 		responses: map[string][]types.ChatDelta{
-			types.LightweightModels[0]: {
+			testLightweightModels[0]: {
 				{Type: "text_delta", Text: `{"intent":"task","size":"standard","spec_match":"nonexistent"}`},
 			},
 		},

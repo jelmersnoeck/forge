@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +21,25 @@ import (
 )
 
 const maxReviewCycles = 5
+
+// CollectReviewProviders builds the available-providers map for code review,
+// keyed by canonical provider name (anthropic, openai, claude-cli). It is the
+// single source of review providers, consumed by both worker.runReview and the
+// phase orchestrator's reviewer. A provider absent here yields no reviewers for
+// that backend (skipped) rather than a fallback.
+func CollectReviewProviders() map[string]types.LLMProvider {
+	providers := make(map[string]types.LLMProvider)
+	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
+		providers["anthropic"] = provider.NewAnthropic(key)
+	}
+	if key, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
+		providers["openai"] = provider.NewOpenAI(key)
+	}
+	if _, err := exec.LookPath("claude"); err == nil {
+		providers["claude-cli"] = provider.NewClaudeCLI()
+	}
+	return providers
+}
 
 // Orchestrator chains phases together into a complete workflow.
 type Orchestrator struct {
@@ -710,14 +730,8 @@ func (o *Orchestrator) runReviewer(ctx context.Context, opts OrchestratorOpts, s
 func (o *Orchestrator) runReviewerWithDiff(ctx context.Context, opts OrchestratorOpts, specPath string, diff string, incremental bool) (Result, error) {
 	result := Result{Phase: "review"}
 
-	// Collect available providers.
-	providers := make(map[string]types.LLMProvider)
-	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
-		providers["anthropic"] = provider.NewAnthropic(key)
-	}
-	if key, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
-		providers["openai"] = provider.NewOpenAI(key)
-	}
+	// Collect available providers (canonical names shared with worker.runReview).
+	providers := CollectReviewProviders()
 
 	if len(providers) == 0 {
 		opts.Emit(types.OutboundEvent{
