@@ -6,11 +6,19 @@ status: active
 
 ## Description
 Forge is a platform-agnostic async coding agent that runs behind an HTTP API.
-It provides interactive REPL mode, persistent gateway mode, and cost analytics
-through a unified binary with subcommands.
+It provides interactive REPL mode and cost analytics through a unified binary
+with subcommands. The standalone gateway server (and its bus/backend packages)
+was removed in #235; the `gateway` spec is superseded. A vestigial `--gateway URL`
+client flag remains for connecting to a remote gateway endpoint, but the binary
+no longer ships a `forge gateway` server subcommand.
 
 ## Context
-- `cmd/forge/` — unified binary entry point (main, agent, gateway, stats, mcp subcommands)
+- `cmd/forge/` — unified binary entry point (main, agent, stats, mcp subcommands).
+  Interactive REPL (Bubble Tea) split into focused subsystems (implemented):
+  `output.go` (OutputBuffer), `tasks.go` (TaskTrackerSet), `cost.go`
+  (CostAccumulator), `events.go` (EventHandler — owns event switch + streaming
+  state + flush), `session.go` (spawnLocalAgent + worktree/PR lifecycle). See
+  `.forge/specs/cli-subsystem-extraction.md`.
 - `internal/agent/` — agent HTTP server, single-session hub, conversation worker
 - `internal/runtime/loop/` — agentic conversation loop (tool execution cycle)
 - `internal/runtime/provider/` — LLM provider interface + Anthropic implementation
@@ -20,9 +28,7 @@ through a unified binary with subcommands.
 - `internal/runtime/cost/` — cost calculation + SQLite tracker
 - `internal/runtime/task/` — background task & sub-agent management
 - `internal/tools/` — tool registry + all built-in tool implementations
-- `internal/server/gateway/` — HTTP routes, SSE streaming, agent message forwarding
-- `internal/server/backend/` — Backend interface + tmux implementation
-- `internal/server/bus/` — in-memory event pub/sub + session metadata
+- `internal/review/` — multi-agent review findings + dedup
 - `internal/types/` — shared contracts (messages, events, tools, context, tasks)
 - `internal/mcp/` — MCP client (JSON-RPC over HTTP, OAuth 2.1, tool bridge)
 - `internal/config/` — forge-level configuration loader
@@ -31,9 +37,10 @@ through a unified binary with subcommands.
 ## Behavior
 - `forge` (no args) — interactive REPL; spawns agent subprocess on ephemeral port
 - `forge agent --port N` — run agent HTTP server on port N (0 = random)
-- `forge gateway` — session management gateway (see `.forge/specs/gateway.md` for full details)
 - `forge stats` — cost analytics with daily/monthly/session breakdowns
-- `forge --gateway URL` — connect to remote gateway (see `.forge/specs/gateway.md`)
+- `forge mcp` — MCP server management subcommands
+- `forge --gateway URL` — connect to a remote gateway endpoint (vestigial client
+  flag; no gateway server ships in this binary — see superseded `.forge/specs/gateway.md`)
 - `forge --resume SESSION` — resume an existing session
 - `forge --skip-worktree` — disable git worktree isolation
 - Git worktree isolation: auto-creates `/tmp/forge/worktrees/<session>` with branch `jelmer/<session>`
@@ -46,16 +53,12 @@ through a unified binary with subcommands.
 
 ## Constraints
 - No public Go API — all packages under `internal/`
-- No platform-specific code in gateway — `source` is free-form, `metadata` is opaque
-  (see `.forge/specs/gateway.md` for gateway-specific constraints)
 - Model aliases from `~/.forge/settings.json` (e.g. `opus[1m]`) must be filtered;
   only values starting with `claude-` pass through to Anthropic API
 - `tool_result` blocks must immediately follow `tool_use` in message history
 - Deterministic tool schema ordering required for prompt cache stability
 - No mocks in tests — use real filesystem, real exec, real HTTP (httptest)
 - Agent binary path configurable via `FORGE_BIN` env var
-- Gateway loads `.env` from CWD; explicit env vars take precedence
-  (see `.forge/specs/gateway.md` for env var details)
 - Specs default to `.forge/specs/` but configurable via `.forge/config.json` `specsDir`
 - Background tasks must have timeouts to prevent stuck commands
 
@@ -127,15 +130,9 @@ type SpecEntry struct {
 // POST /messages
 // GET  /events  (SSE)
 // POST /interrupt
-
-// Gateway HTTP endpoints — see .forge/specs/gateway.md for full details
-// (request/response shapes, SSE relay, agent spawning, env vars)
-// POST /sessions
-// GET  /sessions/{id}
-// POST /sessions/{id}/messages
-// POST /sessions/{id}/review
-// POST /sessions/{id}/interrupt
-// GET  /sessions/{id}/events  (SSE)
+//
+// The standalone gateway server and its /sessions/* endpoints were removed
+// in #235 (see superseded .forge/specs/gateway.md).
 ```
 
 ## Edge Cases
@@ -145,7 +142,7 @@ type SpecEntry struct {
 - MCP server unreachable during tool discovery — non-fatal, agent continues without MCP tools
 - Cost DB locked by concurrent sessions — SQLite WAL mode handles this
 - Tool execution exceeds timeout — Bash tool has 120s default, 600s max
-- Agent subprocess dies unexpectedly — CLI detects and reports; server marks session as errored
+- Agent subprocess dies unexpectedly — CLI detects via the event stream closing and reports the error
 - Git worktree creation fails (not in a git repo) — falls back to current directory
 - Settings.json contains non-`claude-` model aliases — filtered before API call
 - Spec with duplicate ID — last-loaded wins (directory listing order)

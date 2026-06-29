@@ -9,12 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"regexp"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -66,7 +62,6 @@ type model struct {
 	interactiveMode bool // true if talking directly to agent, false if via gateway
 	textArea        textarea.Model
 	queue           []string
-	output          []string
 	ready           bool
 	quitting        bool
 	exitAttempts    int    // track number of exit attempts
@@ -76,19 +71,17 @@ type model struct {
 	spinnerFrame    int    // spinner animation frame
 	width           int
 	height          int
-	renderer        *glamour.TermRenderer
-	textBuf         string // not-yet-displayed raw text (partial line buffer between ticks)
-	streamBuf       string // full accumulated text block for glamour rendering at flush
-	streamStartIdx  int    // index in m.output where raw streaming lines began (-1 = inactive)
 	err             error
-	scrollOffset    int  // how many lines scrolled up from bottom
-	autoScroll      bool // auto-scroll to bottom on new content
 
-	// Cost tracking
-	totalUsage  types.TokenUsage // session total usage
-	lastTracked types.TokenUsage // last tracked usage (for delta calculation)
-	modelName   string           // model name for cost calculation
-	costTracker *cost.Tracker    // persistent cost tracker
+	// Extracted subsystems. out owns scrollback + scroll state, tasks owns the
+	// live task trackers, costAcc owns cumulative usage + model name, and events
+	// owns the event-handling switch + streaming-text state.
+	out         *OutputBuffer
+	tasks       *TaskTrackerSet
+	costAcc     *CostAccumulator
+	events      *EventHandler
+	renderer    *glamour.TermRenderer
+	costTracker *cost.Tracker // persistent cost tracker (passed to events)
 
 	// Worktree info
 	worktreePath   string // path to worktree if created
@@ -104,10 +97,6 @@ type model struct {
 
 	// PR tracking
 	prURL string // PR URL from pr_monitor or orchestrator finalize
-
-	// Inline task progress — keyed by task/agent ID
-	taskTrackers     map[string]*taskTracker
-	taskTrackerOrder []string // insertion order for stable rendering
 
 	// cursor blink cmd captured from ta.Focus() before model creation
 	cursorBlinkCmd tea.Cmd
@@ -332,16 +321,21 @@ func runCLI(args []string) int {
 	// Try to detect an existing PR for the current branch.
 	prURL := detectCurrentPR(effectiveCWD)
 
+	out := NewOutputBuffer()
+	tasks := NewTaskTrackerSet()
+	costAcc := &CostAccumulator{}
+
 	m := model{
 		gateway:         gatewayURL,
 		sessionID:       sessionID,
 		interactiveMode: (*gatewayFlag == ""),
 		textArea:        ta,
-		output:          []string{},
 		queue:           []string{},
+		out:             out,
+		tasks:           tasks,
+		costAcc:         costAcc,
+		events:          NewEventHandler(out, tasks, costAcc, costTracker, renderer, 0, sessionID),
 		renderer:        renderer,
-		streamStartIdx:  -1,   // no active stream
-		autoScroll:      true, // start with auto-scroll enabled
 		costTracker:     costTracker,
 		worktreePath:    worktreePath,
 		worktreeBranch:  worktreeBranch,
@@ -351,7 +345,6 @@ func runCLI(args []string) int {
 		sessionTitle:    sessionID,
 		titleGenerated:  initialPrompt != "", // already named via Haiku if we had a prompt
 		prURL:           prURL,
-		taskTrackers:    make(map[string]*taskTracker),
 		cursorBlinkCmd:  cursorBlinkCmd,
 	}
 
@@ -369,37 +362,37 @@ func runCLI(args []string) int {
 		}
 	}
 
-	m.output = append(m.output,
+	m.out.Append(
 		headerStyle.Render("forge cli")+" "+dimStyle.Render("— "+modeDesc+" — "+m.sessionTitle),
 		dimStyle.Render("gateway: "+gatewayURL),
 	)
 
 	// Add worktree info if present
 	if worktreePath != "" {
-		m.output = append(m.output, dimStyle.Render("worktree: "+worktreePath))
+		m.out.Append(dimStyle.Render("worktree: " + worktreePath))
 		if worktreeBranch != "" {
-			m.output = append(m.output, dimStyle.Render("branch: "+worktreeBranch))
+			m.out.Append(dimStyle.Render("branch: " + worktreeBranch))
 		}
 	}
 
 	// Add mode info if not default
 	if effectiveMode != "" {
-		m.output = append(m.output, dimStyle.Render("mode: "+effectiveMode))
+		m.out.Append(dimStyle.Render("mode: " + effectiveMode))
 	}
 
 	// Add spec info if present
 	if *specPath != "" {
-		m.output = append(m.output, dimStyle.Render("spec: "+*specPath))
+		m.out.Append(dimStyle.Render("spec: " + *specPath))
 		m.working = true // mark as working since we'll auto-send
 	}
 
 	// Add issue info if present
 	if *issue != "" {
-		m.output = append(m.output, dimStyle.Render("issue: "+*issue))
+		m.out.Append(dimStyle.Render("issue: " + *issue))
 		m.working = true // mark as working since we'll auto-send
 	}
 
-	m.output = append(m.output,
+	m.out.Append(
 		"",
 		resumeHint,
 		"",
@@ -438,11 +431,11 @@ func tick() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		if m.working || len(m.taskTrackers) > 0 || m.modelSelectorLoading {
+		if m.working || m.tasks.Len() > 0 || m.modelSelectorLoading {
 			m.spinnerFrame++
 		}
-		if m.textBuf != "" {
-			m.flushRawText()
+		if m.events.HasPendingText() {
+			m.events.flushRawText()
 		}
 		return m, tick()
 
@@ -450,12 +443,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if title := string(msg); title != "" {
 			m.sessionTitle = title
 			// Update the header line (first line of output)
-			if len(m.output) > 0 {
+			if lines := m.out.Lines(); len(lines) > 0 {
 				modeDesc := "interactive"
 				if !m.interactiveMode {
 					modeDesc = "remote"
 				}
-				m.output[0] = headerStyle.Render("forge cli") + " " + dimStyle.Render("— "+modeDesc+" — "+m.sessionTitle)
+				lines[0] = headerStyle.Render("forge cli") + " " + dimStyle.Render("— "+modeDesc+" — "+m.sessionTitle)
 			}
 		}
 		return m, nil
@@ -463,8 +456,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelSwitchedMsg:
 		name := string(msg)
 		if name != "" {
-			m.modelName = name
-			m.output = append(m.output, dimStyle.Render("Model switched to "+name))
+			m.costAcc.SetModel(name)
+			m.out.Append(dimStyle.Render("Model switched to " + name))
 		}
 		return m, nil
 
@@ -477,7 +470,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		m.output = append(m.output, renderModelList(msg)...)
+		m.out.Append(renderModelList(msg)...)
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -486,12 +479,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		// Update textarea width
 		m.textArea.SetWidth(msg.Width - 6) // account for border + padding
+		m.events.SetWidth(msg.Width)
 		// Reinitialize renderer with updated width for proper wrapping
 		if m.width > 0 {
 			m.renderer, _ = glamour.NewTermRenderer(
 				glamour.WithAutoStyle(),
 				glamour.WithWordWrap(m.width-4), // account for padding/margins
 			)
+			m.events.SetRenderer(m.renderer)
 		}
 		return m, nil
 
@@ -500,27 +495,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseButtonWheelUp:
 			// Scroll up (like pressing up arrow)
 			outputHeight := m.getOutputHeight()
-			maxOffset := len(m.output) - outputHeight
-			if maxOffset > 0 && m.scrollOffset < maxOffset {
-				m.scrollOffset += 3 // scroll 3 lines at a time for smoother trackpad feel
-				if m.scrollOffset > maxOffset {
-					m.scrollOffset = maxOffset
-				}
-				m.autoScroll = false
-			}
+			maxOffset := m.out.Len() - outputHeight
+			m.out.ScrollUp(3, maxOffset) // 3 lines at a time for smoother trackpad feel
 			return m, nil
 
 		case tea.MouseButtonWheelDown:
 			// Scroll down (like pressing down arrow)
-			if m.scrollOffset > 0 {
-				m.scrollOffset -= 3 // scroll 3 lines at a time
-				if m.scrollOffset < 0 {
-					m.scrollOffset = 0
-				}
-				if m.scrollOffset == 0 {
-					m.autoScroll = true
-				}
-			}
+			m.out.ScrollDown(3) // 3 lines at a time
 			return m, nil
 		}
 
@@ -543,7 +524,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.modelSelectorActive = false
 				m.modelSelectorLoading = false
 				m.modelSelectorItems = nil
-				m.output = append(m.output, dimStyle.Render("Model selection cancelled"))
+				m.out.Append(dimStyle.Render("Model selection cancelled"))
 				return m, nil
 			case tea.KeyEnter:
 				if m.modelSelectorLoading || len(m.modelSelectorItems) == 0 {
@@ -566,11 +547,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.exitAttempts++
 				if m.working {
 					// Send interrupt to agent
-					m.output = append(m.output, "", queueStyle.Render("⚠ Interrupting agent... (press Ctrl+C again to exit)"))
+					m.out.Append("", queueStyle.Render("⚠ Interrupting agent... (press Ctrl+C again to exit)"))
 					return m, m.sendInterrupt()
 				} else {
 					// Not working, just show the message
-					m.output = append(m.output, "", dimStyle.Render("(press Ctrl+C again to exit)"))
+					m.out.Append("", dimStyle.Render("(press Ctrl+C again to exit)"))
 					return m, nil
 				}
 			}
@@ -587,11 +568,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Scroll up one line
 			outputHeight := m.getOutputHeight()
-			maxOffset := len(m.output) - outputHeight
-			if maxOffset > 0 && m.scrollOffset < maxOffset {
-				m.scrollOffset++
-				m.autoScroll = false
-			}
+			maxOffset := m.out.Len() - outputHeight
+			m.out.ScrollUp(1, maxOffset)
 			return m, nil
 
 		case tea.KeyDown:
@@ -602,12 +580,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			// Scroll down one line
-			if m.scrollOffset > 0 {
-				m.scrollOffset--
-				if m.scrollOffset == 0 {
-					m.autoScroll = true
-				}
-			}
+			m.out.ScrollDown(1)
 			return m, nil
 
 		case tea.KeyTab:
@@ -634,8 +607,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Check for /review command
 				if isReviewCommand(text) {
 					baseBranch := parseReviewBase(text)
-					m.output = append(m.output, "")
-					m.output = append(m.output, headerStyle.Render("Starting code review...")+" "+dimStyle.Render("("+reviewProviderSummary()+")"))
+					m.out.Append("")
+					m.out.Append(headerStyle.Render("Starting code review...") + " " + dimStyle.Render("("+reviewProviderSummary()+")"))
 					m.working = true
 					return m, m.sendReview(baseBranch)
 				}
@@ -645,8 +618,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					arg := parseModelArg(text)
 					global := parseModelGlobal(text)
 					if global && arg == "" {
-						m.output = append(m.output, "")
-						m.output = append(m.output, errorStyle.Render("a model name is required"))
+						m.out.Append("")
+						m.out.Append(errorStyle.Render("a model name is required"))
 						return m, nil
 					}
 					switch arg {
@@ -654,24 +627,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Bare /model opens an interactive selector. Picking an entry
 						// sets the model globally (persists model.default).
 						if !m.interactiveMode {
-							display := m.modelName
+							_, display := m.costAcc.Summary()
 							if display == "" {
 								display = "(not yet known)"
 							}
-							m.output = append(m.output, "")
-							m.output = append(m.output, dimStyle.Render("Current model: "+display))
+							m.out.Append("")
+							m.out.Append(dimStyle.Render("Current model: " + display))
 							return m, nil
 						}
 						m.modelSelectorActive = true
 						m.modelSelectorLoading = true
 						m.modelSelectorItems = nil
 						m.modelSelectorCursor = 0
-						m.output = append(m.output, "")
-						m.output = append(m.output, dimStyle.Render("Fetching available models..."))
+						m.out.Append("")
+						m.out.Append(dimStyle.Render("Fetching available models..."))
 						return m, m.fetchModelList()
 					case "list":
-						m.output = append(m.output, "")
-						m.output = append(m.output, dimStyle.Render("Fetching available models..."))
+						m.out.Append("")
+						m.out.Append(dimStyle.Render("Fetching available models..."))
 						return m, m.fetchModelList()
 					default:
 						newM, cmd := m.applyModelSwitch(arg, global)
@@ -680,7 +653,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				// Display the user's message in the output with wrapping
-				m.output = append(m.output, "")
+				m.out.Append("")
 				maxWidth := m.width - 7 // account for "You: "
 				if maxWidth < 40 {
 					maxWidth = 80
@@ -688,9 +661,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				wrapped := wrapText(text, maxWidth)
 				for i, line := range wrapped {
 					if i == 0 {
-						m.output = append(m.output, userMsgStyle.Render("You: ")+line)
+						m.out.Append(userMsgStyle.Render("You: ") + line)
 					} else {
-						m.output = append(m.output, "     "+line)
+						m.out.Append("     " + line)
 					}
 				}
 				m.working = true
@@ -706,7 +679,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Agent is busy — send as a steering message (injected mid-turn).
 			// Display with a distinct label so the user knows it'll be
 			// picked up between LLM iterations, not queued for later.
-			m.output = append(m.output, "")
+			m.out.Append("")
 			maxWidth := m.width - 7
 			if maxWidth < 40 {
 				maxWidth = 80
@@ -714,9 +687,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			wrapped := wrapText(text, maxWidth)
 			for i, line := range wrapped {
 				if i == 0 {
-					m.output = append(m.output, thinkingStyle.Render("You (steering): ")+line)
+					m.out.Append(thinkingStyle.Render("You (steering): ") + line)
 				} else {
-					m.output = append(m.output, "                "+line)
+					m.out.Append("                " + line)
 				}
 			}
 			return m, m.sendMessage(text)
@@ -733,7 +706,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serverEvent:
 		event := types.OutboundEvent(msg)
-		m.handleEvent(event)
+		result := m.events.Handle(event)
+		if result.PRURL != "" {
+			m.prURL = result.PRURL
+		}
 
 		// Track working state
 		switch event.Type {
@@ -742,6 +718,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolProgress = ""
 		case "tool_progress":
 			// Keep working/thinking state, just update progress
+			m.toolProgress = event.Content
 		case "text", "tool_use", "task_status", "review_start", "review_finding",
 			"phase_start", "phase_handoff", "steering":
 			m.thinking = false
@@ -755,9 +732,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Auto-scroll to bottom on new content
-		if m.autoScroll {
-			m.scrollOffset = 0
-		}
+		m.out.ResetScrollIfAuto()
 
 		// If done and queue has messages, send next
 		if event.Type == "done" && len(m.queue) > 0 {
@@ -771,9 +746,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			wrapped := wrapText(text, maxWidth)
 			for i, line := range wrapped {
 				if i == 0 {
-					m.output = append(m.output, userMsgStyle.Render("You: ")+line)
+					m.out.Append(userMsgStyle.Render("You: ") + line)
 				} else {
-					m.output = append(m.output, "     "+line)
+					m.out.Append("     " + line)
 				}
 			}
 			m.working = true
@@ -799,26 +774,13 @@ func (m model) getOutputHeight() int {
 		queueHeight = len(m.queue) + 2 // header + messages + separator
 	}
 	thinkingHeight := 0
-	if m.toolProgress != "" || m.thinking || (m.working && m.streamBuf == "") {
+	if m.toolProgress != "" || m.thinking || (m.working && !m.events.Streaming()) {
 		thinkingHeight = 1 // thinking/progress/working indicator
 	}
-	trackerHeight := m.taskTrackerHeight()
+	trackerHeight := m.tasks.Height()
 	inputHeight := m.textArea.LineCount() + 2 // border top/bottom + content lines
 	statusHeight := 1                         // cwd + cost line (always shown)
 	return m.height - queueHeight - thinkingHeight - trackerHeight - inputHeight - statusHeight - 1
-}
-
-// taskTrackerHeight returns how many terminal lines the task tracker block
-// will occupy (header line + up to 5 output lines per tracked task).
-func (m model) taskTrackerHeight() int {
-	h := 0
-	for _, id := range m.taskTrackerOrder {
-		if tt, ok := m.taskTrackers[id]; ok {
-			h++ // header line
-			h += len(tt.outputTail)
-		}
-	}
-	return h
 }
 
 func (m model) spinner() string {
@@ -842,18 +804,7 @@ func (m model) View() string {
 	outputHeight := m.getOutputHeight()
 
 	// Build output area (scrollable)
-	var outputArea string
-	if len(m.output) > outputHeight {
-		// Calculate which slice of output to show based on scroll offset
-		endIdx := len(m.output) - m.scrollOffset
-		startIdx := endIdx - outputHeight
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		outputArea = strings.Join(m.output[startIdx:endIdx], "\n")
-	} else {
-		outputArea = strings.Join(m.output, "\n")
-	}
+	outputArea := m.out.View(outputHeight)
 
 	// Build thinking/progress indicator
 	// Priority: toolProgress > thinking > working (when no text streaming)
@@ -863,7 +814,7 @@ func (m model) View() string {
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " " + m.toolProgress)
 	case m.thinking:
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " thinking...")
-	case m.working && m.streamBuf == "":
+	case m.working && !m.events.Streaming():
 		thinkingIndicator = thinkingStyle.Render(m.spinner() + " working...")
 	}
 
@@ -914,15 +865,16 @@ func (m model) View() string {
 		cwdDisplay = strings.Replace(cwdDisplay, home, "~", 1)
 	}
 
+	totalUsage, modelName := m.costAcc.Summary()
 	var costPart string
-	if m.totalUsage.InputTokens > 0 || m.totalUsage.OutputTokens > 0 {
-		tokens := fmt.Sprintf("in: %d | out: %d", m.totalUsage.InputTokens, m.totalUsage.OutputTokens)
-		totalCost := cost.Calculate(m.modelName, m.totalUsage)
+	if totalUsage.InputTokens > 0 || totalUsage.OutputTokens > 0 {
+		tokens := fmt.Sprintf("in: %d | out: %d", totalUsage.InputTokens, totalUsage.OutputTokens)
+		totalCost := cost.Calculate(modelName, totalUsage)
 		costStr := cost.FormatCost(totalCost)
 		costPart = fmt.Sprintf("%s | %s", tokens, costStr)
 	}
-	if m.modelName != "" {
-		short := shortModelName(m.modelName)
+	if modelName != "" {
+		short := shortModelName(modelName)
 		if costPart != "" {
 			costPart = short + " | " + costPart
 		} else {
@@ -956,7 +908,7 @@ func (m model) View() string {
 		parts = append(parts, outputArea)
 	}
 	// Task progress trackers sit between output and thinking indicator
-	if trackerArea := m.renderTaskTrackers(); trackerArea != "" {
+	if trackerArea := m.tasks.Render(m.spinner(), m.width); trackerArea != "" {
 		parts = append(parts, trackerArea)
 	}
 	if thinkingIndicator != "" {
@@ -1013,500 +965,6 @@ func wrapText(text string, maxWidth int) []string {
 	}
 
 	return lines
-}
-
-func (m *model) handleEvent(event types.OutboundEvent) {
-	switch event.Type {
-	case "model":
-		m.modelName = event.Content
-
-	case "text":
-		// Mark where raw streaming lines begin in output (first text event per block).
-		if m.streamStartIdx == -1 {
-			m.streamStartIdx = len(m.output)
-		}
-		m.streamBuf += event.Content
-		m.textBuf += event.Content
-
-	case "tool_use":
-		m.flushText()
-		// Suppress repeated TaskGet/AgentGet lines — the inline task
-		// progress display handles these via task_status events.
-		switch event.ToolName {
-		case "TaskGet", "AgentGet", "TaskOutput":
-			// Don't render a line; the task_status event updates the tracker.
-		default:
-			if event.Content != "" {
-				// Wrap long tool content to terminal width
-				maxWidth := m.width - 10 // account for prefix and margins
-				if maxWidth < 40 {
-					maxWidth = 40
-				}
-				wrapped := wrapText(event.Content, maxWidth)
-				prefix := toolStyle.Render("  ["+event.ToolName+"]") + " "
-				for i, line := range wrapped {
-					if i == 0 {
-						m.output = append(m.output, prefix+dimStyle.Render(line))
-					} else {
-						// Indent continuation lines
-						m.output = append(m.output, "    "+dimStyle.Render(line))
-					}
-				}
-			} else {
-				m.output = append(m.output, toolStyle.Render("  ["+event.ToolName+"]"))
-			}
-		}
-
-	case "tool_progress":
-		m.toolProgress = event.Content
-
-	case "queued_task_result":
-		m.flushText()
-		maxWidth := m.width - 14 // account for prefix
-		if maxWidth < 40 {
-			maxWidth = 40
-		}
-		wrapped := wrapText(event.Content, maxWidth)
-		for i, line := range wrapped {
-			if i == 0 {
-				m.output = append(m.output, queueStyle.Render("  [queued] ")+dimStyle.Render(line))
-			} else {
-				m.output = append(m.output, "            "+dimStyle.Render(line))
-			}
-		}
-
-	case "queued_task_error":
-		m.flushText()
-		maxWidth := m.width - 20 // account for prefix
-		if maxWidth < 40 {
-			maxWidth = 40
-		}
-		wrapped := wrapText(event.Content, maxWidth)
-		for i, line := range wrapped {
-			if i == 0 {
-				m.output = append(m.output, errorStyle.Render("  [queued error] ")+line)
-			} else {
-				m.output = append(m.output, "                  "+line)
-			}
-		}
-
-	case "queue_immediate":
-		m.flushText()
-		maxWidth := m.width - 24 // account for prefix
-		if maxWidth < 40 {
-			maxWidth = 40
-		}
-		wrapped := wrapText(event.Content, maxWidth)
-		for i, line := range wrapped {
-			if i == 0 {
-				m.output = append(m.output, queueStyle.Render("  ⏱  Queued immediate: ")+dimStyle.Render(line))
-			} else {
-				m.output = append(m.output, "                        "+dimStyle.Render(line))
-			}
-		}
-
-	case "queue_on_complete":
-		m.flushText()
-		maxWidth := m.width - 27 // account for prefix
-		if maxWidth < 40 {
-			maxWidth = 40
-		}
-		wrapped := wrapText(event.Content, maxWidth)
-		for i, line := range wrapped {
-			if i == 0 {
-				m.output = append(m.output, queueStyle.Render("  ⏱  Queued on complete: ")+dimStyle.Render(line))
-			} else {
-				m.output = append(m.output, "                           "+dimStyle.Render(line))
-			}
-		}
-
-	case "steering":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [steering message injected]"))
-
-	case "usage":
-		// Loop sends cumulative totalUsage
-		if event.Usage != nil {
-			m.totalUsage = *event.Usage
-		}
-		// Track model name for cost calculation
-		if event.Model != "" {
-			m.modelName = event.Model
-		}
-
-		// Track cost persistently (only the delta since last track)
-		if m.costTracker != nil && event.Usage != nil && event.Model != "" {
-			// Calculate delta from last tracked usage
-			deltaUsage := types.TokenUsage{
-				InputTokens:         event.Usage.InputTokens - m.lastTracked.InputTokens,
-				OutputTokens:        event.Usage.OutputTokens - m.lastTracked.OutputTokens,
-				CacheCreationTokens: event.Usage.CacheCreationTokens - m.lastTracked.CacheCreationTokens,
-				CacheReadTokens:     event.Usage.CacheReadTokens - m.lastTracked.CacheReadTokens,
-			}
-
-			// Only track if there's a non-zero delta
-			if deltaUsage.InputTokens > 0 || deltaUsage.OutputTokens > 0 ||
-				deltaUsage.CacheCreationTokens > 0 || deltaUsage.CacheReadTokens > 0 {
-
-				callCost := cost.Calculate(event.Model, deltaUsage)
-				if err := m.costTracker.Track(
-					m.sessionID,
-					event.Model,
-					deltaUsage.InputTokens,
-					deltaUsage.OutputTokens,
-					deltaUsage.CacheCreationTokens,
-					deltaUsage.CacheReadTokens,
-					callCost,
-				); err != nil {
-					// Don't fail the session, just log
-					m.output = append(m.output, dimStyle.Render("  ⚠  cost tracking error: "+err.Error()))
-				}
-
-				// Update lastTracked to current usage
-				m.lastTracked = *event.Usage
-			}
-		}
-
-	case "error":
-		m.flushText()
-		maxWidth := m.width - 8 // account for "error: "
-		if maxWidth < 40 {
-			maxWidth = 40
-		}
-		wrapped := wrapText(event.Content, maxWidth)
-		for i, line := range wrapped {
-			if i == 0 {
-				m.output = append(m.output, errorStyle.Render("error: ")+line)
-			} else {
-				m.output = append(m.output, "       "+line)
-			}
-		}
-
-	case "interrupted":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("interrupted by user"))
-
-	case "warning":
-		m.flushText()
-		maxWidth := m.width - 11 // account for "warning: "
-		if maxWidth < 40 {
-			maxWidth = 40
-		}
-		wrapped := wrapText(event.Content, maxWidth)
-		for i, line := range wrapped {
-			if i == 0 {
-				m.output = append(m.output, errorStyle.Render("warning: ")+line)
-			} else {
-				m.output = append(m.output, "         "+line)
-			}
-		}
-
-	case "done":
-		m.flushText()
-		// Finalize any remaining task trackers (agent done, no more polling).
-		for _, id := range append([]string{}, m.taskTrackerOrder...) {
-			if tt, ok := m.taskTrackers[id]; ok {
-				m.finalizeTaskTracker(tt)
-			}
-		}
-		m.output = append(m.output, "")
-
-	case "phase_start":
-		m.flushText()
-		m.output = append(m.output, "")
-		m.output = append(m.output, headerStyle.Render("  [phase] ")+event.Content+" starting")
-
-	case "phase_complete":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [phase] ")+event.Content)
-		m.output = append(m.output, "")
-
-	case "phase_handoff":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [phase] ")+event.Content)
-
-	case "intent_classified":
-		m.flushText()
-		switch event.Content {
-		case "question":
-			m.output = append(m.output, dimStyle.Render("  answering question..."))
-		case "investigate":
-			m.output = append(m.output, dimStyle.Render("  investigating..."))
-		}
-		// "task" is silent — the phase_start events provide the display.
-
-	case "classification_error":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  "+event.Content))
-
-	case "ideation_start":
-		m.flushText()
-		m.output = append(m.output, headerStyle.Render("  [ideation] ")+event.Content)
-
-	case "ideation_candidate":
-		// Quiet — candidates are internal to the pipeline
-
-	case "clarification_start":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [clarify] ")+event.Content)
-
-	case "clarification_question":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [question] ")+event.Content)
-
-	case "planning_start":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [planning] ")+event.Content)
-
-	case "planning_selection":
-		m.flushText()
-		m.output = append(m.output, headerStyle.Render("  [plan] ")+event.Content)
-
-	case "staleness_warning":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [staleness] ")+event.Content)
-
-	case "staleness_error":
-		m.flushText()
-		m.output = append(m.output, errorStyle.Render("  [staleness] ")+event.Content)
-
-	case "review_start":
-		m.flushText()
-		m.output = append(m.output, headerStyle.Render("  [review] ")+event.Content)
-
-	case "review_finding":
-		m.flushText()
-		m.output = append(m.output, formatReviewFinding(event.Content, m.width))
-
-	case "review_agent_done":
-		// Quiet — individual agent completions don't need display
-
-	case "review_provider_summary":
-		m.flushText()
-		m.output = append(m.output, "")
-		for _, line := range strings.Split(event.Content, "\n") {
-			m.output = append(m.output, "  "+dimStyle.Render(line))
-		}
-
-	case "review_summary":
-		m.flushText()
-		m.output = append(m.output, "")
-		m.output = append(m.output, headerStyle.Render("  Review Summary"))
-		for _, line := range strings.Split(event.Content, "\n") {
-			m.output = append(m.output, "  "+line)
-		}
-		m.output = append(m.output, "")
-
-	case "review_error":
-		m.flushText()
-		m.output = append(m.output, errorStyle.Render("  [review error] ")+event.Content)
-
-	case "pr_url":
-		m.prURL = event.Content
-
-	case "pr_monitor":
-		m.flushText()
-		m.output = append(m.output, dimStyle.Render("  [pr] ")+event.Content)
-
-	case "task_status":
-		m.handleTaskStatus(event.Content)
-	}
-}
-
-// handleTaskStatus parses a task_status event and updates (or creates) the
-// inline tracker for that task. When the task reaches a terminal state the
-// tracker is finalized: a one-line summary is appended to scrollback output
-// and the tracker is removed so it no longer takes up screen space.
-func (m *model) handleTaskStatus(content string) {
-	var payload struct {
-		ID          string   `json:"id"`
-		Description string   `json:"description"`
-		Status      string   `json:"status"`
-		OutputTail  []string `json:"outputTail"`
-		Duration    string   `json:"duration"`
-	}
-	if err := json.Unmarshal([]byte(content), &payload); err != nil {
-		return
-	}
-
-	tt, exists := m.taskTrackers[payload.ID]
-	if !exists {
-		tt = &taskTracker{
-			taskID:    payload.ID,
-			startTime: time.Now(),
-		}
-		m.taskTrackers[payload.ID] = tt
-		m.taskTrackerOrder = append(m.taskTrackerOrder, payload.ID)
-	}
-
-	tt.description = payload.Description
-	tt.status = payload.Status
-	tt.outputTail = payload.OutputTail
-	tt.duration = payload.Duration
-
-	// Terminal? Flush a final summary into scrollback and remove the tracker.
-	switch tt.status {
-	case "completed", "failed", "killed":
-		m.finalizeTaskTracker(tt)
-	}
-}
-
-// finalizeTaskTracker moves a finished task from the live tracker area into
-// the scrollback output as a single summary line.
-func (m *model) finalizeTaskTracker(tt *taskTracker) {
-	icon := dimStyle.Render("?")
-	switch tt.status {
-	case "completed":
-		icon = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓")
-	case "failed":
-		icon = errorStyle.Render("✗")
-	case "killed":
-		icon = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("⊘")
-	}
-
-	dur := tt.duration
-	if dur == "" {
-		dur = time.Since(tt.startTime).Round(time.Second).String()
-	}
-
-	m.output = append(m.output,
-		fmt.Sprintf("  %s %s (%s) %s",
-			icon,
-			tt.description,
-			tt.taskID,
-			dimStyle.Render(dur),
-		),
-	)
-
-	delete(m.taskTrackers, tt.taskID)
-	// Remove from order slice.
-	for i, id := range m.taskTrackerOrder {
-		if id == tt.taskID {
-			m.taskTrackerOrder = append(m.taskTrackerOrder[:i], m.taskTrackerOrder[i+1:]...)
-			break
-		}
-	}
-}
-
-// renderTaskTrackers produces the live task progress block shown between
-// the main output area and the thinking indicator / input box.
-//
-//	⠹ Running tests (b3)                 running
-//	    PASS TestFoo
-//	    PASS TestBar
-func (m model) renderTaskTrackers() string {
-	if len(m.taskTrackers) == 0 {
-		return ""
-	}
-
-	var lines []string
-	for _, id := range m.taskTrackerOrder {
-		tt, ok := m.taskTrackers[id]
-		if !ok {
-			continue
-		}
-
-		// Header: spinner + description (task_id) + status
-		statusColor := lipgloss.Color("6") // cyan = running
-		switch tt.status {
-		case "pending":
-			statusColor = lipgloss.Color("8")
-		}
-		statusStr := lipgloss.NewStyle().Foreground(statusColor).Render(tt.status)
-
-		header := fmt.Sprintf("  %s %s %s %s",
-			thinkingStyle.Render(m.spinner()),
-			tt.description,
-			dimStyle.Render("("+tt.taskID+")"),
-			statusStr,
-		)
-		lines = append(lines, header)
-
-		// Output tail — indented
-		maxWidth := m.width - 8
-		if maxWidth < 40 {
-			maxWidth = 40
-		}
-		for _, ol := range tt.outputTail {
-			if len(ol) > maxWidth {
-				ol = ol[:maxWidth]
-			}
-			lines = append(lines, "      "+dimStyle.Render(ol))
-		}
-	}
-
-	return strings.Join(lines, "\n")
-}
-
-// flushRawText appends new raw text lines to output during streaming.
-// Holds incomplete lines (no trailing newline) in textBuf for the next tick.
-func (m *model) flushRawText() {
-	text := m.textBuf
-	if text == "" {
-		return
-	}
-
-	// Split into lines; keep partial last line in textBuf
-	lines := strings.Split(text, "\n")
-	if len(lines) > 0 {
-		// Last element is either "" (text ended with \n) or a partial line
-		m.textBuf = lines[len(lines)-1]
-		lines = lines[:len(lines)-1]
-	}
-
-	m.output = append(m.output, lines...)
-}
-
-// flushText renders the entire accumulated text block through glamour,
-// replacing the raw streaming lines in m.output with the rendered result.
-func (m *model) flushText() {
-	// Flush any remaining partial line first
-	if m.textBuf != "" {
-		m.output = append(m.output, m.textBuf)
-		m.textBuf = ""
-	}
-
-	text := m.streamBuf
-	startIdx := m.streamStartIdx
-
-	// Reset streaming state
-	m.streamBuf = ""
-	m.streamStartIdx = -1
-
-	if text == "" {
-		return
-	}
-
-	// Sniff for GitHub PR URLs if we don't already have one.
-	if m.prURL == "" {
-		m.prURL = extractPRURL(text)
-	}
-
-	rendered, err := m.renderer.Render(text)
-	if err != nil || startIdx < 0 {
-		// Glamour failed or no stream start recorded — raw lines are already
-		// in output from flushRawText, so just leave them.
-		return
-	}
-
-	// Replace raw streaming lines with glamour-rendered result.
-	renderedLines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-
-	// Calculate line count change for scroll offset adjustment.
-	rawLineCount := len(m.output) - startIdx
-	newLineCount := len(renderedLines)
-
-	// Replace: keep output[:startIdx], append rendered lines
-	m.output = append(m.output[:startIdx], renderedLines...)
-
-	// Adjust scroll offset so viewport stays stable if user scrolled up.
-	if m.scrollOffset > 0 {
-		delta := newLineCount - rawLineCount
-		m.scrollOffset += delta
-		if m.scrollOffset < 0 {
-			m.scrollOffset = 0
-		}
-	}
 }
 
 func (m model) sendMessage(text string) tea.Cmd {
@@ -1569,23 +1027,6 @@ func (m model) sendInterrupt() tea.Cmd {
 	}
 }
 
-func createSession(gatewayURL, cwd string) (string, error) {
-	body, _ := json.Marshal(map[string]string{"cwd": cwd})
-	resp, err := http.Post(gatewayURL+"/sessions", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-	return result.SessionID, nil
-}
-
 func listenEvents(p *tea.Program, gatewayURL, sessionID string, interactiveMode bool) {
 	var url string
 	if interactiveMode {
@@ -1623,334 +1064,6 @@ func listenEvents(p *tea.Program, gatewayURL, sessionID string, interactiveMode 
 
 // isDefaultBranch returns true for branches that should trigger ephemeral
 // worktree mode rather than branch-reuse mode (main, master, HEAD/detached).
-func isDefaultBranch(branch string) bool {
-	switch branch {
-	case "main", "master", "HEAD":
-		return true
-	}
-	return false
-}
-
-// isInWorktree checks if the current directory is inside a git worktree.
-// Returns false if not in a git repo or if in the main repo.
-func isInWorktree(dir string) bool {
-	gitPath := filepath.Join(dir, ".git")
-	info, err := os.Stat(gitPath)
-	if err != nil {
-		return false
-	}
-	// In a worktree, .git is a file (pointing to the real git dir)
-	// In the main repo, .git is a directory
-	return !info.IsDir()
-}
-
-// spawnLocalAgent starts a forge agent subprocess and returns (sessionID, serverURL, worktreePath, worktreeBranch, cleanup, error).
-// The agent runs on a random port and auto-terminates when cleanup is called.
-// If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
-// If branchName is set, reuses an existing worktree for that branch or creates one.
-// initialPrompt, when non-empty, is used to generate a human-readable session name via Haiku.
-func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, modelName string, namingHint string, issueNum int, issueURL string) (string, string, string, string, func(), error) {
-	// Find forge binary (prefer same dir as CLI, fallback to PATH)
-	forgeBin := "forge"
-	if exe, err := os.Executable(); err == nil {
-		// If we're already the forge binary, use ourselves
-		if filepath.Base(exe) == "forge" || strings.HasPrefix(filepath.Base(exe), "forge.") {
-			forgeBin = exe
-		} else {
-			// Look for forge in same directory
-			candidate := filepath.Join(filepath.Dir(exe), "forge")
-			if _, err := os.Stat(candidate); err == nil {
-				forgeBin = candidate
-			}
-		}
-	}
-
-	// Generate session ID with a readable name.
-	// If we have a naming hint (e.g. issue title), prefer that for a short slug.
-	// Otherwise use the full initial prompt. Falls back to random adjective-noun.
-	nameSource := namingHint
-	if nameSource == "" {
-		nameSource = initialPrompt
-	}
-	slug := generateSessionName(newLightweightProvider(), nameSource)
-	// Inject issue number into the session ID for branch traceability.
-	// Result: "20260628-42-fix-auth-timeout" instead of "20260628-fix-auth-timeout".
-	// Only when --branch is not explicitly set (the user's branch name takes precedence).
-	datePart := time.Now().Format("20060102")
-	sessionID := datePart + "-" + slug
-	if issueNum > 0 && branchName == "" {
-		sessionID = fmt.Sprintf("%s-%d-%s", datePart, issueNum, slug)
-	}
-
-	// Check if we're in a git repo and should create a worktree
-	var worktreePath string
-	var worktreeBranch string
-	var repoRoot string
-	worktreeBase := filepath.Join(os.TempDir(), "forge", "worktrees")
-
-	// explicitBranch tracks whether --branch was passed by the user (reuse ok)
-	// vs auto-detected from the current checkout (always fresh worktree).
-	explicitBranch := branchName != ""
-
-	// Auto-detect branch: if no --branch flag, not skipping worktrees, and not
-	// already in a worktree, check the current branch. If it's a feature branch
-	// (not main/master/HEAD), create a fresh worktree branched off it instead
-	// of an ephemeral one from HEAD.
-	var detectedBranch string
-	if branchName == "" && !skipWorktree && !isInWorktree(cwd) {
-		if root := findRepoRoot(cwd); root != "" {
-			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-			cmd.Dir = root
-			if out, err := cmd.Output(); err == nil {
-				detected := strings.TrimSpace(string(out))
-				if !isDefaultBranch(detected) {
-					detectedBranch = detected
-					fmt.Fprintln(os.Stderr, dimStyle.Render("  detected branch: "+detectedBranch))
-				}
-			}
-		}
-	}
-
-	if explicitBranch {
-		// Explicit --branch: find or create worktree for the named branch.
-		// Reuses existing worktrees (intentional resume).
-		repoRoot = findRepoRoot(cwd)
-		if repoRoot == "" {
-			return "", "", "", "", nil, fmt.Errorf("not in a git repo")
-		}
-
-		wtPath, err := findWorktreeForBranch(repoRoot, branchName)
-		if err != nil {
-			return "", "", "", "", nil, fmt.Errorf("listing worktrees: %w", err)
-		}
-
-		if wtPath != "" {
-			worktreePath = wtPath
-			worktreeBranch = branchName
-			cwd = worktreePath
-			if info, err := readSessionFile(wtPath); err == nil {
-				sessionID = info.SessionID
-				fmt.Fprintln(os.Stderr, dimStyle.Render("  resuming session: "+sessionID))
-
-				// Warn if session JSONL is missing (conversation history lost)
-				if jsonlPath, err := sessionFilePath(sessionID); err == nil {
-					switch _, err := os.Stat(jsonlPath); {
-					case os.IsNotExist(err):
-						fmt.Fprintln(os.Stderr, errorStyle.Render("  warning: session history unavailable, conversation will start fresh"))
-					case err != nil:
-						fmt.Fprintf(os.Stderr, "  warning: could not check session history: %v\n", err)
-					}
-				}
-			}
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  reusing worktree: "+worktreePath))
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))
-		} else {
-			// No existing worktree — create one
-			worktreePath = filepath.Join(worktreeBase, sessionID)
-			if err := os.MkdirAll(worktreeBase, 0o755); err != nil {
-				return "", "", "", "", nil, fmt.Errorf("create worktree dir: %w", err)
-			}
-
-			// Try checking out existing branch first; if that fails, create it
-			cmd := exec.Command("git", "worktree", "add", worktreePath, branchName)
-			cmd.Dir = repoRoot
-			if out, err := cmd.CombinedOutput(); err != nil {
-				cmd = exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, "HEAD")
-				cmd.Dir = repoRoot
-				if out2, err2 := cmd.CombinedOutput(); err2 != nil {
-					return "", "", "", "", nil, fmt.Errorf("git worktree add: %s\n%s", err, string(append(out, out2...)))
-				}
-			}
-
-			worktreeBranch = branchName
-			cwd = worktreePath
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))
-		}
-	} else if !skipWorktree && !isInWorktree(cwd) {
-		// Fresh worktree mode: create a new branch from either the detected
-		// feature branch or the current branch.
-		repoRoot = findRepoRoot(cwd)
-		if repoRoot != "" {
-			baseBranch := detectedBranch
-			if baseBranch == "" {
-				cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-				cmd.Dir = repoRoot
-				if branchOut, err := cmd.Output(); err == nil {
-					baseBranch = strings.TrimSpace(string(branchOut))
-				}
-			}
-
-			if baseBranch != "" {
-				worktreePath = filepath.Join(worktreeBase, sessionID)
-				if err := os.MkdirAll(worktreeBase, 0o755); err == nil {
-					newBranch := fmt.Sprintf("jelmer/%s", sessionID)
-					cmd := exec.Command("git", "worktree", "add", "-b", newBranch, worktreePath, baseBranch)
-					cmd.Dir = repoRoot
-					if err := cmd.Run(); err == nil {
-						worktreeBranch = newBranch
-						fmt.Fprintln(os.Stderr, dimStyle.Render("  created worktree: "+worktreePath))
-						fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+newBranch+" (from "+baseBranch+")"))
-						cwd = worktreePath
-					}
-				}
-			}
-		}
-	}
-
-	// Write .forge-session metadata for resume
-	if worktreePath != "" && repoRoot != "" {
-		_ = writeSessionFile(worktreePath, SessionInfo{
-			SessionID: sessionID,
-			Branch:    worktreeBranch,
-			RepoRoot:  repoRoot,
-			CreatedAt: time.Now(),
-		})
-	}
-
-	// Spawn agent subcommand on random port (0 = OS picks)
-	agentArgs := []string{"agent",
-		"--port", "0",
-		"--cwd", cwd,
-		"--session-id", sessionID,
-	}
-	if mode != "" {
-		agentArgs = append(agentArgs, "--mode", mode)
-	}
-	if specPath != "" {
-		agentArgs = append(agentArgs, "--spec", specPath)
-	}
-	if modelName != "" {
-		agentArgs = append(agentArgs, "--model", modelName)
-	}
-	if issueURL != "" {
-		agentArgs = append(agentArgs, "--issue-url", issueURL)
-	}
-	cmd := exec.Command(forgeBin, agentArgs...)
-
-	// Capture stdout to read the port
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", "", "", "", nil, fmt.Errorf("create stdout pipe: %w", err)
-	}
-
-	// Send stderr to /dev/null (agent logs are noise in interactive mode)
-	cmd.Stderr = nil
-
-	if err := cmd.Start(); err != nil {
-		return "", "", "", "", nil, fmt.Errorf("start agent: %w", err)
-	}
-
-	// Read port from first line of stdout (JSON: {"port": 12345})
-	scanner := bufio.NewScanner(stdout)
-	if !scanner.Scan() {
-		_ = cmd.Process.Kill()
-		return "", "", "", "", nil, fmt.Errorf("agent did not emit port")
-	}
-
-	var portMsg struct {
-		Port int `json:"port"`
-	}
-	if err := json.Unmarshal(scanner.Bytes(), &portMsg); err != nil {
-		_ = cmd.Process.Kill()
-		return "", "", "", "", nil, fmt.Errorf("parse agent port: %w", err)
-	}
-
-	serverURL := fmt.Sprintf("http://localhost:%d", portMsg.Port)
-
-	// Wait for agent to be ready (health check with retries)
-	ready := false
-	for i := 0; i < 10; i++ {
-		resp, err := http.Get(serverURL + "/health")
-		if err == nil && resp.StatusCode == 200 {
-			_ = resp.Body.Close()
-			ready = true
-			break
-		}
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if !ready {
-		_ = cmd.Process.Kill()
-		return "", "", "", "", nil, fmt.Errorf("agent did not become healthy")
-	}
-
-	// Track whether cleanup has been called to avoid double-cleanup
-	var cleanupCalled bool
-	var cleanupMutex sync.Mutex
-
-	cleanup := func() {
-		cleanupMutex.Lock()
-		defer cleanupMutex.Unlock()
-
-		if cleanupCalled {
-			return
-		}
-		cleanupCalled = true
-
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
-
-		// Print resume hint if worktree is preserved
-		if worktreePath != "" && worktreeBranch != "" {
-			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  worktree preserved: "+worktreePath))
-			fmt.Fprintln(os.Stderr, dimStyle.Render("  resume: forge --branch "+worktreeBranch))
-		}
-	}
-
-	return sessionID, serverURL, worktreePath, worktreeBranch, cleanup, nil
-}
-
-// findRepoRoot returns the git repository root for the given directory, or ""
-// if the directory is not inside a git repo.
-func findRepoRoot(dir string) string {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// findWorktreeForBranch parses `git worktree list --porcelain` and returns the
-// worktree path whose checked-out branch matches the given name, or "" if none.
-//
-//	worktree /tmp/forge/worktrees/cli-20260406-183659
-//	HEAD abc123
-//	branch refs/heads/jelmer/cli-20260406-183659
-//	<blank line>
-func findWorktreeForBranch(repoRoot, branch string) (string, error) {
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-
-	target := "refs/heads/" + branch
-	var currentPath string
-	for _, line := range strings.Split(string(out), "\n") {
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			currentPath = strings.TrimPrefix(line, "worktree ")
-		case strings.TrimSpace(line) == "":
-			currentPath = ""
-		case line == "branch "+target:
-			return currentPath, nil
-		}
-	}
-	return "", nil
-}
-
-// trySlashComplete attempts tab-completion of slash commands.
-// Returns true if a completion was applied.
 func (m *model) trySlashComplete() bool {
 	val := m.textArea.Value()
 	if !strings.HasPrefix(val, "/") {
@@ -1981,26 +1094,6 @@ func (m *model) resizeTextArea() {
 		h = 10
 	}
 	m.textArea.SetHeight(h)
-}
-
-// prURLRe matches GitHub pull request URLs in text.
-var prURLRe = regexp.MustCompile(`https://github\.com/[^\s/]+/[^\s/]+/pull/\d+`)
-
-// extractPRURL finds the first GitHub PR URL in text, or returns "".
-func extractPRURL(text string) string {
-	return prURLRe.FindString(text)
-}
-
-// detectCurrentPR checks if the current branch has an open PR on GitHub.
-// Returns the PR URL or "" if none found (no gh, no repo, no PR — all silent).
-func detectCurrentPR(cwd string) string {
-	cmd := exec.Command("gh", "pr", "view", "--json", "url", "--jq", ".url")
-	cmd.Dir = cwd
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // isReviewCommand checks if the input is a /review command.
@@ -2146,21 +1239,21 @@ type modelsListMsg []types.ProviderModels
 // surfaced but the in-session switch still proceeds.
 func (m model) applyModelSwitch(arg string, global bool) (model, tea.Cmd) {
 	if !m.interactiveMode {
-		m.output = append(m.output, "")
-		m.output = append(m.output, errorStyle.Render("model switching is not supported in gateway mode"))
+		m.out.Append("")
+		m.out.Append(errorStyle.Render("model switching is not supported in gateway mode"))
 		return m, nil
 	}
 	if global {
 		if err := config.SetValue("model.default", arg); err != nil {
-			m.output = append(m.output, "")
-			m.output = append(m.output, errorStyle.Render("failed to save model.default: "+err.Error()))
+			m.out.Append("")
+			m.out.Append(errorStyle.Render("failed to save model.default: " + err.Error()))
 		} else {
-			m.output = append(m.output, "")
-			m.output = append(m.output, dimStyle.Render("Saved model.default = "+arg+" to ~/.forge/config.toml"))
+			m.out.Append("")
+			m.out.Append(dimStyle.Render("Saved model.default = " + arg + " to ~/.forge/config.toml"))
 		}
 	}
-	m.output = append(m.output, "")
-	m.output = append(m.output, dimStyle.Render("Switching model to "+arg+"..."))
+	m.out.Append("")
+	m.out.Append(dimStyle.Render("Switching model to " + arg + "..."))
 	return m, m.sendSetModel(arg)
 }
 

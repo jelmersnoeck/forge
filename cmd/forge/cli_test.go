@@ -541,7 +541,7 @@ func TestApplyModelSwitch_globalPersists(t *testing.T) {
 	r := require.New(t)
 	t.Setenv("HOME", t.TempDir())
 
-	m := model{interactiveMode: true}
+	m := model{interactiveMode: true, out: NewOutputBuffer()}
 	newM, cmd := m.applyModelSwitch("sonnet", true)
 	r.NotNil(cmd)
 
@@ -552,7 +552,7 @@ func TestApplyModelSwitch_globalPersists(t *testing.T) {
 	r.Contains(string(data), "sonnet")
 
 	// Output notes the global save.
-	joined := strings.Join(newM.output, "\n")
+	joined := strings.Join(newM.out.Lines(), "\n")
 	r.Contains(joined, "Saved model.default")
 }
 
@@ -560,7 +560,7 @@ func TestApplyModelSwitch_sessionOnly(t *testing.T) {
 	r := require.New(t)
 	t.Setenv("HOME", t.TempDir())
 
-	m := model{interactiveMode: true}
+	m := model{interactiveMode: true, out: NewOutputBuffer()}
 	newM, cmd := m.applyModelSwitch("opus", false)
 	r.NotNil(cmd)
 
@@ -569,16 +569,16 @@ func TestApplyModelSwitch_sessionOnly(t *testing.T) {
 	_, err := os.Stat(path)
 	r.True(os.IsNotExist(err))
 
-	joined := strings.Join(newM.output, "\n")
+	joined := strings.Join(newM.out.Lines(), "\n")
 	r.NotContains(joined, "Saved model.default")
 	r.Contains(joined, "Switching model to opus")
 }
 
 func TestApplyModelSwitch_gatewayRejected(t *testing.T) {
 	r := require.New(t)
-	m := model{interactiveMode: false}
+	m := model{interactiveMode: false, out: NewOutputBuffer()}
 	newM, cmd := m.applyModelSwitch("opus", true)
 	r.Nil(cmd)
-	joined := strings.Join(newM.output, "\n")
+	joined := strings.Join(newM.out.Lines(), "\n")
 	r.Contains(joined, "not supported in gateway mode")
 }
