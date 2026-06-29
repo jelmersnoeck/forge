@@ -3,6 +3,7 @@ package prompt
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
@@ -359,4 +360,97 @@ func TestAssemble_Specs_NoneActive(t *testing.T) {
 	r.Contains(blocks[1].Text, "Existing Specs:")
 	r.Contains(blocks[1].Text, "old-feature")
 	r.Contains(blocks[1].Text, "(implemented)")
+}
+
+func TestAssemble_Learnings_DeterministicOrder(t *testing.T) {
+	// Learnings arrive from the filesystem; without sorting their order can
+	// vary, busting the prompt cache. They must be emitted sorted by Path.
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		AgentsMD: []types.AgentsMDEntry{
+			{Path: "/p/.forge/learnings/troy.md", Content: "Troy learning", Level: "project"},
+			{Path: "/p/.forge/learnings/abed.md", Content: "Abed learning", Level: "project"},
+			{Path: "/p/.forge/learnings/shirley.md", Content: "Shirley learning", Level: "project"},
+		},
+	}
+
+	blocks := Assemble(bundle, "/greendale")
+	r.GreaterOrEqual(len(blocks), 2)
+	text := blocks[1].Text
+
+	abedIdx := strings.Index(text, "abed.md")
+	shirleyIdx := strings.Index(text, "shirley.md")
+	troyIdx := strings.Index(text, "troy.md")
+	r.Greater(shirleyIdx, abedIdx, "learnings not sorted: shirley before abed")
+	r.Greater(troyIdx, shirleyIdx, "learnings not sorted: troy before shirley")
+
+	for i := 0; i < 50; i++ {
+		b := Assemble(bundle, "/greendale")
+		r.Equal(text, b[1].Text, "iteration %d: learnings order changed", i)
+	}
+}
+
+func TestAssemble_Rules_DeterministicOrder(t *testing.T) {
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		Rules: []types.RuleEntry{
+			{Path: "/p/.forge/rules/zeebra.md", Content: "z", Level: "project"},
+			{Path: "/p/.forge/rules/annie.md", Content: "a", Level: "project"},
+		},
+	}
+
+	blocks := Assemble(bundle, "/greendale")
+	r.GreaterOrEqual(len(blocks), 2)
+	text := blocks[1].Text
+	r.Greater(strings.Index(text, "zeebra.md"), strings.Index(text, "annie.md"),
+		"rules not sorted by path")
+}
+
+func TestAssemble_Skills_DeterministicOrder(t *testing.T) {
+	r := require.New(t)
+
+	bundle := types.ContextBundle{
+		SkillDescriptions: []types.SkillDescription{
+			{Name: "winger-speech", Description: "Inspirational nonsense"},
+			{Name: "dean-costume", Description: "Costume ideas"},
+		},
+	}
+
+	blocks := Assemble(bundle, "/greendale")
+	r.GreaterOrEqual(len(blocks), 2)
+	text := blocks[1].Text
+	r.Greater(strings.Index(text, "winger-speech"), strings.Index(text, "dean-costume"),
+		"skills not sorted by name")
+}
+
+func TestAssemble_CurrentDate_InDynamicBlock_NotStatic(t *testing.T) {
+	// The date changes daily. It must NOT live in the global static block
+	// (block 0) — that would bust the large cross-session cache every day.
+	r := require.New(t)
+
+	blocks := Assemble(types.ContextBundle{}, "/greendale")
+	r.GreaterOrEqual(len(blocks), 2)
+
+	r.NotContains(blocks[0].Text, "Current date:",
+		"date must not be in the static global cache block")
+	r.Contains(blocks[1].Text, "Current date:",
+		"date should live in the dynamic block")
+}
+
+func TestAssemble_CurrentDate_InjectableClock(t *testing.T) {
+	// now is injectable so Assemble is deterministic across day boundaries in
+	// tests. Pinning it yields a fixed date string.
+	r := require.New(t)
+
+	orig := now
+	t.Cleanup(func() { now = orig })
+	now = func() time.Time {
+		return time.Date(2026, 6, 28, 17, 0, 0, 0, time.UTC)
+	}
+
+	blocks := Assemble(types.ContextBundle{}, "/greendale")
+	r.GreaterOrEqual(len(blocks), 2)
+	r.Contains(blocks[1].Text, "Current date: 2026-06-28")
 }
