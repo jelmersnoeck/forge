@@ -29,6 +29,10 @@ type InboundMessage struct {
 // "clarification_start", "clarification_question", "planning_start",
 // "planning_selection", "staleness_warning", "staleness_error", "phase_error",
 // "steering".
+//
+// For "intent_classified", Content is a JSON object
+// {"intent":..,"size":..,"spec_match":..} where intent is one of
+// "question", "investigate", "triage", "review", "task".
 type OutboundEvent struct {
 	ID        string      `json:"id"`
 	SessionID string      `json:"sessionId"`

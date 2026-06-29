@@ -45,6 +45,9 @@ type OrchestratorOpts struct {
 	// InvestigateHistoryID, when set, resumes an existing investigation conversation.
 	InvestigateHistoryID string
 
+	// TriageHistoryID, when set, resumes an existing triage conversation.
+	TriageHistoryID string
+
 	// PipelineHint controls whether to run the ideation pipeline.
 	// Values: "ideate" (always ideate), "spec" (always single-agent spec
 	// creator), "code" (skip to coding), "auto" or "" (use complexity gate
@@ -78,6 +81,9 @@ type OrchestratorResult struct {
 	// InvestigateHistoryID is set when Intent == IntentInvestigate.
 	// The caller uses this to resume the investigation loop on follow-up.
 	InvestigateHistoryID string
+	// TriageHistoryID is set when Intent == IntentTriage.
+	// The caller uses this to resume the triage loop on follow-up.
+	TriageHistoryID string
 	// CoderHistoryID is set after the SWE pipeline completes.
 	// The caller uses this to resume the coder conversation for follow-ups.
 	CoderHistoryID string
@@ -161,6 +167,14 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 			}, err
 		}
 
+		if classification.Intent == IntentTriage && !opts.ForceTask {
+			historyID, err := o.runTriage(ctx, opts)
+			return OrchestratorResult{
+				Intent:          IntentTriage,
+				TriageHistoryID: historyID,
+			}, err
+		}
+
 		if classification.Intent == IntentReview && !opts.ForceTask {
 			o.emitPhaseStart(opts, "review")
 			_, err := o.runReviewer(ctx, opts, opts.SpecPath)
@@ -179,6 +193,13 @@ func (o *Orchestrator) Run(ctx context.Context, opts OrchestratorOpts) (Orchestr
 		opts.InitialPrompt = augmented
 		opts.TransitionHistoryID = opts.InvestigateHistoryID
 		opts.InvestigateHistoryID = ""
+	case opts.TriageHistoryID != "":
+		augmented := "Based on our previous triage, the user now wants to implement: " +
+			opts.InitialPrompt + ". Use the context from the triage to inform the spec."
+		log.Printf("[orchestrator:%s] triage→task transition, augmented prompt (%d chars)", opts.SessionID, len(augmented))
+		opts.InitialPrompt = augmented
+		opts.TransitionHistoryID = opts.TriageHistoryID
+		opts.TriageHistoryID = ""
 	case opts.QAHistoryID != "":
 		augmented := "Based on our previous discussion, the user now wants to implement: " +
 			opts.InitialPrompt + ". Use the context from the conversation to inform the spec."
@@ -214,6 +235,12 @@ func (o *Orchestrator) runQA(ctx context.Context, opts OrchestratorOpts) (string
 // runInvestigate runs the investigation conversation loop. Returns the history ID for resumption.
 func (o *Orchestrator) runInvestigate(ctx context.Context, opts OrchestratorOpts) (string, error) {
 	return o.runConversationPhase(ctx, opts, Investigate(), opts.InvestigateHistoryID)
+}
+
+// runTriage runs the triage conversation loop: investigate, then file a GitHub
+// issue via gh. Returns the history ID for resumption.
+func (o *Orchestrator) runTriage(ctx context.Context, opts OrchestratorOpts) (string, error) {
+	return o.runConversationPhase(ctx, opts, Triage(), opts.TriageHistoryID)
 }
 
 // runConversationPhase runs a conversation loop for a given phase config,

@@ -21,6 +21,7 @@ const (
 	IntentTask        Intent = "task"
 	IntentInvestigate Intent = "investigate"
 	IntentReview      Intent = "review"
+	IntentTriage      Intent = "triage"
 )
 
 // TaskSize indicates the estimated scope of a task intent.
@@ -51,13 +52,15 @@ const classificationSystemPromptTmpl = `Classify the user's message.
 
 Intents:
 - question: informational, asking how something works, requesting an explanation.
-- investigate: active exploration, debugging, root-cause analysis.
+- investigate: active exploration, debugging, root-cause analysis, report back in-session.
+- triage: user reports a problem/symptom and wants it tracked as a GitHub issue, not answered inline. "there's a bug in the auth flow," "why isn't the cache working? file an issue," "the export is broken — track it."
 - review: asking to review existing changes, a diff, PR, or branch.
 - task: actionable request to build, fix, change, implement, refactor.
 
 Ambiguity rules:
 - question vs investigate → investigate
 - investigate vs task → investigate
+- investigate vs triage → investigate (default to the no-side-effect path; a tracking signal like "file an issue", "track this", "log a bug", "open a ticket" routes to triage)
 - Mixed intent with change verb (fix, add, implement, refactor) → task
 - "review my changes" / "review this PR" / "check the diff" → review
 
@@ -286,6 +289,8 @@ func parseIntent(raw string) (Intent, error) {
 		return IntentQuestion, nil
 	case IntentInvestigate:
 		return IntentInvestigate, nil
+	case IntentTriage:
+		return IntentTriage, nil
 	case IntentTask:
 		return IntentTask, nil
 	case IntentReview:
@@ -331,6 +336,8 @@ func parseClassification(raw string, specs []types.SpecEntry) (Classification, e
 		intent = IntentQuestion
 	case IntentInvestigate:
 		intent = IntentInvestigate
+	case IntentTriage:
+		intent = IntentTriage
 	case IntentReview:
 		intent = IntentReview
 	case IntentTask:

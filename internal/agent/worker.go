@@ -90,14 +90,15 @@ func (w *Worker) initialState() WorkerState {
 		return WorkerState{}
 	}
 
-	log.Printf("[agent:%s] state: resumed phase=%s coder=%s qa=%s investigate=%s",
-		w.sessionID, st.Phase, st.HistoryID, st.QAHistoryID, st.InvestigateID)
+	log.Printf("[agent:%s] state: resumed phase=%s coder=%s qa=%s investigate=%s triage=%s",
+		w.sessionID, st.Phase, st.HistoryID, st.QAHistoryID, st.InvestigateID, st.TriageID)
 
 	return WorkerState{
 		Phase:                phaseFromName(st.Phase),
 		HistoryID:            st.HistoryID,
 		QAHistoryID:          st.QAHistoryID,
 		InvestigateHistoryID: st.InvestigateID,
+		TriageHistoryID:      st.TriageID,
 	}
 }
 
@@ -110,6 +111,7 @@ func (w *Worker) persistState(state WorkerState) {
 		HistoryID:        state.HistoryID,
 		QAHistoryID:      state.QAHistoryID,
 		InvestigateID:    state.InvestigateHistoryID,
+		TriageID:         state.TriageHistoryID,
 		OrchestratorDone: state.Phase == PhaseOrchestrator || state.Phase == PhaseDone,
 		HeadCommit:       w.headCommit(),
 	}
@@ -169,6 +171,7 @@ const (
 	PhaseIdle         WorkerPhase = iota // orchestrator not yet run
 	PhaseQA                              // Q&A conversation active
 	PhaseInvestigate                     // investigation conversation active
+	PhaseTriage                          // triage conversation active
 	PhaseOrchestrator                    // orchestrator completed, coder history available
 	PhaseDone                            // single-phase mode completed
 )
@@ -180,6 +183,7 @@ type WorkerState struct {
 	HistoryID            string // coder/plain loop history for Resume()
 	QAHistoryID          string // Q&A conversation history for Resume()
 	InvestigateHistoryID string // investigation conversation history for Resume()
+	TriageHistoryID      string // triage conversation history for Resume()
 }
 
 // Transition applies an OrchestratorResult and returns the new state.
@@ -191,16 +195,24 @@ func (s WorkerState) Transition(result phase.OrchestratorResult) WorkerState {
 		next.Phase = PhaseQA
 		next.QAHistoryID = result.QAHistoryID
 		next.InvestigateHistoryID = ""
+		next.TriageHistoryID = ""
 	case phase.IntentInvestigate:
 		next.Phase = PhaseInvestigate
 		next.InvestigateHistoryID = result.InvestigateHistoryID
 		next.QAHistoryID = ""
+		next.TriageHistoryID = ""
+	case phase.IntentTriage:
+		next.Phase = PhaseTriage
+		next.TriageHistoryID = result.TriageHistoryID
+		next.QAHistoryID = ""
+		next.InvestigateHistoryID = ""
 	case phase.IntentReview:
 		next.Phase = PhaseOrchestrator
 	default: // IntentTask and anything else
 		next.Phase = PhaseOrchestrator
 		next.QAHistoryID = ""
 		next.InvestigateHistoryID = ""
+		next.TriageHistoryID = ""
 		if result.CoderHistoryID != "" {
 			next.HistoryID = result.CoderHistoryID
 		}
@@ -216,6 +228,8 @@ func phaseName(p WorkerPhase) string {
 		return "qa"
 	case PhaseInvestigate:
 		return "investigate"
+	case PhaseTriage:
+		return "triage"
 	case PhaseOrchestrator:
 		return "orchestrator"
 	case PhaseDone:
@@ -233,6 +247,8 @@ func phaseFromName(name string) WorkerPhase {
 		return PhaseQA
 	case "investigate":
 		return PhaseInvestigate
+	case "triage":
+		return PhaseTriage
 	case "orchestrator":
 		return PhaseOrchestrator
 	case "done":
@@ -246,7 +262,7 @@ func phaseFromName(name string) WorkerPhase {
 // the orchestrator (vs plain loop or resume).
 func (s WorkerState) ShouldRunOrchestrator(mode string) bool {
 	switch s.Phase {
-	case PhaseQA, PhaseInvestigate:
+	case PhaseQA, PhaseInvestigate, PhaseTriage:
 		return mode == "swe"
 	case PhaseIdle:
 		return mode != ""
@@ -466,11 +482,11 @@ func (w *Worker) Run(ctx context.Context) {
 		// Decide execution path based on phase state.
 		switch {
 		case state.ShouldRunOrchestrator(w.mode) && w.mode == "swe":
-			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, state.QAHistoryID, state.InvestigateHistoryID, pipelineHint, forceTask)
+			result, err := w.runOrchestrator(turnCtx, prov, registry, bundle, store, model, msg.Text, emit, state.QAHistoryID, state.InvestigateHistoryID, state.TriageHistoryID, pipelineHint, forceTask)
 			runErr = err
 			state = state.Transition(result)
-			log.Printf("[agent:%s] state: phase=%d, historyID=%s, qaHistoryID=%s, investigateHistoryID=%s",
-				w.sessionID, state.Phase, state.HistoryID, state.QAHistoryID, state.InvestigateHistoryID)
+			log.Printf("[agent:%s] state: phase=%d, historyID=%s, qaHistoryID=%s, investigateHistoryID=%s, triageHistoryID=%s",
+				w.sessionID, state.Phase, state.HistoryID, state.QAHistoryID, state.InvestigateHistoryID, state.TriageHistoryID)
 
 		case state.ShouldRunOrchestrator(w.mode) && (w.mode == "spec" || w.mode == "code" || w.mode == "review"):
 			runErr = w.runSinglePhase(turnCtx, prov, registry, bundle, store, model, msg.Text, emit)
@@ -553,6 +569,7 @@ func (w *Worker) runOrchestrator(
 	emit func(types.OutboundEvent),
 	qaHistoryID string,
 	investigateHistoryID string,
+	triageHistoryID string,
 	pipelineHint string,
 	forceTask bool,
 ) (phase.OrchestratorResult, error) {
@@ -572,6 +589,7 @@ func (w *Worker) runOrchestrator(
 		SpecPath:             w.specPath,
 		QAHistoryID:          qaHistoryID,
 		InvestigateHistoryID: investigateHistoryID,
+		TriageHistoryID:      triageHistoryID,
 		PipelineHint:         pipelineHint,
 		ForceTask:            forceTask,
 		SteeringSource:       w.hub.ConsumeSteeringMessage,

@@ -53,6 +53,10 @@ func TestParseIntent(t *testing.T) {
 			input: `{"intent": "investigate"}`,
 			want:  IntentInvestigate,
 		},
+		"triage": {
+			input: `{"intent": "triage"}`,
+			want:  IntentTriage,
+		},
 		"review": {
 			input: `{"intent": "review"}`,
 			want:  IntentReview,
@@ -461,6 +465,11 @@ func TestParseClassification(t *testing.T) {
 			input: `{"intent":"investigate","size":"small","spec_match":"study-group"}`,
 			specs: specs,
 			want:  Classification{Intent: IntentInvestigate},
+		},
+		"triage ignores size and spec_match": {
+			input: `{"intent":"triage","size":"large","spec_match":"paintball"}`,
+			specs: specs,
+			want:  Classification{Intent: IntentTriage},
 		},
 		"review ignores size and spec_match": {
 			input: `{"intent":"review","size":"standard","spec_match":""}`,
