@@ -32,6 +32,10 @@ func EditTool() types.ToolDefinition {
 					"type":        "boolean",
 					"description": "Replace all occurrences (default false)",
 				},
+				"disable_fuzzy": map[string]any{
+					"type":        "boolean",
+					"description": "Force exact matching only (default false)",
+				},
 			},
 			"required": []string{"file_path", "old_string", "new_string"},
 		},
@@ -60,6 +64,7 @@ func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	}
 
 	replaceAll := optionalBool(input, "replace_all", false)
+	disableFuzzy := optionalBool(input, "disable_fuzzy", false)
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -70,20 +75,24 @@ func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	}
 
 	content := string(data)
-	count := strings.Count(content, oldString)
+	ranges, strat, ok := findMatches(content, oldString, disableFuzzy)
 
 	switch {
-	case count == 0:
+	case !ok:
+		diag := nearMissDiagnostic(content, oldString)
+		if diag != "" {
+			return errResultf("%s\n\nold_string not found in %s", diag, filePath)
+		}
 		return errResultf("old_string not found in %s", filePath)
-	case count > 1 && !replaceAll:
-		return errResultf("old_string appears %d times in %s; use replace_all: true to replace all occurrences", count, filePath)
+	case len(ranges) > 1 && !replaceAll:
+		return errResultf("old_string appears %d times in %s; use replace_all: true to replace all occurrences", len(ranges), filePath)
 	}
 
-	n := 1
-	if replaceAll {
-		n = -1
+	if !replaceAll {
+		ranges = ranges[:1]
 	}
-	newContent := strings.Replace(content, oldString, newString, n)
+
+	newContent := spliceRanges(content, ranges, newString)
 
 	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
 		return errResultf("failed to write file: %v", err)
@@ -91,10 +100,24 @@ func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	ctx.ReadState.Delete(filePath)
 
-	replacedCount := count
-	if !replaceAll {
-		replacedCount = 1
+	suffix := ""
+	if strat == matchWhitespace {
+		suffix = " (whitespace-normalized match)"
 	}
 
-	return textResult(fmt.Sprintf("replaced %d occurrence(s) in %s", replacedCount, filePath)), nil
+	return textResult(fmt.Sprintf("replaced %d occurrence(s) in %s%s", len(ranges), filePath, suffix)), nil
+}
+
+// spliceRanges replaces each byte range in content (ascending, non-overlapping)
+// with replacement and returns the result.
+func spliceRanges(content string, ranges [][2]int, replacement string) string {
+	var b strings.Builder
+	prev := 0
+	for _, r := range ranges {
+		b.WriteString(content[prev:r[0]])
+		b.WriteString(replacement)
+		prev = r[1]
+	}
+	b.WriteString(content[prev:])
+	return b.String()
 }
