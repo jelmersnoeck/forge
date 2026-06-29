@@ -44,8 +44,9 @@ type PRStateFunc func(ctx context.Context, cwd string, prNumber int) (PRState, e
 // RebaseFunc attempts to bring a PR's branch up to date with its base (fetch +
 // rebase + force-push). It is invoked when a PR is detected as not mergeable.
 // The real implementation reuses the fetch/rebase/push logic; tests inject a
-// fake. A nil error means the rebase succeeded and polling continues.
-type RebaseFunc func(ctx context.Context, cwd string) error
+// fake. A nil error means the rebase succeeded and polling continues. base is
+// the PR's base branch (empty → the rebase falls back to the repo default).
+type RebaseFunc func(ctx context.Context, cwd, base string) error
 
 // WaitForMergeOpts configures a single PR merge wait.
 type WaitForMergeOpts struct {
@@ -54,6 +55,11 @@ type WaitForMergeOpts struct {
 
 	// PRNumber is the GitHub PR number to poll.
 	PRNumber int
+
+	// BaseBranch is the PR's base branch, used by the rebase step to fetch and
+	// rebase onto the correct origin ref. Empty → rebasePRBranch falls back to
+	// the repo's detected default branch.
+	BaseBranch string
 
 	// PollInterval is the gap between state polls. Defaults to 30s when zero.
 	PollInterval time.Duration
@@ -139,8 +145,9 @@ func WaitForMerge(ctx context.Context, opts WaitForMergeOpts) (MergeOutcome, err
 	emitMerge(opts.Emit, fmt.Sprintf("Waiting for PR #%d to merge (interval %s, timeout %s)\n",
 		opts.PRNumber, interval, timeout))
 
-	// rebaseTried guards against repeatedly rebasing a branch that keeps
-	// reporting un-mergeable; we attempt the rebase once per OPEN cycle.
+	// checkAndMaybeRebase queries the PR state once. On a terminal state it
+	// returns (outcome, true). On an OPEN poll it rebases (best-effort, per
+	// spec: rebase + force-push on every OPEN poll) and returns (0, false).
 	checkAndMaybeRebase := func() (MergeOutcome, bool) {
 		st, err := query(deadlineCtx, opts.CWD, opts.PRNumber)
 		if err != nil {
@@ -150,16 +157,27 @@ func WaitForMerge(ctx context.Context, opts WaitForMergeOpts) (MergeOutcome, err
 		}
 		switch {
 		case st.merged():
+			slog.Info("merge-poller: PR reached terminal state",
+				"pr", opts.PRNumber, "outcome", MergeOutcomeMerged.String())
 			emitMerge(opts.Emit, fmt.Sprintf("PR #%d merged\n", opts.PRNumber))
 			return MergeOutcomeMerged, true
 		case st.closed():
+			slog.Info("merge-poller: PR reached terminal state",
+				"pr", opts.PRNumber, "outcome", MergeOutcomeClosed.String())
 			emitMerge(opts.Emit, fmt.Sprintf("PR #%d closed without merging\n", opts.PRNumber))
 			return MergeOutcomeClosed, true
 		default:
-			// Still OPEN — attempt a rebase to clear any merge conflict so
-			// the PR can become mergeable. Best-effort: failures are logged
-			// and we keep polling.
-			if err := rebase(deadlineCtx, opts.CWD); err != nil {
+			// Still OPEN — or an unexpected/unknown state from an evolving
+			// API, which we treat as OPEN. Log the latter so upstream API
+			// changes surface instead of silently looping until timeout.
+			if !st.known() {
+				slog.Warn("merge-poller: unrecognized PR state, treating as OPEN",
+					"pr", opts.PRNumber, "state", st.State)
+			}
+			// Attempt a rebase to clear any merge conflict so the PR can
+			// become mergeable. Best-effort: failures are logged and we keep
+			// polling.
+			if err := rebase(deadlineCtx, opts.CWD, opts.BaseBranch); err != nil {
 				slog.Warn("merge-poller: rebase attempt failed; continuing to poll",
 					"pr", opts.PRNumber, "error", err)
 			}
@@ -179,10 +197,17 @@ func WaitForMerge(ctx context.Context, opts WaitForMergeOpts) (MergeOutcome, err
 	for {
 		select {
 		case <-deadlineCtx.Done():
-			// Distinguish a timeout (deadline) from a parent cancellation.
+			// Distinguish a genuine timeout (the internal deadline expired)
+			// from a parent cancellation. A parent cancel propagates to
+			// ctx.Err(); a pure timeout leaves ctx.Err() nil and surfaces as
+			// deadlineCtx.Err() == context.DeadlineExceeded.
 			if ctx.Err() != nil {
+				slog.Info("merge-poller: wait cancelled by parent context",
+					"pr", opts.PRNumber, "outcome", MergeOutcomeTimeout.String())
 				return MergeOutcomeTimeout, fmt.Errorf("merge-poller: cancelled waiting for PR #%d: %w", opts.PRNumber, ctx.Err())
 			}
+			slog.Info("merge-poller: PR merge wait timed out",
+				"pr", opts.PRNumber, "outcome", MergeOutcomeTimeout.String(), "timeout", timeout)
 			emitMerge(opts.Emit, fmt.Sprintf("PR #%d merge wait timed out after %s\n", opts.PRNumber, timeout))
 			return MergeOutcomeTimeout, fmt.Errorf("merge-poller: timed out after %s waiting for PR #%d to merge", timeout, opts.PRNumber)
 		case <-ticker.C:
@@ -234,10 +259,12 @@ func parsePRState(raw []byte) (PRState, error) {
 
 // rebasePRBranch is the production RebaseFunc: fetch the base branch, rebase the
 // current branch onto it, and force-push with lease. Aborts a failed rebase so
-// the worktree is left clean for the next poll attempt.
-func rebasePRBranch(ctx context.Context, cwd string) error {
-	base := detectDefaultBranchSafe(cwd)
-
+// the worktree is left clean for the next poll attempt. An empty base falls back
+// to the repo's detected default branch.
+func rebasePRBranch(ctx context.Context, cwd, base string) error {
+	if strings.TrimSpace(base) == "" {
+		base = detectDefaultBranchSafe(cwd)
+	}
 	if _, stderr, err := tools.GitOutputFullCtx(ctx, cwd, "fetch", "origin", base); err != nil {
 		return fmt.Errorf("fetch origin/%s: %s", base, sanitizeStderr(stderr))
 	}

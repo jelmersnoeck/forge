@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -363,15 +364,15 @@ func gitRemoveWorktree(ctx context.Context, repoRoot, worktreePath string) error
 var prURLNumberRe = regexp.MustCompile(`/(?:pull|merge_requests|pull-requests|pullrequest)/(\d+)`)
 
 // extractPRNumberFromURL parses the PR number from a PR URL, returning 0 when no
-// number can be found (e.g. an empty URL).
+// number can be found (e.g. an empty URL) or the number overflows an int.
 func extractPRNumberFromURL(prURL string) int {
 	m := prURLNumberRe.FindStringSubmatch(prURL)
 	if len(m) < 2 {
 		return 0
 	}
-	n := 0
-	for _, c := range m[1] {
-		n = n*10 + int(c-'0')
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
 	}
 	return n
 }
