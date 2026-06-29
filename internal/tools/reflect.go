@@ -98,8 +98,13 @@ func writeReflection(cwd, summary string, learnings []string) (string, error) {
 		return "", fmt.Errorf("write learning: %v", err)
 	}
 
-	if err := ensureGitattributes(cwd); err != nil {
-		return "", fmt.Errorf("update .gitattributes: %v", err)
+	// When .forge/learnings is gitignored, skip the .gitattributes entry — it
+	// only documents a path git won't track anyway. The learning file is still
+	// written locally above; gitignore means "don't commit," not "don't use."
+	if !IsGitIgnored(cwd, learningsDir) {
+		if err := ensureGitattributes(cwd); err != nil {
+			return "", fmt.Errorf("update .gitattributes: %v", err)
+		}
 	}
 
 	agentsMDPath, err := ensureAgentsMD(cwd)
@@ -135,6 +140,14 @@ func commitLearning(cwd, learningPath, agentsMDPath string) {
 	if err != nil {
 		rel = learningPath
 	}
+
+	// If the learning file itself is gitignored, the user opted out of having
+	// .forge in their repo. Skip the whole add/commit/push dance — the file is
+	// already written locally. No errors, no half-staged index, no drama.
+	if IsGitIgnored(cwd, rel) {
+		return
+	}
+
 	filesToAdd := []string{rel, ".gitattributes"}
 	if agentsMDPath != "" {
 		agentsRel, err := filepath.Rel(cwd, agentsMDPath)
@@ -143,6 +156,22 @@ func commitLearning(cwd, learningPath, agentsMDPath string) {
 		}
 		filesToAdd = append(filesToAdd, agentsRel)
 	}
+
+	// Drop any gitignored paths before staging. git add stages valid pathspecs
+	// atomically per-path even when one fails, so passing an ignored path would
+	// leave the others (e.g. .gitattributes) staged before git aborts with an
+	// error — a half-staged index the user never asked for.
+	kept := filesToAdd[:0]
+	for _, f := range filesToAdd {
+		if !IsGitIgnored(cwd, f) {
+			kept = append(kept, f)
+		}
+	}
+	filesToAdd = kept
+	if len(filesToAdd) == 0 {
+		return
+	}
+
 	addArgs := append([]string{"add", "--"}, filesToAdd...)
 	add := exec.Command("git", addArgs...)
 	add.Dir = cwd
