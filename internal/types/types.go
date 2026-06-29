@@ -3,6 +3,8 @@ package types
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -368,6 +370,46 @@ type MergedSettings struct {
 type PermissionConfig struct {
 	Allow []string `json:"allow"`
 	Deny  []string `json:"deny"`
+}
+
+// AgentRolePermissions maps a sub-agent role to its tool allow/deny preset.
+// A "*" entry in Allow means all tools are permitted. Deny always wins over Allow.
+var AgentRolePermissions = map[string]PermissionConfig{
+	"reviewer": {
+		Allow: []string{"Read", "Glob", "Grep", "WebSearch"},
+		Deny:  []string{"Write", "Edit", "Bash"},
+	},
+	"explorer": {
+		Allow: []string{"Read", "Glob", "Grep"},
+		Deny:  []string{"Write", "Edit", "Bash", "Agent"},
+	},
+	"coder": {
+		Allow: []string{"*"},
+		Deny:  nil,
+	},
+	"planner": {
+		Allow: []string{"Read", "Glob", "Grep", "WebSearch", "Bash"},
+		Deny:  []string{"Write", "Edit"},
+	},
+}
+
+// ResolveRolePermissions returns the permission preset for a known role.
+// Lookup is case-insensitive. The second return value is false for unknown roles,
+// in which case callers should fall back to explicit tool lists.
+func ResolveRolePermissions(role string) (PermissionConfig, bool) {
+	cfg, ok := AgentRolePermissions[strings.ToLower(strings.TrimSpace(role))]
+	return cfg, ok
+}
+
+// SupportedRoles returns the known role identifiers in sorted order, for
+// discoverability (help text, docs generation, validation).
+func SupportedRoles() []string {
+	roles := make([]string, 0, len(AgentRolePermissions))
+	for role := range AgentRolePermissions {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return roles
 }
 
 // ── Session Persistence ──────────────────────────────────────

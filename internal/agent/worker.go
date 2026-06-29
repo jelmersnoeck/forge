@@ -1049,7 +1049,7 @@ func (w *Worker) makeAgentRunner(
 	store *session.Store,
 ) task.AgentRunner {
 	return func(ctx context.Context, agent *types.SubAgent) error {
-		subRegistry := parentRegistry.Filtered(agent.Tools, agent.DisallowedTools)
+		subRegistry := resolveSubAgentRegistry(parentRegistry, agent)
 
 		model := agent.Model
 		if model == "" {
@@ -1095,6 +1095,25 @@ func (w *Worker) makeAgentRunner(
 		agent.Output = output.String()
 		return nil
 	}
+}
+
+// resolveSubAgentRegistry builds the tool registry for a sub-agent.
+//
+// Explicit Tools/DisallowedTools from the caller always win and are
+// schema-filtered (existing behavior). Otherwise, if agent.Type names a known
+// role (reviewer/explorer/coder/planner), that preset is applied AND enforced at
+// execution time via WithPermissions — so a denied tool reaching Execute through
+// resumed history or hallucination is rejected, not just hidden. Unknown roles
+// with no explicit lists yield an unrestricted filtered registry, preserving
+// prior behavior.
+func resolveSubAgentRegistry(parent *tools.Registry, agent *types.SubAgent) *tools.Registry {
+	if len(agent.Tools) > 0 || len(agent.DisallowedTools) > 0 {
+		return parent.Filtered(agent.Tools, agent.DisallowedTools)
+	}
+	if preset, ok := types.ResolveRolePermissions(agent.Type); ok {
+		return parent.WithPermissions(preset.Allow, preset.Deny)
+	}
+	return parent.Filtered(nil, nil)
 }
 
 // selectProvider picks the LLM provider with this priority:

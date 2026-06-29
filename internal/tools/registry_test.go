@@ -383,3 +383,117 @@ func TestFiltered_Independence(t *testing.T) {
 	r.Len(reg.All(), 2)
 	r.Len(filtered.All(), 2)
 }
+
+func TestWithPermissions_SchemaAndEnforcement(t *testing.T) {
+	ranHandler := func(map[string]any, types.ToolContext) (types.ToolResult, error) {
+		return types.ToolResult{Content: []types.ToolResultContent{{Type: "text", Text: "Pierce Hawthorne"}}}, nil
+	}
+	makeRegistry := func() *Registry {
+		reg := NewRegistry()
+		for _, name := range []string{"Read", "Write", "Edit", "Bash", "Glob"} {
+			reg.Register(types.ToolDefinition{Name: name, Handler: ranHandler})
+		}
+		return reg
+	}
+
+	tests := map[string]struct {
+		allow      []string
+		deny       []string
+		wantSchema []string // tools visible in All()
+		runName    string   // tool to Execute
+		wantDenied bool     // expect denial ToolResult
+	}{
+		"reviewer preset hides and enforces": {
+			allow:      []string{"Read", "Glob", "Grep", "WebSearch"},
+			deny:       []string{"Write", "Edit", "Bash"},
+			wantSchema: []string{"Glob", "Read"},
+			runName:    "Read",
+			wantDenied: false,
+		},
+		"denied tool reaching Execute is rejected": {
+			allow:      []string{"Read", "Glob"},
+			deny:       []string{"Write", "Edit", "Bash"},
+			wantSchema: []string{"Glob", "Read"},
+			runName:    "Write", // not in schema but still registered in this reg
+			wantDenied: true,
+		},
+		"star allows everything except deny": {
+			allow:      []string{"*"},
+			deny:       []string{"Bash"},
+			wantSchema: []string{"Edit", "Glob", "Read", "Write"},
+			runName:    "Edit",
+			wantDenied: false,
+		},
+		"star but denied tool still rejected": {
+			allow:      []string{"*"},
+			deny:       []string{"Bash"},
+			wantSchema: []string{"Edit", "Glob", "Read", "Write"},
+			runName:    "Bash",
+			wantDenied: true,
+		},
+		"deny-only permits unlisted": {
+			allow:      nil,
+			deny:       []string{"Write"},
+			wantSchema: []string{"Bash", "Edit", "Glob", "Read"},
+			runName:    "Read",
+			wantDenied: false,
+		},
+		// "*" is only meaningful in allow. A "*" in deny is a literal tool name
+		// that matches no real tool, so it restricts nothing: every registered
+		// tool stays visible and runnable.
+		"star in deny is literal and denies nothing": {
+			allow:      nil,
+			deny:       []string{"*"},
+			wantSchema: []string{"Bash", "Edit", "Glob", "Read", "Write"},
+			runName:    "Write",
+			wantDenied: false,
+		},
+		// allow "*" with deny "*": allow-all wins because deny only matches the
+		// literal "*" tool, which doesn't exist. Real tools are all permitted.
+		"star allow and star deny permits all": {
+			allow:      []string{"*"},
+			deny:       []string{"*"},
+			wantSchema: []string{"Bash", "Edit", "Glob", "Read", "Write"},
+			runName:    "Bash",
+			wantDenied: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			reg := makeRegistry().WithPermissions(tc.allow, tc.deny)
+
+			got := reg.All()
+			gotNames := make([]string, len(got))
+			for i, d := range got {
+				gotNames[i] = d.Name
+			}
+			r.Equal(tc.wantSchema, gotNames)
+
+			// Re-register the run target so Execute can find it even when the
+			// schema hid it (simulates resumed-history / hallucinated invocation).
+			reg.Register(types.ToolDefinition{Name: tc.runName, Handler: ranHandler})
+			res, err := reg.Execute(tc.runName, map[string]any{}, types.ToolContext{})
+			r.NoError(err, "denial must not return a Go error")
+			r.Equal(tc.wantDenied, res.IsError)
+			if tc.wantDenied {
+				r.Contains(res.Content[0].Text, "denied by permission policy")
+			}
+		})
+	}
+}
+
+func TestExecute_NoPolicyPermitsAll(t *testing.T) {
+	r := require.New(t)
+	reg := NewRegistry()
+	reg.Register(types.ToolDefinition{
+		Name: "Bash",
+		Handler: func(map[string]any, types.ToolContext) (types.ToolResult, error) {
+			return types.ToolResult{Content: []types.ToolResultContent{{Type: "text", Text: "ok"}}}, nil
+		},
+	})
+	res, err := reg.Execute("Bash", map[string]any{}, types.ToolContext{})
+	r.NoError(err)
+	r.False(res.IsError)
+}

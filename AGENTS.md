@@ -72,6 +72,30 @@ Key files:
 - `internal/mcp/token_store.go` — persistent OAuth token storage
 - `internal/tools/mcp_gateway.go` — UseMCPTool: single gateway tool for lazy MCP access
 
+## Sub-Agent Roles
+
+Sub-agents (spawned via the `Agent` tool) can request a named role instead of
+hand-listing tools. The role's preset is applied AND enforced at execution time
+(`Registry.WithPermissions`) — a denied tool reaching `Execute` via resumed
+history or hallucination is rejected as an error `ToolResult`, not just hidden
+from the schema. Lookup is case-insensitive. Explicit `tools`/`disallowed_tools`
+on the `Agent` call always override the preset. Unknown roles fall back to
+freeform tool lists (no error).
+
+Role-to-tool matrix (presets in `internal/types/types.go` `AgentRolePermissions`;
+enumerate at runtime via `types.SupportedRoles()`):
+
+| Role     | Allow                            | Deny                          |
+|----------|----------------------------------|-------------------------------|
+| reviewer | Read, Glob, Grep, WebSearch      | Write, Edit, Bash             |
+| explorer | Read, Glob, Grep                 | Write, Edit, Bash, Agent      |
+| planner  | Read, Glob, Grep, WebSearch, Bash| Write, Edit                   |
+| coder    | `*` (all)                        | (none)                        |
+
+Semantics: `"*"` in Allow means all tools permitted; Deny always wins over Allow;
+`"*"` is only meaningful in Allow (a `"*"` in Deny is a literal name matching no
+real tool). An empty allow + empty deny enforces nothing.
+
 ## Spec-Driven Development
 
 Forge is spec-driven. The agent writes a spec before implementing any feature.
