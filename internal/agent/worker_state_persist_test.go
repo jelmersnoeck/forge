@@ -23,7 +23,7 @@ func TestPhaseFromName_Unknown(t *testing.T) {
 
 func TestWorker_InitialState_NoFile(t *testing.T) {
 	r := require.New(t)
-	w := NewWorker(NewHub(), "abed-101", t.TempDir(), t.TempDir(), "swe", "", "", "")
+	w := NewWorker(NewHub(), "abed-101", t.TempDir(), t.TempDir(), "swe", "", "", "", false)
 
 	got := w.initialState()
 	r.Equal(WorkerState{}, got)
@@ -32,7 +32,7 @@ func TestWorker_InitialState_NoFile(t *testing.T) {
 func TestWorker_PersistThenInitialState(t *testing.T) {
 	r := require.New(t)
 	cwd := t.TempDir()
-	w := NewWorker(NewHub(), "troy-101", cwd, t.TempDir(), "swe", "", "", "")
+	w := NewWorker(NewHub(), "troy-101", cwd, t.TempDir(), "swe", "", "", "", false)
 
 	w.persistState(WorkerState{
 		Phase:                PhaseOrchestrator,
@@ -62,7 +62,7 @@ func TestWorker_PersistThenInitialState(t *testing.T) {
 func TestWorker_InitialState_CorruptIsFresh(t *testing.T) {
 	r := require.New(t)
 	cwd := t.TempDir()
-	w := NewWorker(NewHub(), "annie-101", cwd, t.TempDir(), "swe", "", "", "")
+	w := NewWorker(NewHub(), "annie-101", cwd, t.TempDir(), "swe", "", "", "", false)
 
 	// Tamper with the state file so it fails to parse.
 	r.NoError(os.MkdirAll(filepath.Join(cwd, sessionstate.StateDir), 0o755))

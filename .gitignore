@@ -11,3 +11,6 @@ forge-agent
 worktrees/
 .forge-session
 .forge-state
+
+# Review/CI artifacts
+review-output.json

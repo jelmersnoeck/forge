@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +41,7 @@ type Worker struct {
 	mode        string // "swe" (default), "spec", "code", "review"
 	specPath    string // spec file path for --spec flag
 	issueURL    string // GitHub issue URL for PR linking (from --issue)
+	multiPhase  bool   // run sub-issues as a sequential multi-phase pipeline (#224)
 	ghAvailable bool   // cached exec.LookPath("gh") result
 	// prCheckPending is a per-worker backpressure flag for PR health checks.
 	// Set to true by enqueuePRCheck (monitor goroutine) when a synthetic
@@ -61,7 +64,7 @@ type Worker struct {
 }
 
 // NewWorker creates a new Worker.
-func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverride, issueURL string) *Worker {
+func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverride, issueURL string, multiPhase bool) *Worker {
 	return &Worker{
 		hub:           hub,
 		sessionID:     sessionID,
@@ -70,6 +73,7 @@ func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverr
 		mode:          mode,
 		specPath:      specPath,
 		issueURL:      issueURL,
+		multiPhase:    multiPhase,
 		modelOverride: modelOverride,
 		ghAvailable:   tools.GHAvailable(),
 	}
@@ -596,6 +600,26 @@ func (w *Worker) runOrchestrator(
 		SteeringSource:       w.hub.ConsumeSteeringMessage,
 	}
 
+	// Multi-phase routing (#224): when enabled, hand the orchestrator the
+	// parent-issue context plus a sub-agent spawner so large tasks fan out
+	// into per-sub-issue worktree/branch/PR runs. extractIssueNumberFromURL
+	// only accepts a /issues/<digits> path and returns 0 for any other
+	// shape, so a missing/malformed/attacker-manipulated URL can never
+	// drive multi-phase against an invalid (e.g. #0) issue — it falls back
+	// to the single-pipeline path with a log line.
+	if w.multiPhase {
+		issueNum := extractIssueNumberFromURL(w.issueURL)
+		if issueNum <= 0 {
+			log.Printf("[worker:%s] multi-phase requested but no valid issue number in URL %q — running single-pipeline", w.sessionID, w.issueURL)
+		} else {
+			opts.MultiPhase = true
+			opts.IssueNumber = issueNum
+			opts.IssueBody = prompt
+			opts.RepoRoot = w.cwd
+			opts.SpawnPhaseAgentFn = w.spawnPhaseAgent(prov, registry, bundle, store)
+		}
+	}
+
 	result, err := orch.Run(ctx, opts)
 
 	// Only emit done on success. On error (including interrupts), the
@@ -1099,6 +1123,99 @@ func subAgentCWD(parentCWD string, agent *types.SubAgent) string {
 		return agent.CWD
 	}
 	return parentCWD
+}
+
+// spawnPhaseAgent returns a phase.SpawnPhaseAgent that runs a full-access
+// conversation loop in the phase's worktree (cwd) until completion. Used by the
+// multi-phase orchestrator (#224); each phase's sub-agent gets the parent's
+// provider/registry/bundle but a distinct cwd and a fresh session ID.
+func (w *Worker) spawnPhaseAgent(
+	prov types.LLMProvider,
+	registry *tools.Registry,
+	bundle types.ContextBundle,
+	store *session.Store,
+) phase.SpawnPhaseAgent {
+	return func(ctx context.Context, cwd, branch, prompt string) error {
+		_, isClaudeCLI := prov.(*provider.ClaudeCLIProvider)
+		model := resolveDefaultModel(bundle.Settings.Model, isClaudeCLI, provider.DefaultModel(prov))
+
+		l := loop.New(loop.Options{
+			Provider:     prov,
+			Tools:        registry,
+			Context:      bundle,
+			CWD:          cwd,
+			SessionStore: store,
+			SessionID:    fmt.Sprintf("%s-%s", w.sessionID, branchToSessionSuffix(branch)),
+			Model:        model,
+			AuditLogger:  &StdAuditLogger{},
+		})
+
+		// Forward the sub-agent's events to the parent hub instead of
+		// dropping them, so per-phase progress/warnings/errors are
+		// observable. Re-stamp SessionID to the parent so the UI attributes
+		// them to this session, and prefix Content with a [phase <branch>]
+		// marker so operators can tell which sub-agent produced an event
+		// when several phases run in one session.
+		phaseTag := fmt.Sprintf("[phase %s] ", branch)
+		if w.hub == nil {
+			// Previously this path was a silent no-op; log once per spawn so
+			// dropped sub-agent events are diagnosable in test/shutdown paths.
+			log.Printf("[worker:%s] phase sub-agent has no hub (branch=%s) — events will be dropped", w.sessionID, branch)
+		}
+		emit := func(event types.OutboundEvent) {
+			if w.hub == nil {
+				return
+			}
+			event.SessionID = w.sessionID
+			// Only tag non-empty content (avoid a dangling prefix), skip
+			// content that is already tagged (avoid double-tagging on
+			// re-emit), and skip structured payloads where a prefix would
+			// corrupt downstream parsing.
+			if event.Content != "" && !strings.HasPrefix(event.Content, phaseTag) && !isStructuredContent(event.Content) {
+				event.Content = phaseTag + event.Content
+			}
+			w.hub.PublishEvent(event)
+		}
+		log.Printf("[worker:%s] phase sub-agent starting (branch=%s, cwd=%s)", w.sessionID, branch, cwd)
+		if err := l.Send(ctx, prompt, emit); err != nil {
+			log.Printf("[worker:%s] phase sub-agent failed (branch=%s, cwd=%s): %v", w.sessionID, branch, cwd, err)
+			return err
+		}
+		return nil
+	}
+}
+
+// branchToSessionSuffix turns a branch name into a session-ID-safe suffix.
+func branchToSessionSuffix(branch string) string {
+	return strings.ReplaceAll(branch, "/", "-")
+}
+
+// isStructuredContent reports whether s looks like a serialized JSON object or
+// array, so a phase-tag prefix is skipped (a prefix would corrupt downstream
+// parsing). It only inspects the first non-space byte — a cheap heuristic.
+func isStructuredContent(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return false
+	}
+	return t[0] == '{' || t[0] == '['
+}
+
+// issueURLNumberRe matches /issues/<number> in a GitHub issue URL path.
+var issueURLNumberRe = regexp.MustCompile(`/issues/(\d+)`)
+
+// extractIssueNumberFromURL parses the issue number from a GitHub issue URL,
+// returning 0 when no number can be found.
+func extractIssueNumberFromURL(url string) int {
+	m := issueURLNumberRe.FindStringSubmatch(url)
+	if len(m) < 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // resolveSubAgentRegistry builds the tool registry for a sub-agent.

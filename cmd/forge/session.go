@@ -60,7 +60,7 @@ func isInWorktree(dir string) bool {
 // If skipWorktree is false and in a git repo (and not already in a worktree), creates a temporary worktree for the session.
 // If branchName is set, reuses an existing worktree for that branch or creates one.
 // initialPrompt, when non-empty, is used to generate a human-readable session name via Haiku.
-func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, modelName string, namingHint string, issueNum int, issueURL string) (string, string, string, string, func(), error) {
+func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPrompt string, mode string, specPath string, modelName string, namingHint string, issueNum int, issueURL string, multiPhase bool) (string, string, string, string, func(), error) {
 	// Find forge binary (prefer same dir as CLI, fallback to PATH)
 	forgeBin := "forge"
 	if exe, err := os.Executable(); err == nil {
@@ -241,6 +241,9 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 	}
 	if issueURL != "" {
 		agentArgs = append(agentArgs, "--issue-url", issueURL)
+	}
+	if multiPhase {
+		agentArgs = append(agentArgs, "--multi-phase")
 	}
 	cmd := exec.Command(forgeBin, agentArgs...)
 

@@ -128,6 +128,7 @@ func runCLI(args []string) int {
 	skipWorktree := fs.Bool("skip-worktree", false, "skip worktree creation in interactive mode")
 	specPath := fs.String("spec", "", "path to a spec file to implement directly")
 	issue := fs.String("issue", "", "GitHub issue URL or #N to use as initial prompt")
+	noPlan := fs.Bool("no-plan", false, "force single-pipeline even when sub-issues exist (requires --issue)")
 	branch := fs.String("branch", "", "branch to check out (reuses existing worktree if found)")
 	mode := fs.String("mode", "", "agent mode: swe (default), spec, code, review")
 	modelFlag := fs.String("model", "", "model to use (e.g. sonnet, opus, claude-sonnet-4-20250514)")
@@ -164,6 +165,13 @@ func runCLI(args []string) int {
 	}
 	if *issue != "" && *mode == "spec" {
 		fmt.Fprintln(os.Stderr, errorStyle.Render("cannot use --issue with --mode spec"))
+		os.Exit(1)
+	}
+
+	// --no-plan is only meaningful with --issue (it overrides sub-issue
+	// multi-phase routing).
+	if *noPlan && *issue == "" {
+		fmt.Fprintln(os.Stderr, errorStyle.Render("--no-plan is only valid with --issue"))
 		os.Exit(1)
 	}
 
@@ -217,6 +225,7 @@ func runCLI(args []string) int {
 	// Handle --issue: fetch GitHub issue and prepare initial prompt.
 	var issueNum int
 	var issueURL string
+	var multiPhase bool
 	if *issue != "" {
 		prompt, title, num, iURL, err := fetchGitHubIssue(*issue, cwd)
 		if err != nil {
@@ -227,6 +236,19 @@ func runCLI(args []string) int {
 		namingHint = title
 		issueNum = num
 		issueURL = iURL
+
+		// Detect sub-issues: if present (and --no-plan is unset) the session
+		// runs in multi-phase mode. A detection error is non-fatal — fall back
+		// to the single-pipeline path and warn.
+		mp, detErr := detectMultiPhase(*issue, cwd, *noPlan)
+		if detErr != nil {
+			// Include operational context (issue ref + cwd) on stderr so
+			// repeated failures are diagnosable even in non-TTY/CI contexts
+			// where the dimmed warning is easy to miss. Values are %q-quoted to
+			// neutralize embedded newlines/ANSI sequences (log injection).
+			fmt.Fprintln(os.Stderr, dimStyle.Render(fmt.Sprintf("warning: could not check for sub-issues on %q (cwd=%q): %q (continuing single-pipeline)", *issue, cwd, detErr.Error())))
+		}
+		multiPhase = mp
 	}
 
 	if *gatewayFlag != "" {
@@ -251,7 +273,7 @@ func runCLI(args []string) int {
 			os.Exit(1)
 		}
 
-		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath, *modelFlag, namingHint, issueNum, issueURL)
+		sid, url, wtPath, wtBranch, cleanup, err := spawnLocalAgent(cwd, *skipWorktree, *branch, initialPrompt, effectiveMode, *specPath, *modelFlag, namingHint, issueNum, issueURL, multiPhase)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, errorStyle.Render("failed to spawn local agent: "+err.Error()))
 			os.Exit(1)

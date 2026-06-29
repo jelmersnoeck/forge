@@ -608,7 +608,7 @@ func collectEvents() (func(types.OutboundEvent), *[]types.OutboundEvent) {
 
 func newQueueWorker(t *testing.T) *Worker {
 	t.Helper()
-	return NewWorker(NewHub(), "queue-101", t.TempDir(), t.TempDir(), "swe", "", "", "")
+	return NewWorker(NewHub(), "queue-101", t.TempDir(), t.TempDir(), "swe", "", "", "", false)
 }
 
 func TestWorker_ExecuteQueuedCommand_Success(t *testing.T) {

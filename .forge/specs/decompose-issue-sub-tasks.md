@@ -26,6 +26,16 @@ sub-issue-close + base-pull step between phases, so each subsequent phase
 branches from a base that includes all prior merged changes. Wiring the flag into
 the real orchestrator/worker is deferred to a later phase of #220.
 
+Phase 4 (#224): Wire multi-phase detection into the CLI and classifier so
+`forge --issue` with sub-issues automatically enters multi-phase mode. When
+`--issue` is provided, the CLI fetches the issue then checks for sub-issues via
+the GitHub sub-issues API; if any exist (and `--no-plan` is not set), the session
+runs in multi-phase mode (each sub-issue → its own worktree/branch/PR via the
+Phase-2/3 `RunMultiPhase` coordinator). Also adds a classifier path: when intent
+is `task` with size `large` and no sub-issues exist, the orchestrator decomposes
+the parent (Phase 1) into sub-issues, then enters multi-phase mode. `--no-plan`
+forces the legacy single-pipeline path even when sub-issues exist.
+
 Phase 5 (#225): Manage sub-issue lifecycle on the parent issue as phases
 complete. `RunMultiPhase` gains a `ParentNumber` plus injected `CommentIssue` /
 `CloseParent` funcs. After each merged phase it posts a progress comment to the
@@ -67,6 +77,24 @@ skipped entirely when `ParentNumber == 0`.
 - (Phase 5) `internal/agent/phase/multi.go` — `ParentNumber`, `CommentIssue`,
   `CloseParent` opts; per-phase `phaseRecord` tracking; progress/summary/failure
   comment posting + parent close wired into `RunMultiPhase`
+
+### Phase 4 (#224) — CLI integration + classifier routing
+- `cmd/forge/cli.go` — sub-issue detection on `--issue`; `--no-plan` flag +
+  validation; pass a `multi_phase` signal into the agent (new `--multi-phase`
+  agent flag + metadata) when sub-issues exist and `--no-plan` is unset.
+- `cmd/forge/cli_test.go` — flag-validation + sub-issue-detection routing tests.
+- `cmd/forge/agent.go` — parse `--multi-phase` flag into `agent.Config`.
+- `cmd/forge/session.go` — `spawnLocalAgent` forwards `--multi-phase` to the
+  agent subprocess.
+- `cmd/forge/main.go` — `--no-plan` help text + example.
+- `internal/agent/server.go` / `internal/agent/worker.go` — thread a
+  `MultiPhase bool` from `agent.Config` to the worker; gate orchestrator
+  multi-phase routing on it.
+- `internal/agent/phase/orchestrator.go` — large-task routing: when
+  `classification.Size == TaskSizeLarge` and the multi-phase signal is set,
+  decompose (if no sub-issues pre-exist) and run `RunMultiPhase`.
+- `internal/agent/phase/orchestrator_test.go` — routing tests (large→decompose→
+  multi-phase; sub-issues→skip-decompose→multi-phase).
 
 ## Behavior
 - `Decompose(ctx, provider, issueBody) ([]SubTask, error)` runs a lightweight LLM
@@ -171,6 +199,53 @@ skipped entirely when `ParentNumber == 0`.
 - `MergePollInterval`/`MergeTimeout` on `MultiPhaseOpts` override the poller's
   interval/timeout; zero uses the poller defaults.
 
+### Phase 4 (#224) — CLI integration + classifier routing
+- New CLI flag `--no-plan` (bool, default false): forces single-pipeline
+  execution even when sub-issues exist. Valid ONLY with `--issue`; otherwise the
+  CLI prints `--no-plan is only valid with --issue` to stderr and exits non-zero.
+- When `--issue` is provided, after `fetchGitHubIssue` succeeds the CLI calls
+  `fetchSubIssues(*issue, cwd)`:
+  - sub-issues present AND `--no-plan` unset → multi-phase mode: the CLI sets a
+    `multiPhase` flag passed through `spawnLocalAgent` → `--multi-phase` agent
+    flag → `agent.Config.MultiPhase` → worker → orchestrator.
+  - no sub-issues (`(nil, nil)`) OR `--no-plan` set → existing single-pipeline
+    behavior (no multi-phase signal).
+  - `fetchSubIssues` error → treated as no sub-issues (single-pipeline); the
+    error is logged to stderr as a warning, NOT fatal. A missing-sub-issues
+    repo/permission hiccup must not abort an otherwise-valid `--issue` session.
+- The `--multi-phase` agent flag defaults false; `agent.Config` gains
+  `MultiPhase bool`; `NewWorker` gains a `multiPhase bool` parameter stored on
+  the worker; the worker forwards it into `OrchestratorOpts.MultiPhase`.
+- `OrchestratorOpts` gains `MultiPhase bool`. When set AND the run reaches the
+  task path with `classification.Size == TaskSizeLarge`, the orchestrator routes
+  to multi-phase instead of the normal large→ideate pipeline:
+  1. Re-fetch the parent's sub-issues (via an injected `SubIssuesFn`, default a
+     `gh`-backed fetcher) for the session's issue number.
+  2. If sub-issues exist → map them to `[]phase.SubIssue` (Number/Title/Body),
+     skip decomposition.
+  3. If none exist → `Decompose(ctx, Provider, parentBody)` then
+     `CreateSubIssues(ctx, parentNum, repo, tasks)`, then re-fetch to build the
+     `[]SubIssue`.
+  4. Call `RunMultiPhase` with `SpawnAgent` wired to the worker's sub-agent
+     runner, `RepoRoot`/`BaseBranch`/`WorktreeBase` from the session, and
+     `ParentSlug = SlugifyTitle(parentTitle, maxParentSlugLen)`.
+- Multi-phase routing only triggers on the task path; question/investigate/
+  triage/review intents are unaffected (issue-driven sessions already
+  `ForceTask`, so a large issue with sub-issues lands on the task path).
+- When `MultiPhase` is false, orchestrator behavior is byte-for-byte the
+  existing Phase-0 behavior (no decompose, no `RunMultiPhase`).
+- The orchestrator needs the parent issue number/title/body to decompose and
+  slugify. These are carried on `OrchestratorOpts` (`IssueNumber int`,
+  `IssueTitle string`, `IssueBody string`). As implemented, the worker derives
+  `IssueNumber` from `w.issueURL` via `extractIssueNumberFromURL`, sets
+  `IssueBody` to the first-turn prompt (the fetched issue text), and leaves
+  `IssueTitle` empty — so phase branches degrade to `jelmer/phase-<n>`
+  (graceful Phase-2 fallback). Plumbing a real title for nicer slugs is a future
+  refinement, not required here.
+- The worker wires `OrchestratorOpts.SpawnPhaseAgentFn = w.spawnPhaseAgent(...)`,
+  which runs a full-access conversation loop in the phase worktree (cwd) with a
+  per-phase session ID `<parentSessionID>-<branch-with-slashes-as-hyphens>`.
+
 ### Phase 5 (#225) — Sub-issue lifecycle on the parent
 - `MultiPhaseOpts` gains `ParentNumber int`, `CommentIssue CommentIssueFunc`
   (default `ghCommentIssue`: `gh issue comment <n> --body <body>`), and
@@ -231,6 +306,24 @@ skipped entirely when `ParentNumber == 0`.
   `parsePRState` is tested against fixture JSON strings.
 - A merged-PR detection must accept the legacy `gh` shape (`CLOSED` + non-empty
   `mergedAt`), not only `state == "MERGED"`.
+
+### Phase 4 constraints (#224)
+- `--no-plan` MUST be rejected (non-zero exit) when `--issue` is absent.
+- A `fetchSubIssues` error during CLI detection MUST NOT abort the session — fall
+  back to single-pipeline and warn. Only `fetchGitHubIssue` failures are fatal.
+- Multi-phase routing MUST be gated on the `MultiPhase` flag being explicitly
+  set by the CLI. The orchestrator must not auto-enter multi-phase merely because
+  classification returns `large` — `large` without the flag keeps the existing
+  ideate pipeline (preserves all Phase-0 large-task tests).
+- The orchestrator MUST NOT import `cmd/forge` (cycle). Sub-issue fetching inside
+  the orchestrator uses an injected `SubIssuesFn` (default `gh`-backed) defined in
+  the `phase` package, not `cmd/forge.fetchSubIssues`.
+- No new plan manifest/state file — GitHub sub-issues remain the only state.
+- Tests MUST NOT invoke `gh`/git/network: CLI tests cover flag validation +
+  routing decisions with injected/fixture sub-issue results; orchestrator routing
+  tests inject `SubIssuesFn`, `Decompose`-equivalent, and a fake `SpawnAgent`.
+- `--multi-phase` must default false end-to-end so a non-issue or `--no-plan`
+  session never accidentally enters multi-phase.
 
 ### Phase 5 constraints (#225)
 - Parent lifecycle updates (progress comment, summary, parent close, failure
@@ -360,6 +453,72 @@ type CloseSubIssueFunc func(ctx context.Context, repoRoot string, number int) er
 func extractPRNumberFromURL(prURL string) int // 0 when none found
 ```
 
+### Phase 4 interfaces (#224)
+```go
+// cmd/forge/cli.go — new flag, parsed in runCLI's FlagSet.
+noPlan := fs.Bool("no-plan", false, "force single-pipeline even when sub-issues exist (requires --issue)")
+
+// Validation (after parse):
+//   if *noPlan && *issue == "" -> stderr "--no-plan is only valid with --issue"; exit 1
+
+// detectMultiPhase decides whether an --issue session enters multi-phase mode.
+// Returns true when sub-issues exist and noPlan is false. A fetchSubIssues
+// error is non-fatal: returns false + the error for the caller to warn on.
+func detectMultiPhase(issueRef, cwd string, noPlan bool) (multiPhase bool, err error)
+
+// cmd/forge/session.go — spawnLocalAgent gains a multiPhase bool param;
+// appends "--multi-phase" to agentArgs when true.
+
+// cmd/forge/agent.go — new flag:
+multiPhase := fs.Bool("multi-phase", false, "run sub-issues as sequential multi-phase pipeline")
+// -> agent.Config.MultiPhase = *multiPhase
+
+// internal/agent — Config + worker plumbing:
+type Config struct {
+    // ...existing...
+    MultiPhase bool
+}
+func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverride, issueURL string, multiPhase bool) *Worker
+
+// internal/agent/phase/orchestrator.go — OrchestratorOpts gains:
+//   MultiPhase  bool   // enter multi-phase routing on the large-task path
+//   IssueNumber int    // parent issue number (for decompose + branch naming)
+//   IssueTitle  string // parent issue title (slugified into branch names)
+//   IssueBody   string // parent issue body (decompose input)
+//   SubIssuesFn SubIssuesFunc // nil -> gh-backed fetcher
+
+// SubIssuesFunc fetches a parent's sub-issues as phase.SubIssue, in position
+// order; (nil, nil) when none.
+type SubIssuesFunc func(ctx context.Context, cwd string, parentNumber int) ([]SubIssue, error)
+
+// CreateSubIssuesFunc creates GitHub sub-issues from decomposed tasks (default
+// CreateSubIssues; injected in tests).
+type CreateSubIssuesFunc func(ctx context.Context, parent int, repo string, tasks []SubTask) ([]int, error)
+
+// OrchestratorOpts also gains CreateSubIssuesFn CreateSubIssuesFunc.
+// Orchestrator gains an unexported `runMultiPhase func(ctx, MultiPhaseOpts) error`
+// test seam (nil → RunMultiPhase), accessed via runMultiPhaseFn().
+
+// runMultiPhasePipeline is the large-task multi-phase branch invoked from
+// runSWEPipeline when opts.MultiPhase is set. As implemented it returns the
+// OrchestratorResult (so a decompose-failure ideate fallback preserves session
+// continuity such as CoderHistoryID).
+func (o *Orchestrator) runMultiPhasePipeline(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error)
+
+// ghSubIssues is the default SubIssuesFunc (gh api repos/{owner}/{repo}/issues/
+// {number}/sub_issues). parseGHSubIssues unmarshals the response into
+// []SubIssue (empty → nil,nil).
+func ghSubIssues(ctx context.Context, cwd string, parentNumber int) ([]SubIssue, error)
+func parseGHSubIssues(raw []byte) ([]SubIssue, error)
+
+// internal/agent/worker.go — phase-agent spawner + issue-number parser.
+func (w *Worker) spawnPhaseAgent(prov types.LLMProvider, registry *tools.Registry, bundle types.ContextBundle, store *session.Store) phase.SpawnPhaseAgent
+func extractIssueNumberFromURL(url string) int // 0 when none found
+func branchToSessionSuffix(branch string) string
+
+const maxParentSlugLen = 40
+```
+
 ### Phase 5 interfaces (#225)
 ```go
 // internal/agent/phase/issue_lifecycle.go
@@ -451,6 +610,42 @@ func ghCloseParent(ctx context.Context, repoRoot string, number int) error
   continues to the next phase.
 - `RunMultiPhase` with `WaitForMerge` false → no merge wait, close, or pull
   occurs (Phase-2 behavior preserved).
+
+### Phase 4 edge cases (#224)
+- `--no-plan` without `--issue` → stderr error, exit 1, no session started.
+- `--no-plan` with `--issue` and sub-issues present → single-pipeline (the issue
+  is implemented as one session; sub-issues ignored).
+- `--issue` with sub-issues, `--no-plan` unset → multi-phase mode; CLI forwards
+  `--multi-phase` to the agent.
+- `--issue` with NO sub-issues → single-pipeline (no `--multi-phase`).
+- `fetchSubIssues` returns an error (e.g. repo lacks the sub-issues API,
+  permission denied, `gh` quirk) → CLI warns to stderr, proceeds single-pipeline,
+  exit code unaffected.
+- `--multi-phase` set but classification returns `small`/`standard` (not
+  `large`) → existing size-based pipeline runs; multi-phase routing is skipped.
+  (CLI sub-issue detection already implies large work, but the orchestrator must
+  not crash on a small classification — it falls through to normal routing.)
+- Orchestrator multi-phase path, sub-issues already exist → `SubIssuesFn` returns
+  them, decomposition is skipped, `RunMultiPhase` runs them in position order.
+- Orchestrator multi-phase path, no sub-issues yet → `Decompose` +
+  `CreateSubIssues` create them, then re-fetch → `RunMultiPhase`.
+- `Decompose` returns `(nil, err)` (empty body / all models fail) during the
+  large-task path → orchestrator falls back to the normal ideate pipeline,
+  emits a user-facing warning event, and returns the fallback's
+  OrchestratorResult (do not hard-fail the session on a decompose error).
+- `CreateSubIssues` partially creates then errors → orchestrator surfaces the
+  error and halts the task, emitting a warning naming the parent issue so the
+  user can review/close partially-created sub-issues (no half-run multi-phase on
+  an incomplete plan).
+- Multi-phase requested but `IssueNumber <= 0` (missing/malformed issue URL) →
+  worker logs and skips multi-phase, running the single-pipeline path.
+- Sub-agent events from a phase are forwarded to the parent hub, prefixed with a
+  `[phase <branch>]` marker (skipped for empty/already-tagged/structured-JSON
+  content); a nil hub drops them with a single per-spawn log line.
+- Multi-phase run with `IssueTitle` empty → `ParentSlug` blank →
+  `phaseBranchName` degrades to `jelmer/phase-<n>` (Phase-2 behavior).
+- `MultiPhase` false → orchestrator never calls `SubIssuesFn`/`Decompose`/
+  `RunMultiPhase`; all existing routing tests pass unchanged.
 
 ### Phase 5 edge cases (#225)
 - `ParentNumber == 0` → no progress comments, no summary, no parent close, no
