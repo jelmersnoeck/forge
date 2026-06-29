@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jelmersnoeck/forge/internal/config"
+	"github.com/jelmersnoeck/forge/internal/credentials"
 	"github.com/jelmersnoeck/forge/internal/runtime/cost"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -1361,10 +1362,10 @@ func (m model) fetchModelList() tea.Cmd {
 // reviewProviderSummary returns a human-readable summary of available review providers.
 func reviewProviderSummary() string {
 	var providers []string
-	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+	if _, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
 		providers = append(providers, "Anthropic")
 	}
-	if os.Getenv("OPENAI_API_KEY") != "" {
+	if _, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
 		providers = append(providers, "OpenAI")
 	}
 	if len(providers) == 0 {

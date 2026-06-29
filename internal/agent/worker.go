@@ -16,6 +16,7 @@ import (
 	"github.com/jelmersnoeck/forge/internal/agent/phase"
 	"github.com/jelmersnoeck/forge/internal/attribution"
 	"github.com/jelmersnoeck/forge/internal/config"
+	"github.com/jelmersnoeck/forge/internal/credentials"
 	"github.com/jelmersnoeck/forge/internal/mcp"
 	"github.com/jelmersnoeck/forge/internal/review"
 	rctx "github.com/jelmersnoeck/forge/internal/runtime/context"
@@ -940,10 +941,10 @@ func (w *Worker) runReview(ctx context.Context, baseBranch string, bundle types.
 	// Collect available providers.
 	providers := make(map[string]types.LLMProvider)
 
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
 		providers["anthropic"] = provider.NewAnthropic(key)
 	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
 		providers["openai"] = provider.NewOpenAI(key)
 	}
 	if _, err := exec.LookPath("claude"); err == nil {
@@ -1137,7 +1138,7 @@ func selectProvider() types.LLMProvider {
 	}
 
 	// Priority 3: auto-detect from environment
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
 		return provider.NewAnthropic(key)
 	}
 
@@ -1155,8 +1156,8 @@ func selectProvider() types.LLMProvider {
 func providerFromName(name string) types.LLMProvider {
 	switch name {
 	case "anthropic":
-		key := os.Getenv("ANTHROPIC_API_KEY")
-		if key == "" {
+		key, ok := credentials.Default().Get(credentials.AnthropicAPIKey)
+		if !ok {
 			log.Println("[provider] WARNING: provider=anthropic but ANTHROPIC_API_KEY not set — API calls will fail")
 		}
 		return provider.NewAnthropic(key)
@@ -1166,14 +1167,15 @@ func providerFromName(name string) types.LLMProvider {
 		}
 		return provider.NewClaudeCLI()
 	case "openai":
-		key := os.Getenv("OPENAI_API_KEY")
-		if key == "" {
+		key, ok := credentials.Default().Get(credentials.OpenAIAPIKey)
+		if !ok {
 			log.Println("[provider] WARNING: provider=openai but OPENAI_API_KEY not set — API calls will fail")
 		}
 		return provider.NewOpenAI(key)
 	default:
 		log.Printf("[provider] WARNING: unknown provider %q — falling back to anthropic", name)
-		return provider.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
+		key, _ := credentials.Default().Get(credentials.AnthropicAPIKey)
+		return provider.NewAnthropic(key)
 	}
 }
 
@@ -1182,10 +1184,10 @@ func providerFromName(name string) types.LLMProvider {
 func collectProviders() map[string]types.LLMProvider {
 	providers := make(map[string]types.LLMProvider)
 
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
 		providers["Anthropic"] = provider.NewAnthropic(key)
 	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
 		providers["OpenAI"] = provider.NewOpenAI(key)
 	}
 	if _, err := exec.LookPath("claude"); err == nil {

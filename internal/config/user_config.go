@@ -16,10 +16,17 @@ import (
 
 // UserConfig represents ~/.forge/config.toml — the user's persistent preferences.
 type UserConfig struct {
-	Provider ProviderConfig   `toml:"provider"`
-	Model    ModelConfig      `toml:"model"`
-	Commit   CommitUserConfig `toml:"commit"`
-	PR       PRUserConfig     `toml:"pr"`
+	Provider    ProviderConfig    `toml:"provider"`
+	Model       ModelConfig       `toml:"model"`
+	Commit      CommitUserConfig  `toml:"commit"`
+	PR          PRUserConfig      `toml:"pr"`
+	Credentials CredentialsConfig `toml:"credentials"`
+}
+
+// CredentialsConfig selects the ordered list of credential sources. An empty
+// or unset Sources defaults to env-only resolution.
+type CredentialsConfig struct {
+	Sources []string `toml:"sources"` // tried in order; nil/empty → ["env"]
 }
 
 // CommitUserConfig holds commit attribution settings.
