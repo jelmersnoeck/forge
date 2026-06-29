@@ -6,11 +6,12 @@ status: implemented
 
 ## Description
 The Edit tool (`internal/tools/edit.go`) uses naive exact string matching, the
-single most common source of agent edit failures (issue #251). This spec covers
-Phase 1: add a tiered matching strategy (exact → whitespace-normalized) and
-diagnostic error messages that show the closest near-miss. AST-aware editing is
-explicitly out of scope and noted as a future extension point. Patch/unified-diff
-support is tracked separately in the `edit-patch-support` spec.
+single most common source of agent edit failures (issue #251). This is the
+single spec for the Edit tool. The implemented scope (Phase 1) is a tiered
+matching strategy (exact → whitespace-normalized) plus diagnostic error
+messages that show the closest near-miss. AST-aware editing and unified-diff /
+multi-hunk patch application are out of scope here and captured as future work
+in Alternatives.
 
 ## Context
 - `internal/tools/edit.go` — `EditTool()`, `editHandler`, plus new
@@ -131,3 +132,22 @@ func nearMissDiagnostic(content, old string) string
   tier if needed.
 - tree-sitter AST-aware edits: deferred. Large dependency + per-language grammar
   surface. Noted as a future extension point only.
+
+## Future work (not implemented)
+These were previously tracked as a separate `edit-patch-support` spec, now folded
+here so the Edit tool has a single source of truth. Not built; left as deferred
+scope.
+- **Unified-diff / `git apply`-style patches** so the agent can make many edits
+  across one or more files in a single tool call. Likely a distinct `Patch`
+  tool (`internal/tools/patch.go`) rather than overloading `Edit`'s
+  `old_string`/`new_string` contract — keeps each tool's schema and error
+  surface focused.
+  - Input: a single `patch` string in unified diff format; multiple file
+    sections and multi-hunk per file.
+  - All-or-nothing per call: stage in memory, validate every hunk, then write;
+    never leave a partial multi-file/multi-hunk apply on disk.
+  - Implement parsing/application in Go (no shelling out to `git apply`/`patch`)
+    for determinism; tolerate small line-number drift via a bounded fuzz window.
+  - Support file creation (`--- /dev/null`) and deletion (`+++ /dev/null`).
+  - Reuse the `.env` guard (`isEnvFile`/`envFileError`) and call
+    `ctx.ReadState.Delete` for every modified/created/deleted path.
