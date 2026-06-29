@@ -19,6 +19,11 @@ type Registry struct {
 	mu             sync.RWMutex
 	tools          map[string]types.ToolDefinition
 	maxResultChars int
+
+	// permission policy. nil allow+deny => no enforcement (everything permitted).
+	// "*" in allow means all tools permitted. deny always overrides allow.
+	allow map[string]bool
+	deny  map[string]bool
 }
 
 // NewRegistry creates an empty tool registry.
@@ -109,6 +114,23 @@ func (r *Registry) Execute(name string, input map[string]any, ctx types.ToolCont
 		return types.ToolResult{}, fmt.Errorf("tool not found: %s", name)
 	}
 
+	// Defense in depth: enforce the permission policy before running the handler.
+	// Schema-level filtering (Filtered/WithPermissions) hides tools from the LLM,
+	// but resumed history, hallucinated names, or the MCP gateway can still reach
+	// here. A denial round-trips as an error ToolResult (not a Go error) so the
+	// conversation loop continues and the model can adapt.
+	//
+	// Extension point (issue #256 Phase 3): granular policies like "Bash:read-only"
+	// or "Write:*.md" would refine permitted() to inspect input, not just the name.
+	if !r.permitted(name) {
+		return types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Tool '%s' denied by permission policy", name)},
+			},
+			IsError: true,
+		}, nil
+	}
+
 	result, err := def.Handler(input, ctx)
 	if err != nil {
 		return result, err
@@ -176,6 +198,72 @@ func (r *Registry) Filtered(allowList, denyList []string) *Registry {
 		filtered.tools[name] = def
 	}
 	return filtered
+}
+
+// WithPermissions returns a registry that BOTH omits disallowed tools from its
+// schemas (like Filtered) AND enforces the allow/deny policy in Execute.
+//
+// A "*" entry in allow means all tools are permitted (only deny restricts).
+// Deny always wins over allow. An empty allow with empty deny enforces nothing.
+//
+// Schema hiding uses the same rules as Filtered except that "*" in allow is
+// treated as "include everything" so the LLM still sees all permitted tools.
+func (r *Registry) WithPermissions(allow, deny []string) *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	allowSet := make(map[string]bool, len(allow))
+	allowAll := false
+	for _, name := range allow {
+		if name == "*" {
+			allowAll = true
+			continue
+		}
+		allowSet[name] = true
+	}
+	denySet := make(map[string]bool, len(deny))
+	for _, name := range deny {
+		denySet[name] = true
+	}
+
+	out := NewRegistry()
+	out.allow = allowSet
+	out.deny = denySet
+	if allowAll {
+		// Preserve the "*" marker so permitted() permits unlisted tools.
+		out.allow["*"] = true
+	}
+
+	for name, def := range r.tools {
+		if denySet[name] {
+			continue
+		}
+		if !allowAll && len(allowSet) > 0 && !allowSet[name] {
+			continue
+		}
+		out.tools[name] = def
+	}
+	return out
+}
+
+// permitted reports whether name may execute under this registry's policy.
+// A nil/empty policy (no allow and no deny) permits everything — this keeps the
+// main interactive registry unrestricted unless a policy is explicitly applied.
+func (r *Registry) permitted(name string) bool {
+	if len(r.allow) == 0 && len(r.deny) == 0 {
+		return true
+	}
+	if r.deny[name] {
+		return false
+	}
+	if r.allow["*"] {
+		return true
+	}
+	if len(r.allow) > 0 {
+		return r.allow[name]
+	}
+	// deny-only policy: permit anything not denied.
+	return true
 }
 
 // NewDefaultRegistry creates a registry with all built-in tools.
