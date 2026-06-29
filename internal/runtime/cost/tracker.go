@@ -69,8 +69,24 @@ func NewTracker() (*Tracker, error) {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
+	// Purge legacy garbage: rows with negative token counts predate the
+	// per-field delta clamping fix and corrupt aggregate stats. Idempotent.
+	if _, err := db.Exec(purgeNegativeRows); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("purge negative rows: %w", err)
+	}
+
 	return &Tracker{db: db}, nil
 }
+
+// purgeNegativeRows deletes cost records with any negative token column.
+const purgeNegativeRows = `
+DELETE FROM cost_records
+WHERE input_tokens < 0
+	OR output_tokens < 0
+	OR cache_creation_tokens < 0
+	OR cache_read_tokens < 0;
+`
 
 // Track records a single API call cost.
 func (t *Tracker) Track(sessionID, model string, inputTokens, outputTokens, cacheCreation, cacheRead int, cost float64) error {

@@ -23,10 +23,13 @@ func (c *CostAccumulator) Summary() (types.TokenUsage, string) {
 
 // Record applies a usage event: it updates the cumulative total and model name
 // from whatever the event carries, then persists the delta since the last track
-// to the cost DB. The DB write is skipped when the tracker is nil, the event
-// lacks usage/model, or the delta is non-positive (e.g. usage reset on resume).
-// A non-empty warning is returned only when the DB write itself fails; cost
-// tracking failures are never fatal.
+// to the cost DB. Each delta field is clamped at zero, so a usage decrease (e.g.
+// session resume or subagent usage reset) never writes negative token counts.
+// The baseline is re-based per-field to max(lastTracked, usage) so a drop in one
+// field cannot cause perpetually negative deltas. The DB write is skipped when
+// the tracker is nil, the event lacks usage/model, or the clamped delta is all
+// zero. A non-empty warning is returned only when the DB write itself fails;
+// cost tracking failures are never fatal.
 func (c *CostAccumulator) Record(ev types.OutboundEvent, t *cost.Tracker, sessionID string) (warning string) {
 	if ev.Usage != nil {
 		c.total = *ev.Usage
@@ -39,15 +42,21 @@ func (c *CostAccumulator) Record(ev types.OutboundEvent, t *cost.Tracker, sessio
 		return ""
 	}
 
-	delta := types.TokenUsage{
+	delta := clampNonNegative(types.TokenUsage{
 		InputTokens:         ev.Usage.InputTokens - c.lastTracked.InputTokens,
 		OutputTokens:        ev.Usage.OutputTokens - c.lastTracked.OutputTokens,
 		CacheCreationTokens: ev.Usage.CacheCreationTokens - c.lastTracked.CacheCreationTokens,
 		CacheReadTokens:     ev.Usage.CacheReadTokens - c.lastTracked.CacheReadTokens,
-	}
+	})
 
-	if delta.InputTokens <= 0 && delta.OutputTokens <= 0 &&
-		delta.CacheCreationTokens <= 0 && delta.CacheReadTokens <= 0 {
+	// Advance the baseline to the latest usage even when we skip the write. On a
+	// usage drop (resume/subagent reset) this re-bases the field down so the next
+	// growth is measured against the fresh lower cumulative count rather than a
+	// stale high-water mark that would swallow it.
+	c.lastTracked = *ev.Usage
+
+	if delta.InputTokens == 0 && delta.OutputTokens == 0 &&
+		delta.CacheCreationTokens == 0 && delta.CacheReadTokens == 0 {
 		return ""
 	}
 
@@ -64,6 +73,22 @@ func (c *CostAccumulator) Record(ev types.OutboundEvent, t *cost.Tracker, sessio
 		return "  ⚠  cost tracking error: " + err.Error()
 	}
 
-	c.lastTracked = *ev.Usage
 	return ""
+}
+
+// clampNonNegative returns u with every token field floored at 0.
+func clampNonNegative(u types.TokenUsage) types.TokenUsage {
+	if u.InputTokens < 0 {
+		u.InputTokens = 0
+	}
+	if u.OutputTokens < 0 {
+		u.OutputTokens = 0
+	}
+	if u.CacheCreationTokens < 0 {
+		u.CacheCreationTokens = 0
+	}
+	if u.CacheReadTokens < 0 {
+		u.CacheReadTokens = 0
+	}
+	return u
 }
