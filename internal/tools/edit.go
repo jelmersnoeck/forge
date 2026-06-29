@@ -94,7 +94,7 @@ func editHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 
 	newContent := spliceRanges(content, ranges, newString)
 
-	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
+	if err := atomicWrite(filePath, []byte(newContent), targetPerm(filePath, 0644)); err != nil {
 		return errResultf("failed to write file: %v", err)
 	}
 

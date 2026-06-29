@@ -52,7 +52,7 @@ func writeHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult
 		return errResultf("failed to create parent directories: %v", err)
 	}
 
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+	if err := atomicWrite(filePath, []byte(content), targetPerm(filePath, 0644)); err != nil {
 		return errResultf("failed to write file: %v", err)
 	}
 

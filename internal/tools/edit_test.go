@@ -113,6 +113,36 @@ func TestEditTool(t *testing.T) {
 				r.Contains(result.Content[0].Text, "file not found")
 			},
 		},
+		"edit preserves existing permissions": {
+			setup: func(t *testing.T, dir string) map[string]any {
+				path := filepath.Join(dir, "annie.txt")
+				err := os.WriteFile(path, []byte("Annie: I object"), 0600)
+				require.NoError(t, err)
+				return map[string]any{
+					"file_path":  path,
+					"old_string": "object",
+					"new_string": "approve",
+				}
+			},
+			want: func(t *testing.T, dir string, result types.ToolResult, err error) {
+				r := require.New(t)
+				r.NoError(err)
+				r.False(result.IsError)
+
+				path := filepath.Join(dir, "annie.txt")
+				data, readErr := os.ReadFile(path)
+				r.NoError(readErr)
+				r.Equal("Annie: I approve", string(data))
+
+				info, statErr := os.Stat(path)
+				r.NoError(statErr)
+				r.Equal(os.FileMode(0600), info.Mode().Perm())
+
+				entries, readErr := os.ReadDir(dir)
+				r.NoError(readErr)
+				r.Len(entries, 1)
+			},
+		},
 		"multiline replacement": {
 			setup: func(t *testing.T, dir string) map[string]any {
 				path := filepath.Join(dir, "lyrics.txt")

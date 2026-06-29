@@ -97,6 +97,49 @@ func TestWriteTool(t *testing.T) {
 				r.Len(data, 0)
 			},
 		},
+		"overwrite preserves existing permissions": {
+			setup: func(t *testing.T, dir string) map[string]any {
+				path := filepath.Join(dir, "annie.txt")
+				err := os.WriteFile(path, []byte("Old content"), 0600)
+				require.NoError(t, err)
+				return map[string]any{
+					"file_path": path,
+					"content":   "Annie Edison takes notes",
+				}
+			},
+			want: func(t *testing.T, dir string, result types.ToolResult, err error) {
+				r := require.New(t)
+				r.NoError(err)
+				r.False(result.IsError)
+
+				path := filepath.Join(dir, "annie.txt")
+				data, readErr := os.ReadFile(path)
+				r.NoError(readErr)
+				r.Equal("Annie Edison takes notes", string(data))
+
+				info, statErr := os.Stat(path)
+				r.NoError(statErr)
+				r.Equal(os.FileMode(0600), info.Mode().Perm())
+			},
+		},
+		"write leaves no temp files behind": {
+			setup: func(t *testing.T, dir string) map[string]any {
+				return map[string]any{
+					"file_path": filepath.Join(dir, "jeff.txt"),
+					"content":   "Jeff Winger objects",
+				}
+			},
+			want: func(t *testing.T, dir string, result types.ToolResult, err error) {
+				r := require.New(t)
+				r.NoError(err)
+				r.False(result.IsError)
+
+				entries, readErr := os.ReadDir(dir)
+				r.NoError(readErr)
+				r.Len(entries, 1)
+				r.Equal("jeff.txt", entries[0].Name())
+			},
+		},
 		"missing file_path": {
 			setup: func(t *testing.T, dir string) map[string]any {
 				return map[string]any{"content": "some content"}
