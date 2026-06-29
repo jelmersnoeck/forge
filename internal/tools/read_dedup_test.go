@@ -15,6 +15,73 @@ func TestReadDedup(t *testing.T) {
 	tests := map[string]struct {
 		run func(t *testing.T, dir string)
 	}{
+		"identical content with new mtime returns stub via hash fallback": {
+			run: func(t *testing.T, dir string) {
+				r := require.New(t)
+				path := filepath.Join(dir, "abed.txt")
+				content := []byte("Abed Nadir\nCool cool cool")
+				r.NoError(os.WriteFile(path, content, 0644))
+
+				state := types.NewReadState()
+				ctx := types.ToolContext{ReadState: state}
+				input := map[string]any{"file_path": path}
+				tool := ReadTool()
+
+				// First read: full content
+				res1, err := tool.Handler(input, ctx)
+				r.NoError(err)
+				r.Contains(res1.Content[0].Text, "Abed Nadir")
+
+				// Rewrite identical bytes with a newer mtime (touch/no-op save).
+				time.Sleep(1100 * time.Millisecond)
+				r.NoError(os.WriteFile(path, content, 0644))
+
+				// mtime differs but content is byte-identical → stub via hash.
+				res2, err := tool.Handler(input, ctx)
+				r.NoError(err)
+				r.False(res2.IsError)
+				r.Equal(FileUnchangedStub, res2.Content[0].Text)
+
+				// Stored mtime should have been refreshed to the new mtime,
+				// so a third read takes the fast path (still a stub).
+				info, err := os.Stat(path)
+				r.NoError(err)
+				entry, ok := state.Get(path)
+				r.True(ok)
+				r.Equal(info.ModTime().Unix(), entry.MtimeUnix)
+
+				res3, err := tool.Handler(input, ctx)
+				r.NoError(err)
+				r.Equal(FileUnchangedStub, res3.Content[0].Text)
+			},
+		},
+		"changed content with new mtime returns fresh content": {
+			run: func(t *testing.T, dir string) {
+				r := require.New(t)
+				path := filepath.Join(dir, "garrett.txt")
+				r.NoError(os.WriteFile(path, []byte("Garrett Lambert"), 0644))
+
+				state := types.NewReadState()
+				ctx := types.ToolContext{ReadState: state}
+				input := map[string]any{"file_path": path}
+				tool := ReadTool()
+
+				_, err := tool.Handler(input, ctx)
+				r.NoError(err)
+
+				time.Sleep(1100 * time.Millisecond)
+				r.NoError(os.WriteFile(path, []byte("My EMOTIONS!"), 0644))
+
+				res, err := tool.Handler(input, ctx)
+				r.NoError(err)
+				r.NotEqual(FileUnchangedStub, res.Content[0].Text)
+				r.Contains(res.Content[0].Text, "My EMOTIONS!")
+
+				entry, ok := state.Get(path)
+				r.True(ok)
+				r.Equal(hashContent("1\tMy EMOTIONS!"), entry.ContentHash)
+			},
+		},
 		"second read returns stub when file unchanged": {
 			run: func(t *testing.T, dir string) {
 				r := require.New(t)
@@ -254,17 +321,18 @@ func TestReadDedup(t *testing.T) {
 				_, err := tool.Handler(map[string]any{"file_path": path}, ctx)
 				r.NoError(err)
 
-				// Simulate bash modifying the file (no explicit invalidation)
-				// Artificially set a stale mtime in the state to simulate
-				// the file being modified by an external process.
+				// Simulate bash modifying the file (no explicit invalidation):
+				// new mtime AND new content. The mtime-stale state plus a
+				// content-hash mismatch must force a fresh read.
 				entry, _ := state.Get(path)
 				entry.MtimeUnix = entry.MtimeUnix - 10
 				state.Set(path, entry)
+				r.NoError(os.WriteFile(path, []byte("Pierce is dead"), 0644))
 
-				// Next read should return fresh content (mtime mismatch)
+				// Next read should return fresh content (mtime + hash mismatch)
 				res, err := tool.Handler(map[string]any{"file_path": path}, ctx)
 				r.NoError(err)
-				r.Contains(res.Content[0].Text, "Pierce Hawthorne")
+				r.Contains(res.Content[0].Text, "Pierce is dead")
 				r.NotEqual(FileUnchangedStub, res.Content[0].Text)
 			},
 		},

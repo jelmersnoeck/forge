@@ -192,9 +192,10 @@ type ImageSource struct {
 //
 // Edit/Write delete the entry so the next Read sees fresh content.
 type ReadFileEntry struct {
-	MtimeUnix int64 // from os.Stat, seconds
-	Offset    int
-	Limit     int
+	MtimeUnix   int64 // from os.Stat, seconds
+	Offset      int
+	Limit       int
+	ContentHash string // sha256 hex of the windowed bytes returned to the model
 }
 
 // ReadState tracks per-file read state for dedup within a session.
