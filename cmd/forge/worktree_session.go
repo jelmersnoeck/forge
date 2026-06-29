@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/jelmersnoeck/forge/internal/sessionstate"
 )
 
 const (
@@ -69,4 +73,33 @@ func sessionFilePath(sessionID string) (string, error) {
 		return "", fmt.Errorf("invalid session ID: %q", sessionID)
 	}
 	return filepath.Join(sessionsDir(), sessionID+sessionFileExt), nil
+}
+
+// warnIfStateStale compares the headCommit recorded in .forge-state against the
+// worktree's current HEAD. If they diverge, the persisted conversation history
+// no longer matches the working tree — print a warning. Missing/unreadable
+// state or an absent HEAD is silent (a fresh or non-git worktree).
+func warnIfStateStale(worktreePath string) {
+	st, err := sessionstate.Read(worktreePath)
+	if err != nil {
+		return // no state, corrupt, or version mismatch — nothing to compare
+	}
+	if st.HeadCommit == "" {
+		return
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	current := strings.TrimSpace(string(out))
+	if current == "" || current == st.HeadCommit {
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, errorStyle.Render(fmt.Sprintf(
+		"  warning: worktree HEAD (%s) diverged from saved state (%s); resumed context may be stale",
+		current, st.HeadCommit)))
 }

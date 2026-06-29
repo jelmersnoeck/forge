@@ -152,6 +152,11 @@ func spawnLocalAgent(cwd string, skipWorktree bool, branchName string, initialPr
 						fmt.Fprintf(os.Stderr, "  warning: could not check session history: %v\n", err)
 					}
 				}
+
+				// Warn if the persisted routing state predates the current
+				// worktree HEAD — the agent will resume conversation history
+				// that no longer matches the working tree (issue #211).
+				warnIfStateStale(wtPath)
 			}
 			fmt.Fprintln(os.Stderr, dimStyle.Render("  reusing worktree: "+worktreePath))
 			fmt.Fprintln(os.Stderr, dimStyle.Render("  branch: "+branchName))
