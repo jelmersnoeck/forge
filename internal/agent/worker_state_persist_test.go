@@ -65,7 +65,8 @@ func TestWorker_InitialState_CorruptIsFresh(t *testing.T) {
 	w := NewWorker(NewHub(), "annie-101", cwd, t.TempDir(), "swe", "", "", "")
 
 	// Tamper with the state file so it fails to parse.
-	r.NoError(os.WriteFile(filepath.Join(cwd, sessionstate.StateFile), []byte("{bad"), 0o644))
+	r.NoError(os.MkdirAll(filepath.Join(cwd, sessionstate.StateDir), 0o755))
+	r.NoError(os.WriteFile(filepath.Join(cwd, sessionstate.RelPath()), []byte("{bad"), 0o644))
 
 	r.Equal(WorkerState{}, w.initialState())
 }
