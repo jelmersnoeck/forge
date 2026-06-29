@@ -207,7 +207,6 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	// This is the only other system block, freeing up cache slots for message-level caching
 	// System blocks (2) + Tools (1) + Messages (1) = 4 total cache_control blocks
 	var bundledContent strings.Builder
-	hasContent := false
 
 	// Learnings from .forge/learnings/
 	if len(learnings) > 0 {
@@ -223,7 +222,6 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		}
 		bundledContent.WriteString("Before starting work, scan the learnings above for anything relevant to the current task. If a learning applies, factor it into your approach.\n")
 		bundledContent.WriteString("</system-reminder>\n\n")
-		hasContent = true
 	}
 
 	// Rules
@@ -239,7 +237,6 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 			bundledContent.WriteString("\n\n")
 		}
 		bundledContent.WriteString("</system-reminder>\n\n")
-		hasContent = true
 	}
 
 	// Skills
@@ -256,7 +253,6 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 			fmt.Fprintf(&bundledContent, "- **%s** (%s): %s\n", skill.Name, invocable, skill.Description)
 		}
 		bundledContent.WriteString("\n")
-		hasContent = true
 	}
 
 	// Agent definitions (sorted for deterministic output / prompt caching)
@@ -282,7 +278,6 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 				fmt.Fprintf(&bundledContent, "  Max turns: %d\n", agent.MaxTurns)
 			}
 		}
-		hasContent = true
 	}
 
 	// Spec index — all specs regardless of status, for dedup awareness.
@@ -291,7 +286,6 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		if specIndex != "" {
 			bundledContent.WriteString(specIndex)
 			bundledContent.WriteString("\n")
-			hasContent = true
 		}
 	}
 
@@ -300,19 +294,16 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 	// a daily cache break of that block. Placing it at the end keeps the rest of
 	// the dynamic prefix byte-stable within a day.
 	fmt.Fprintf(&bundledContent, "Current date: %s\n", now().Format("2006-01-02"))
-	hasContent = true
 
-	// Add bundled block with cache control if we have any content
-	if hasContent {
-		blocks = append(blocks, types.SystemBlock{
-			Type: "text",
-			Text: strings.TrimSpace(bundledContent.String()),
-			CacheControl: &types.CacheControl{
-				Type: "ephemeral",
-				TTL:  "1h",
-			},
-		})
-	}
+	// The dynamic block always carries the current date, so it is never empty.
+	blocks = append(blocks, types.SystemBlock{
+		Type: "text",
+		Text: strings.TrimSpace(bundledContent.String()),
+		CacheControl: &types.CacheControl{
+			Type: "ephemeral",
+			TTL:  "1h",
+		},
+	})
 
 	return blocks
 }
