@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jelmersnoeck/forge/internal/credentials"
 	"github.com/jelmersnoeck/forge/internal/review"
 	"github.com/jelmersnoeck/forge/internal/runtime/loop"
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
@@ -711,10 +712,10 @@ func (o *Orchestrator) runReviewerWithDiff(ctx context.Context, opts Orchestrato
 
 	// Collect available providers.
 	providers := make(map[string]types.LLMProvider)
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
 		providers["anthropic"] = provider.NewAnthropic(key)
 	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
 		providers["openai"] = provider.NewOpenAI(key)
 	}
 

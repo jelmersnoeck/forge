@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jelmersnoeck/forge/internal/credentials"
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -22,11 +23,11 @@ import (
 // Intentionally does not cache: this runs once at session start, so the env
 // lookups are negligible and caching would complicate test isolation.
 func newLightweightProvider() types.LLMProvider {
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.AnthropicAPIKey); ok {
 		log.Printf("[session-name] using Anthropic provider")
 		return provider.NewAnthropic(key)
 	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+	if key, ok := credentials.Default().Get(credentials.OpenAIAPIKey); ok {
 		log.Printf("[session-name] using OpenAI provider")
 		return provider.NewOpenAI(key)
 	}

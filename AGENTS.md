@@ -269,6 +269,17 @@ POST   /interrupt                     interrupt current work
 ## Environment variables
 
 - `ANTHROPIC_API_KEY` — required by the agent
+
+LLM API keys are resolved through `internal/credentials` (logical keys like
+`anthropic.api_key` → env vars). The source order is configurable via
+`~/.forge/config.toml`:
+
+```toml
+[credentials]
+sources = ["env"]   # default; tried in order, first non-empty hit wins
+```
+
+Unset `[credentials]` → env-only (identical to reading the env vars directly).
 - `WORKSPACE_DIR` — default working directory (default: /tmp/forge/workspace)
 - `SESSIONS_DIR` — JSONL session storage (default: /tmp/forge/sessions)
 - `FORGE_BIN` — path to forge binary (default: forge)

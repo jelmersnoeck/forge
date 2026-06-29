@@ -3,11 +3,11 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/jelmersnoeck/forge/internal/credentials"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
@@ -64,8 +64,8 @@ func webSearchHandler(input map[string]any, ctx types.ToolContext) (types.ToolRe
 		}
 	}
 
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
+	apiKey, ok := credentials.Default().Get(credentials.AnthropicAPIKey)
+	if !ok {
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{
 				Type: "text",

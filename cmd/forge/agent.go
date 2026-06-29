@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/jelmersnoeck/forge/internal/agent"
+	"github.com/jelmersnoeck/forge/internal/config"
+	"github.com/jelmersnoeck/forge/internal/credentials"
 	"github.com/jelmersnoeck/forge/internal/envutil"
 )
 
@@ -27,7 +29,15 @@ func runAgent(args []string) int {
 	}
 	envutil.LoadEnv(*cwd)
 
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+	// Install the credential resolver from user config before any provider
+	// construction. Defaults to env-only when [credentials] is unset.
+	if userCfg, err := config.LoadUserConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: load user config for credentials: %v\n", err)
+	} else {
+		credentials.SetDefault(credentials.Resolve(userCfg.Credentials.Sources))
+	}
+
+	if _, ok := credentials.Default().Get(credentials.AnthropicAPIKey); !ok {
 		fmt.Fprintln(os.Stderr, "warning: ANTHROPIC_API_KEY not set — agent will start but cannot connect to Anthropic")
 	}
 	if *sessionID == "" {
