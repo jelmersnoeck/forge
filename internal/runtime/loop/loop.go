@@ -569,8 +569,13 @@ func (l *Loop) collectAssistantMessage(ctx context.Context, deltaChan <-chan typ
 					l.totalUsage.CacheCreationTokens += delta.Usage.CacheCreationTokens
 					l.totalUsage.CacheReadTokens += delta.Usage.CacheReadTokens
 
-					// Check for cache breaks (simple detection)
-					l.checkCacheHealth(delta.Usage, emit)
+					// Cache-health detection only runs on the cache-bearing
+					// usage delta (message_start). The output-only message_delta
+					// reports cache_read=0, which would otherwise look like a
+					// 100% cache eviction and corrupt the baseline.
+					if hasCacheSignal(delta.Usage) {
+						l.checkCacheHealth(delta.Usage, emit)
+					}
 
 					emit(types.OutboundEvent{
 						ID:        uuid.New().String(),
@@ -792,6 +797,16 @@ func (l *Loop) persistMessage(msgType string, msg types.ChatMessage) error {
 	}
 
 	return l.sessionStore.Append(l.historyID, sessionMsg)
+}
+
+// hasCacheSignal reports whether a usage delta carries the cache/input numbers
+// emitted on message_start, as opposed to the output-only numbers on
+// message_delta (where cache_read/cache_creation/input are all zero). Only
+// cache-bearing deltas may drive cache-health detection — feeding the
+// output-only delta in would register a spurious 100% cache eviction and reset
+// the baseline to zero.
+func hasCacheSignal(u *types.TokenUsage) bool {
+	return u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 || u.InputTokens > 0
 }
 
 // checkCacheHealth detects unexpected cache invalidation.
