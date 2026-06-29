@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 	"github.com/stretchr/testify/require"
@@ -343,4 +344,166 @@ func TestRunMultiPhase_EndToEndWithGit(t *testing.T) {
 	// Worktrees were cleaned up by the default git remover.
 	_, statErr := os.Stat(filepath.Join(wtBase, "jelmer-greendale-1"))
 	r.True(os.IsNotExist(statErr), "phase 1 worktree should be cleaned up")
+}
+
+// TestRunMultiPhase_WaitsForMergeBetweenPhases verifies that with WaitForMerge
+// enabled each phase blocks on its PR merging, closes the sub-issue, and pulls
+// the base before the next phase starts.
+func TestRunMultiPhase_WaitsForMergeBetweenPhases(t *testing.T) {
+	r := require.New(t)
+
+	var events []string // ordered record of cross-phase steps
+	opts := MultiPhaseOpts{
+		RepoRoot:     "/repo",
+		BaseBranch:   "main",
+		ParentSlug:   "greendale",
+		WorktreeBase: "/tmp/wt",
+		WaitForMerge: true,
+		Phases: []SubIssue{
+			{Number: 1, Title: "foundations"},
+			{Number: 2, Title: "walls"},
+		},
+		SpawnAgent: func(_ context.Context, _, branch, _ string) error {
+			events = append(events, "spawn:"+branch)
+			return nil
+		},
+		CreateWorktree: func(_ context.Context, _, _, branch, path string) (string, error) {
+			events = append(events, "create:"+branch)
+			return path, nil
+		},
+		EnsurePRFn: func(_ context.Context, _ string) PRResult {
+			return PRResult{URL: "https://github.com/greendale/repo/pull/100"}
+		},
+		WaitForMergeFn: func(_ context.Context, o WaitForMergeOpts) (MergeOutcome, error) {
+			events = append(events, fmt.Sprintf("merge:%d", o.PRNumber))
+			return MergeOutcomeMerged, nil
+		},
+		CloseSubIssue: func(_ context.Context, _ string, n int) error {
+			events = append(events, fmt.Sprintf("close:%d", n))
+			return nil
+		},
+		PullBase: func(_ context.Context, _, base string) error {
+			events = append(events, "pull:"+base)
+			return nil
+		},
+		RemoveWorktree: func(context.Context, string, string) error { return nil },
+	}
+
+	r.NoError(RunMultiPhase(context.Background(), opts))
+
+	want := []string{
+		"create:jelmer/greendale-1", "spawn:jelmer/greendale-1", "merge:100", "close:1", "pull:main",
+		"create:jelmer/greendale-2", "spawn:jelmer/greendale-2", "merge:100", "close:2", "pull:main",
+	}
+	r.Equal(want, events)
+}
+
+// TestRunMultiPhase_ClosedPRHaltsPipeline verifies a closed-unmerged PR stops
+// the pipeline and the next phase never starts.
+func TestRunMultiPhase_ClosedPRHaltsPipeline(t *testing.T) {
+	r := require.New(t)
+
+	spawned := 0
+	opts := MultiPhaseOpts{
+		ParentSlug:   "p",
+		WaitForMerge: true,
+		Phases:       []SubIssue{{Number: 1, Title: "a"}, {Number: 2, Title: "b"}},
+		SpawnAgent: func(context.Context, string, string, string) error {
+			spawned++
+			return nil
+		},
+		CreateWorktree: func(_ context.Context, _, _, _, path string) (string, error) { return path, nil },
+		EnsurePRFn: func(context.Context, string) PRResult {
+			return PRResult{URL: "https://github.com/g/r/pull/5"}
+		},
+		WaitForMergeFn: func(context.Context, WaitForMergeOpts) (MergeOutcome, error) {
+			return MergeOutcomeClosed, errors.New("PR closed unmerged")
+		},
+		RemoveWorktree: func(context.Context, string, string) error { return nil },
+	}
+
+	err := RunMultiPhase(context.Background(), opts)
+	r.Error(err)
+	r.Contains(err.Error(), "merge wait")
+	r.Equal(1, spawned, "second phase must not start after a closed PR")
+}
+
+// TestRunMultiPhase_NoPRHaltsWhenWaitingForMerge verifies that when merge-wait
+// is on but the phase produced no PR, the pipeline halts rather than silently
+// running the next phase on a stale base.
+func TestRunMultiPhase_NoPRHaltsWhenWaitingForMerge(t *testing.T) {
+	r := require.New(t)
+
+	opts := MultiPhaseOpts{
+		ParentSlug:   "p",
+		WaitForMerge: true,
+		Phases:       []SubIssue{{Number: 1, Title: "a"}, {Number: 2, Title: "b"}},
+		SpawnAgent:   func(context.Context, string, string, string) error { return nil },
+		CreateWorktree: func(_ context.Context, _, _, _, path string) (string, error) {
+			return path, nil
+		},
+		EnsurePRFn:     func(context.Context, string) PRResult { return PRResult{Error: errors.New("no changes")} },
+		RemoveWorktree: func(context.Context, string, string) error { return nil },
+	}
+
+	err := RunMultiPhase(context.Background(), opts)
+	r.Error(err)
+	r.Contains(err.Error(), "no PR was created")
+}
+
+// TestRunMultiPhase_MergeTimeoutHalts verifies a merge-wait timeout halts the
+// pipeline.
+func TestRunMultiPhase_MergeTimeoutHalts(t *testing.T) {
+	r := require.New(t)
+
+	opts := MultiPhaseOpts{
+		ParentSlug:   "p",
+		WaitForMerge: true,
+		Phases:       []SubIssue{{Number: 1, Title: "a"}},
+		SpawnAgent:   func(context.Context, string, string, string) error { return nil },
+		CreateWorktree: func(_ context.Context, _, _, _, path string) (string, error) {
+			return path, nil
+		},
+		EnsurePRFn: func(context.Context, string) PRResult {
+			return PRResult{URL: "https://github.com/g/r/pull/8"}
+		},
+		WaitForMergeFn: func(context.Context, WaitForMergeOpts) (MergeOutcome, error) {
+			return MergeOutcomeTimeout, fmt.Errorf("timed out after %s", time.Hour)
+		},
+		RemoveWorktree: func(context.Context, string, string) error { return nil },
+	}
+
+	err := RunMultiPhase(context.Background(), opts)
+	r.Error(err)
+	r.Contains(err.Error(), "timeout")
+}
+
+// TestRunMultiPhase_CloseAndPullFailuresNonFatal verifies sub-issue-close and
+// pull-base failures after a successful merge do not halt the pipeline.
+func TestRunMultiPhase_CloseAndPullFailuresNonFatal(t *testing.T) {
+	r := require.New(t)
+
+	spawned := 0
+	opts := MultiPhaseOpts{
+		ParentSlug:   "p",
+		WaitForMerge: true,
+		Phases:       []SubIssue{{Number: 1, Title: "a"}, {Number: 2, Title: "b"}},
+		SpawnAgent: func(context.Context, string, string, string) error {
+			spawned++
+			return nil
+		},
+		CreateWorktree: func(_ context.Context, _, _, _, path string) (string, error) { return path, nil },
+		EnsurePRFn: func(context.Context, string) PRResult {
+			return PRResult{URL: "https://github.com/g/r/pull/3"}
+		},
+		WaitForMergeFn: func(context.Context, WaitForMergeOpts) (MergeOutcome, error) {
+			return MergeOutcomeMerged, nil
+		},
+		CloseSubIssue:  func(context.Context, string, int) error { return errors.New("gh down") },
+		PullBase:       func(context.Context, string, string) error { return errors.New("network gone") },
+		RemoveWorktree: func(context.Context, string, string) error { return nil },
+	}
+
+	r.NoError(RunMultiPhase(context.Background(), opts))
+	r.Equal(2, spawned, "both phases run despite close/pull failures")
 }

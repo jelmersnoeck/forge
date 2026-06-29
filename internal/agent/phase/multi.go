@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
@@ -65,7 +67,44 @@ type MultiPhaseOpts struct {
 	// EnsurePRFn ensures a PR for a phase worktree.
 	// Defaults to a thin wrapper around EnsurePR when nil.
 	EnsurePRFn EnsurePRFunc
+
+	// WaitForMerge enables cross-phase merge coordination (#223). When true,
+	// after a phase's PR is ensured the coordinator blocks until that PR
+	// merges before starting the next phase, then pulls the updated base
+	// branch so the next phase branches from a codebase including all prior
+	// changes. A PR that is closed-unmerged or times out halts the pipeline.
+	// When false the legacy behavior is preserved: phases branch from
+	// BaseBranch independently with no merge wait.
+	WaitForMerge bool
+
+	// MergePollInterval overrides the merge poll interval (default 30s).
+	MergePollInterval time.Duration
+
+	// MergeTimeout overrides the per-PR merge timeout (default 2h).
+	MergeTimeout time.Duration
+
+	// WaitForMergeFn polls a PR until it merges. Defaults to WaitForMerge when
+	// nil. Injected for tests.
+	WaitForMergeFn WaitForMergeFunc
+
+	// PullBase brings RepoRoot's local BaseBranch up to date with origin
+	// after a phase merges. Defaults to gitPullBase when nil.
+	PullBase PullBaseFunc
+
+	// CloseSubIssue closes a merged phase's sub-issue. Defaults to
+	// ghCloseIssue when nil. A close failure is non-fatal.
+	CloseSubIssue CloseSubIssueFunc
 }
+
+// WaitForMergeFunc blocks until a PR reaches a terminal state, returning the
+// outcome and a non-nil error on closed/timeout/cancel.
+type WaitForMergeFunc func(ctx context.Context, opts WaitForMergeOpts) (MergeOutcome, error)
+
+// PullBaseFunc updates repoRoot's local baseBranch from origin (fetch + pull).
+type PullBaseFunc func(ctx context.Context, repoRoot, baseBranch string) error
+
+// CloseSubIssueFunc closes a GitHub sub-issue by number in repoRoot's repo.
+type CloseSubIssueFunc func(ctx context.Context, repoRoot string, number int) error
 
 // SubIssue is one sub-issue (decomposed phase) to run. Number is the GitHub
 // issue number used in the branch name; Title/Body are formatted into the
@@ -134,6 +173,18 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 			return EnsurePR(ctx, opts.Provider, cwd, "", opts.PRAttr)
 		}
 	}
+	waitMerge := opts.WaitForMergeFn
+	if waitMerge == nil {
+		waitMerge = WaitForMerge
+	}
+	pullBase := opts.PullBase
+	if pullBase == nil {
+		pullBase = gitPullBase
+	}
+	closeIssue := opts.CloseSubIssue
+	if closeIssue == nil {
+		closeIssue = ghCloseIssue
+	}
 
 	for i, ph := range opts.Phases {
 		if err := ctx.Err(); err != nil {
@@ -174,6 +225,47 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 				Type:    "text",
 				Content: fmt.Sprintf("Phase %d: PR %s\n", i+1, pr.URL),
 			})
+		}
+
+		// Cross-phase merge coordination (#223). Block until this phase's PR
+		// merges, then pull the updated base so the next phase branches from a
+		// codebase that includes these changes. A closed/timed-out PR halts.
+		if opts.WaitForMerge {
+			prNumber := extractPRNumberFromURL(pr.URL)
+			switch {
+			case pr.Error != nil || prNumber == 0:
+				// No mergeable PR was created — halt rather than silently
+				// running the next phase on a stale base.
+				return fmt.Errorf("multi-phase: phase %d (%q): cannot wait for merge, no PR was created", i, ph.Title)
+			default:
+				outcome, err := waitMerge(ctx, WaitForMergeOpts{
+					CWD:          cwd,
+					PRNumber:     prNumber,
+					PollInterval: opts.MergePollInterval,
+					Timeout:      opts.MergeTimeout,
+					Emit: func(content string) {
+						emit(opts.Emit, types.OutboundEvent{Type: "text", Content: content})
+					},
+				})
+				if err != nil {
+					return fmt.Errorf("multi-phase: phase %d (%q): merge wait (%s): %w", i, ph.Title, outcome, err)
+				}
+
+				// Close the merged sub-issue (non-fatal).
+				if ph.Number > 0 {
+					if cerr := closeIssue(ctx, opts.RepoRoot, ph.Number); cerr != nil {
+						slog.Warn("multi-phase: close sub-issue failed",
+							"phase", i, "issue", ph.Number, "error", cerr)
+					}
+				}
+
+				// Pull the merged changes into the local base branch so the
+				// next phase's worktree includes them (non-fatal — log only).
+				if perr := pullBase(ctx, opts.RepoRoot, opts.BaseBranch); perr != nil {
+					slog.Warn("multi-phase: pull base branch failed",
+						"phase", i, "base", opts.BaseBranch, "error", perr)
+				}
+			}
 		}
 
 		if err := removeWT(ctx, opts.RepoRoot, cwd); err != nil {
@@ -262,6 +354,51 @@ func gitRemoveWorktree(ctx context.Context, repoRoot, worktreePath string) error
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree remove: %s\n%s", err, string(out))
+	}
+	return nil
+}
+
+// prURLNumberRe extracts the numeric PR id from a PR/MR URL path segment such as
+// ".../pull/42" or ".../merge_requests/42".
+var prURLNumberRe = regexp.MustCompile(`/(?:pull|merge_requests|pull-requests|pullrequest)/(\d+)`)
+
+// extractPRNumberFromURL parses the PR number from a PR URL, returning 0 when no
+// number can be found (e.g. an empty URL).
+func extractPRNumberFromURL(prURL string) int {
+	m := prURLNumberRe.FindStringSubmatch(prURL)
+	if len(m) < 2 {
+		return 0
+	}
+	n := 0
+	for _, c := range m[1] {
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+// gitPullBase brings repoRoot's local baseBranch up to date with origin so the
+// next phase worktree branches from a base that includes prior merged phases.
+// Runs `git fetch origin <base>` then `git pull origin <base>`.
+func gitPullBase(ctx context.Context, repoRoot, baseBranch string) error {
+	if !tools.ValidateBranchName(baseBranch) {
+		return fmt.Errorf("invalid base branch %q", baseBranch)
+	}
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, repoRoot, "fetch", "origin", baseBranch); err != nil {
+		return fmt.Errorf("fetch origin/%s: %s", baseBranch, sanitizeStderr(stderr))
+	}
+	if _, stderr, err := tools.GitOutputFullCtx(ctx, repoRoot, "pull", "origin", baseBranch); err != nil {
+		return fmt.Errorf("pull origin/%s: %s", baseBranch, sanitizeStderr(stderr))
+	}
+	return nil
+}
+
+// ghCloseIssue closes a GitHub issue/sub-issue by number via `gh issue close`.
+func ghCloseIssue(ctx context.Context, repoRoot string, number int) error {
+	if !tools.GHAvailable() {
+		return fmt.Errorf("gh CLI not installed (https://cli.github.com/)")
+	}
+	if _, err := tools.GHOutputCtx(ctx, repoRoot, "issue", "close", fmt.Sprintf("%d", number)); err != nil {
+		return fmt.Errorf("gh issue close %d: %w", number, err)
 	}
 	return nil
 }
