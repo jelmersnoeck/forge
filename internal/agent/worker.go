@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/runtime/session"
 	"github.com/jelmersnoeck/forge/internal/runtime/task"
+	"github.com/jelmersnoeck/forge/internal/sessionstate"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -70,6 +72,62 @@ func NewWorker(hub *Hub, sessionID, cwd, sessionsDir, mode, specPath, modelOverr
 		modelOverride: modelOverride,
 		ghAvailable:   tools.GHAvailable(),
 	}
+}
+
+// initialState loads persisted routing metadata from .forge-state in the
+// worker's cwd (the worktree root). A missing file yields a zero WorkerState
+// (fresh session). A corrupt or version-mismatched file is logged and treated
+// as fresh — never fatal. The conversation history itself is replayed lazily
+// via loop.Resume() from the session JSONL; this only restores which history
+// ID maps to which phase.
+func (w *Worker) initialState() WorkerState {
+	st, err := sessionstate.Read(w.cwd)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return WorkerState{}
+	case err != nil:
+		log.Printf("[agent:%s] state: ignoring unreadable .forge-state: %v", w.sessionID, err)
+		return WorkerState{}
+	}
+
+	log.Printf("[agent:%s] state: resumed phase=%s coder=%s qa=%s investigate=%s",
+		w.sessionID, st.Phase, st.HistoryID, st.QAHistoryID, st.InvestigateID)
+
+	return WorkerState{
+		Phase:                phaseFromName(st.Phase),
+		HistoryID:            st.HistoryID,
+		QAHistoryID:          st.QAHistoryID,
+		InvestigateHistoryID: st.InvestigateID,
+	}
+}
+
+// persistState writes the worker's current phase routing metadata to
+// .forge-state. Best-effort: a write failure is logged but never aborts a turn.
+func (w *Worker) persistState(state WorkerState) {
+	st := sessionstate.State{
+		SessionID:        w.sessionID,
+		Phase:            phaseName(state.Phase),
+		HistoryID:        state.HistoryID,
+		QAHistoryID:      state.QAHistoryID,
+		InvestigateID:    state.InvestigateHistoryID,
+		OrchestratorDone: state.Phase == PhaseOrchestrator || state.Phase == PhaseDone,
+		HeadCommit:       w.headCommit(),
+	}
+	if err := sessionstate.Write(w.cwd, st); err != nil {
+		log.Printf("[agent:%s] state: failed to persist .forge-state: %v", w.sessionID, err)
+	}
+}
+
+// headCommit returns the short HEAD commit of the worker's worktree, or "" if
+// git is unavailable or the cwd is not a repo.
+func (w *Worker) headCommit() string {
+	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+	cmd.Dir = w.cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // SetModel updates the model for subsequent turns.
@@ -148,6 +206,40 @@ func (s WorkerState) Transition(result phase.OrchestratorResult) WorkerState {
 		}
 	}
 	return next
+}
+
+// phaseName returns the stable string label for a WorkerPhase, used when
+// persisting state to .forge-state.
+func phaseName(p WorkerPhase) string {
+	switch p {
+	case PhaseQA:
+		return "qa"
+	case PhaseInvestigate:
+		return "investigate"
+	case PhaseOrchestrator:
+		return "orchestrator"
+	case PhaseDone:
+		return "done"
+	default:
+		return "idle"
+	}
+}
+
+// phaseFromName maps a persisted phase label back to a WorkerPhase. Unknown
+// labels resolve to PhaseIdle so a corrupt/old state degrades to a fresh start.
+func phaseFromName(name string) WorkerPhase {
+	switch name {
+	case "qa":
+		return PhaseQA
+	case "investigate":
+		return PhaseInvestigate
+	case "orchestrator":
+		return PhaseOrchestrator
+	case "done":
+		return PhaseDone
+	default:
+		return PhaseIdle
+	}
 }
 
 // ShouldRunOrchestrator reports whether the next message should go through
@@ -267,8 +359,9 @@ func (w *Worker) Run(ctx context.Context) {
 	go w.taskStatusBroadcaster(ctx, mgr)
 
 	// Phase state: tracks orchestrator/Q&A/investigate lifecycle.
-	// All transitions go through state.Transition().
-	var state WorkerState
+	// All transitions go through state.Transition(). Restored from
+	// .forge-state when resuming an existing worktree (issue #211).
+	state := w.initialState()
 
 	// PR monitor terminal state: once a PR is merged/closed, stop checking.
 	prTerminal := false
@@ -425,6 +518,12 @@ func (w *Worker) Run(ctx context.Context) {
 		wasInterrupted := turnCtx.Err() == context.Canceled
 
 		turnCancel() // clean up goroutine
+
+		// Persist routing metadata so a restart can resume this worktree's
+		// phase + history IDs (issue #211). Best-effort; runs every turn
+		// regardless of success so a crashed/interrupted turn still leaves a
+		// usable state file pointing at the latest history IDs.
+		w.persistState(state)
 
 		if runErr != nil {
 			log.Printf("[agent:%s] error: %v", w.sessionID, runErr)
