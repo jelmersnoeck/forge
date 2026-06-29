@@ -2,17 +2,21 @@
 id: decompose-issue-sub-tasks
 status: implemented
 ---
-# Decompose a large issue into ordered GitHub sub-issues
+# Decompose a large issue into ordered GitHub sub-issues + sequential multi-phase runner
 
 ## Description
-Add a lightweight LLM call that decomposes a large parent issue body into
-ordered, independently-shippable sub-tasks, creates each as a GitHub issue,
-and attaches it to the parent as a sub-issue. Also add a fetcher that reads
-back the parent's sub-issues in position order. This is Phase 1 of 5 of the
-multi-phase orchestrator (issue #220); later phases consume these primitives
-to run each sub-issue as a sequential sub-agent pipeline. Scope here is the
-decompose call, sub-issue creation, and sub-issue fetch — no orchestration,
-no worktrees, no CWD overrides.
+Phase 1 (#221): Add a lightweight LLM call that decomposes a large parent issue
+body into ordered, independently-shippable sub-tasks, creates each as a GitHub
+issue, and attaches it to the parent as a sub-issue. Also add a fetcher that
+reads back the parent's sub-issues in position order.
+
+Phase 2 (#222): Enable sub-agents to run in their own worktree (a `CWD` override
+on `SubAgent`, honored by the worker's `makeAgentRunner`) and add
+`phase.RunMultiPhase`, a sequential coordinator that, for each sub-issue, creates
+a worktree + branch, spawns a full-access sub-agent in that worktree, ensures a
+PR, and cleans up before moving to the next. A phase failure halts the pipeline;
+PR and cleanup failures are non-fatal. Merge coordination between phases is #223
+(out of scope here). This is part of the multi-phase orchestrator (issue #220).
 
 ## Context
 - `internal/agent/phase/decompose.go` — new: decompose LLM call + sub-issue creation
@@ -22,6 +26,14 @@ no worktrees, no CWD overrides.
 - `cmd/forge/issue.go` — add `fetchSubIssues`; reuse `ghIssue`, `normalizeIssueRef`
 - `cmd/forge/issue_test.go` — add sub-issue parse tests
 - `internal/types/types.go` — `LightweightModels`, `LLMProvider`, `ChatRequest`/`ChatDelta`
+- (Phase 2) `internal/types/task.go` — add `CWD` field to `SubAgent`
+- (Phase 2) `internal/agent/worker.go` — `subAgentCWD` helper + CWD override in
+  `makeAgentRunner` (`loop.Options.CWD` uses the override when set)
+- (Phase 2) `internal/agent/subagent_cwd_test.go` — new: `subAgentCWD` table test
+- (Phase 2) `internal/agent/phase/multi.go` — new: `RunMultiPhase` coordinator,
+  worktree helpers, branch/slug helpers, sub-issue prompt formatting
+- (Phase 2) `internal/agent/phase/multi_test.go` — new: coordinator + git worktree tests
+- (Phase 2) `internal/agent/phase/pr.go` — `EnsurePR` reused per phase (unchanged)
 
 ## Behavior
 - `Decompose(ctx, provider, issueBody) ([]SubTask, error)` runs a lightweight LLM
@@ -55,6 +67,41 @@ no worktrees, no CWD overrides.
 - `fetchSubIssues` requires `gh` on PATH; absence returns the same guidance error
   string used by `fetchGitHubIssue`.
 
+### Phase 2 (#222) — Sub-agent CWD override + sequential multi-phase runner
+- `SubAgent` gains a `CWD string` field (`json:"cwd,omitempty"`). When non-empty
+  it overrides the working directory the sub-agent's conversation loop runs in.
+- `subAgentCWD(parentCWD, agent)` returns `agent.CWD` when set, else `parentCWD`.
+  `makeAgentRunner` sets `loop.Options.CWD` from this helper (was hardcoded `w.cwd`).
+- `RunMultiPhase(ctx, opts)` runs `opts.Phases` (a `[]SubIssue`) sequentially in
+  slice order. For each phase i:
+  1. Build branch `jelmer/<ParentSlug>-<Number>` (blank slug → `jelmer/phase-<n>`).
+  2. Build worktree dir `<WorktreeBase>/<branch with / → ->`.
+  3. `CreateWorktree(ctx, RepoRoot, BaseBranch, branch, path)` → worktree path.
+  4. `SpawnAgent(ctx, cwd, branch, prompt)` where prompt is the formatted
+     sub-issue body; blocks until the sub-agent completes.
+  5. `EnsurePRFn(ctx, cwd)` (defaults to `EnsurePR(ctx, Provider, cwd, "", PRAttr)`).
+  6. `RemoveWorktree(ctx, RepoRoot, cwd)` to clean up.
+- A nil `SpawnAgent` is a programmer error: `RunMultiPhase` returns an error
+  immediately. Empty `Phases` returns nil (no-op).
+- `CreateWorktree`/`RemoveWorktree`/`EnsurePRFn` default to real implementations
+  (`gitCreateWorktree`, `gitRemoveWorktree`, an `EnsurePR` wrapper) when nil, so
+  the worker wires nothing extra and tests inject fakes.
+- A phase's worktree-creation error OR sub-agent error halts the pipeline: later
+  phases are not started, and the error names the phase index + sub-issue title.
+- A PR error (`PRResult.Error != nil`) is logged at warn and emitted as text, but
+  does NOT halt the pipeline. A successful PR URL is emitted as text.
+- A worktree-cleanup error is logged at warn and does NOT halt the pipeline.
+- On sub-agent failure the worktree is left in place (not removed) for inspection.
+- `ctx` cancellation is checked at the top of each iteration; a cancelled context
+  returns an error before the next phase's worktree is created.
+- `gitCreateWorktree` runs `git worktree add -b <branch> <path> <base>`; if that
+  fails (branch exists) it retries `git worktree add <path> <branch>`.
+- `gitRemoveWorktree` runs `git worktree remove --force <path>`.
+- `formatSubIssuePrompt` renders `Implement the following GitHub issue.` + an
+  `Issue #<n>: <title>` (or `Issue: <title>` when number is 0) header + trimmed body.
+- `SlugifyTitle(title, maxLen)` lowercases, collapses non-alphanumeric runs to
+  single hyphens, trims hyphens, and truncates to `maxLen` (0 = no truncation).
+
 ## Constraints
 - Do not add orchestration, worktree creation, CWD overrides, or multi-phase
   routing — those are later phases of #220. Only the three primitives ship here.
@@ -66,6 +113,16 @@ no worktrees, no CWD overrides.
 - Must reuse existing `ghIssue` type; do not introduce a parallel struct.
 - No mocks for `gh`; tests that touch `gh` must parse fixture JSON, not invoke it.
   LLM tests use the existing `mockProvider` from the phase package test files.
+
+### Phase 2 constraints (#222)
+- `RunMultiPhase` must NOT implement cross-phase merging or rebasing — that is
+  #223. Each phase branches from `BaseBranch` independently.
+- `RunMultiPhase` must NOT depend on `internal/agent` or `internal/runtime/task`
+  (import cycle). Sub-agent spawning is injected via the `SpawnPhaseAgent` func.
+- A PR or worktree-cleanup failure must NOT halt the pipeline. Only a
+  worktree-creation or sub-agent failure halts it.
+- The CWD override must default to the parent worker's cwd when `SubAgent.CWD`
+  is empty — existing single-worktree sub-agent behavior is unchanged.
 
 ## Interfaces
 ```go
@@ -92,6 +149,48 @@ func fetchSubIssues(ref string, cwd string) ([]ghIssue, error)
 func parseSubIssues(raw []byte) ([]ghIssue, error) // testable parse split out of fetchSubIssues
 ```
 
+### Phase 2 interfaces (#222)
+```go
+// internal/types/task.go
+type SubAgent struct {
+    // ...existing fields...
+    CWD string `json:"cwd,omitempty"` // working-directory override; empty → parent cwd
+}
+
+// internal/agent/worker.go
+func subAgentCWD(parentCWD string, agent *types.SubAgent) string
+
+// internal/agent/phase/multi.go
+type SubIssue struct {
+    Number int
+    Title  string
+    Body   string
+}
+
+type SpawnPhaseAgent func(ctx context.Context, cwd, branch, prompt string) error
+type CreateWorktreeFunc func(ctx context.Context, repoRoot, baseBranch, branch, worktreePath string) (string, error)
+type RemoveWorktreeFunc func(ctx context.Context, repoRoot, worktreePath string) error
+type EnsurePRFunc func(ctx context.Context, cwd string) PRResult
+
+type MultiPhaseOpts struct {
+    Provider       types.LLMProvider
+    RepoRoot       string
+    BaseBranch     string
+    ParentSlug     string
+    WorktreeBase   string
+    Phases         []SubIssue
+    PRAttr         PRAttributionOpts
+    Emit           func(types.OutboundEvent)
+    SpawnAgent     SpawnPhaseAgent    // REQUIRED
+    CreateWorktree CreateWorktreeFunc // nil → gitCreateWorktree
+    RemoveWorktree RemoveWorktreeFunc // nil → gitRemoveWorktree
+    EnsurePRFn     EnsurePRFunc       // nil → EnsurePR wrapper
+}
+
+func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error
+func SlugifyTitle(title string, maxLen int) string
+```
+
 ## Edge Cases
 - Empty / whitespace-only issue body → `Decompose` returns `(nil, err)`, no LLM call.
 - LLM returns a single-element array (single-phase decomposition) → returned as a
@@ -112,3 +211,22 @@ func parseSubIssues(raw []byte) ([]ghIssue, error) // testable parse split out o
 - `CreateSubIssues` where the Nth attach fails → returns the first N-1 numbers + err.
 - `gh issue create` output URL with trailing whitespace/newline → number parsed
   via the `/issues/(\d+)` regex (`extractIssueNumberFromURL`, phase-local copy).
+
+### Phase 2 edge cases (#222)
+- `SubAgent.CWD` empty → sub-agent runs in the parent worker's cwd (unchanged).
+- `SubAgent.CWD` set → sub-agent's `loop.Options.CWD` is the override.
+- `RunMultiPhase` with `SpawnAgent == nil` → returns "SpawnAgent is required" error.
+- `RunMultiPhase` with empty `Phases` → returns nil, no work done.
+- Sub-agent of phase i fails → pipeline halts; phases >i never start; worktree of
+  phase i is left in place; error names "phase i" + title.
+- Worktree creation of phase i fails → pipeline halts before spawning; no
+  sub-agent runs for that phase.
+- `EnsurePRFn` returns an error → logged + emitted, pipeline continues.
+- `RemoveWorktree` returns an error → logged, pipeline continues.
+- Context cancelled between phases → returns a "cancelled" error before the next
+  worktree is created.
+- Blank `ParentSlug` → branch falls back to `jelmer/phase-<number>`.
+- Branch name with a slash → worktree directory uses hyphens (`jelmer/x-1` →
+  `<base>/jelmer-x-1`).
+- `gitCreateWorktree` when the branch already exists → falls back to
+  `git worktree add <path> <branch>` (checkout existing branch).
