@@ -18,102 +18,46 @@ type Pricing struct {
 	CacheRead  float64 // cost per 1M cache read tokens
 }
 
-// modelPricing maps model names to their pricing.
-// Prices as of April 2026 from Anthropic's pricing page.
-var modelPricing = map[string]Pricing{
-	// Claude Sonnet 4.5 (2025-09-29)
-	"claude-sonnet-4-5-20250929": {
-		Input:      3.00,
-		Output:     15.00,
-		CacheWrite: 3.75,
-		CacheRead:  0.30,
-	},
-	// Claude 3.5 Sonnet (2024-10-22)
+// supplementalPricing covers models the litellm table omits but that forge
+// still needs priced (e.g. retired models referenced by historical cost rows).
+// The litellm-sourced table (see pricing.go) is the primary source; this map is
+// consulted only on a litellm miss. Do NOT add currently-shipping models here —
+// they belong in litellm; add them only if litellm genuinely lacks an entry.
+var supplementalPricing = map[string]Pricing{
+	// Claude 3.5 Sonnet (2024-10-22) — absent from the litellm dated table.
 	"claude-3-5-sonnet-20241022": {
 		Input:      3.00,
 		Output:     15.00,
 		CacheWrite: 3.75,
 		CacheRead:  0.30,
 	},
-	// Claude 3.5 Sonnet (2024-06-20)
+	// Claude 3.5 Sonnet (2024-06-20) — absent from litellm.
 	"claude-3-5-sonnet-20240620": {
 		Input:      3.00,
 		Output:     15.00,
 		CacheWrite: 3.75,
 		CacheRead:  0.30,
 	},
-	// Claude Opus 4 (estimated from actual usage data)
-	"claude-opus-4-6": {
-		Input:      5.00,
-		Output:     25.00,
-		CacheWrite: 6.25,
-		CacheRead:  0.50,
-	},
-	// Claude 3 Opus
-	"claude-3-opus-20240229": {
-		Input:      15.00,
-		Output:     75.00,
-		CacheWrite: 18.75,
-		CacheRead:  1.50,
-	},
-	// Claude 3 Sonnet
+	// Claude 3 Sonnet (2024-02-29) — absent from litellm.
 	"claude-3-sonnet-20240229": {
 		Input:      3.00,
 		Output:     15.00,
 		CacheWrite: 3.75,
 		CacheRead:  0.30,
 	},
-	// Claude 3 Haiku
-	"claude-3-haiku-20240307": {
-		Input:      0.25,
-		Output:     1.25,
-		CacheWrite: 0.30,
-		CacheRead:  0.03,
-	},
-	// Claude 3.5 Haiku (2024-10-22)
+	// Claude 3.5 Haiku (2024-10-22) — absent from the litellm dated table.
 	"claude-3-5-haiku-20241022": {
 		Input:      1.00,
 		Output:     5.00,
 		CacheWrite: 1.25,
 		CacheRead:  0.10,
 	},
-	// Claude Haiku 4.5 (2025-10-01)
-	"claude-haiku-4-5-20251001": {
-		Input:      1.00,
-		Output:     5.00,
-		CacheWrite: 1.25,
-		CacheRead:  0.10,
-	},
-	// Claude Haiku 4.5 (alias — resolves to latest Haiku)
+	// Claude Haiku 4.5 (alias — resolves to latest Haiku).
 	"claude-haiku-4-5": {
 		Input:      1.00,
 		Output:     5.00,
 		CacheWrite: 1.25,
 		CacheRead:  0.10,
-	},
-	// ── OpenAI ──────────────────────────────────────────────
-	// OpenAI has no separate cache-write rate; cached input is billed at a
-	// reduced input rate, captured in CacheRead. CacheWrite stays 0.
-	// GPT-4.1
-	"gpt-4.1": {
-		Input:      2.00,
-		Output:     8.00,
-		CacheWrite: 0,
-		CacheRead:  0.50,
-	},
-	// GPT-4.1 mini
-	"gpt-4.1-mini": {
-		Input:      0.40,
-		Output:     1.60,
-		CacheWrite: 0,
-		CacheRead:  0.10,
-	},
-	// o3
-	"o3": {
-		Input:      2.00,
-		Output:     8.00,
-		CacheWrite: 0,
-		CacheRead:  0.50,
 	},
 }
 
@@ -160,7 +104,7 @@ func logAliasOnce(model string, pricing Pricing) {
 
 		// Detect potential pricing staleness: if the alias has different pricing
 		// than a known dated variant with the same prefix, warn louder.
-		for dated, dp := range modelPricing {
+		for dated, dp := range supplementalPricing {
 			if dated != model && strings.HasPrefix(dated, model) && dp != pricing {
 				log.Printf("[cost] WARNING: alias %q pricing differs from dated variant %q — review hardcoded prices", model, dated)
 			}
@@ -180,12 +124,25 @@ func logUnknownModelOnce(model string) {
 		return
 	}
 	once.Do(func() {
-		log.Printf("[cost] no pricing for model %q — cost will be reported as $0.00; add it to modelPricing to track spend", model)
+		log.Printf("[cost] no pricing for model %q — cost will be reported as $0.00; check that the model ID is valid and present in the litellm pricing table", model)
 	})
 }
 
+// LookupPricing resolves pricing for a model, consulting the litellm-sourced
+// table first, then the supplemental fallback. The bool reports whether any
+// source priced the model.
+func LookupPricing(model string) (Pricing, bool) {
+	if p, ok := resolvePricing(model); ok {
+		return p, true
+	}
+	if p, ok := supplementalPricing[model]; ok {
+		return p, true
+	}
+	return Pricing{}, false
+}
+
 // Calculate computes the cost in USD for the given token usage and model.
-// Returns 0.0 if model is unknown.
+// Returns 0.0 if the model is unknown in every pricing source.
 //
 // Note: Based on ccusage (the standard Claude usage tracking tool), all four token
 // types (input, output, cache_creation, cache_read) are treated as ADDITIVE, meaning:
@@ -196,7 +153,7 @@ func logUnknownModelOnce(model string) {
 //
 // This interpretation matches how ccusage calculates costs and avoids double-counting.
 func Calculate(model string, usage types.TokenUsage) float64 {
-	pricing, ok := modelPricing[model]
+	pricing, ok := LookupPricing(model)
 	if !ok {
 		logUnknownModelOnce(model)
 		return 0.0

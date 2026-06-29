@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"sync"
+
 	"github.com/jelmersnoeck/forge/internal/runtime/cost"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -73,7 +76,35 @@ func (c *CostAccumulator) Record(ev types.OutboundEvent, t *cost.Tracker, sessio
 		return "  ⚠  cost tracking error: " + err.Error()
 	}
 
+	// A $0 cost on a non-zero-token call means the model is missing from the
+	// pricing table — a silent-failure trap (issue #278). Surface it to the user
+	// once per model so the tidy "$0.00" is never mistaken for "free".
+	if callCost == 0 && hasTokens(delta) {
+		if _, priced := cost.LookupPricing(ev.Model); !priced {
+			return unpricedModelWarning(ev.Model)
+		}
+	}
+
 	return ""
+}
+
+// hasTokens reports whether any token field is non-zero.
+func hasTokens(u types.TokenUsage) bool {
+	return u.InputTokens != 0 || u.OutputTokens != 0 ||
+		u.CacheCreationTokens != 0 || u.CacheReadTokens != 0
+}
+
+// unpricedWarnOnce dedups the user-visible unpriced-model warning to once per
+// model per process — Record runs on every API response.
+var unpricedWarnOnce sync.Map // model string -> struct{}
+
+// unpricedModelWarning returns a one-time user-visible warning for an unpriced
+// model, or "" if already warned for this model.
+func unpricedModelWarning(model string) string {
+	if _, seen := unpricedWarnOnce.LoadOrStore(model, struct{}{}); seen {
+		return ""
+	}
+	return fmt.Sprintf("  ⚠  model %q has no pricing — cost shows $0.00 despite real token usage; verify the model ID is in the litellm table", model)
 }
 
 // clampNonNegative returns u with every token field floored at 0.

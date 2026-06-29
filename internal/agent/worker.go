@@ -1399,7 +1399,7 @@ func (w *Worker) buildPRAttribution() phase.PRAttributionOpts {
 var modelAliases = map[string]string{
 	"opus":   "claude-opus-4-6",
 	"sonnet": "claude-sonnet-4-20250514",
-	"haiku":  "claude-haiku-4-20250506",
+	"haiku":  "claude-haiku-4-5-20251001",
 }
 
 // ResolveModelAlias expands a short alias to its full model ID.
