@@ -18,8 +18,14 @@ const (
 	// bashIdleTimeout is how long we wait with no output before investigating.
 	bashIdleTimeout = 30 * time.Second
 
-	// bashProgressInterval is how often we emit progress events to the TUI.
+	// bashProgressInterval is how often we emit elapsed-time progress events
+	// (the heartbeat) when no new output is arriving.
 	bashProgressInterval = 10 * time.Second
+
+	// bashStreamThrottle is the minimum gap between live-output progress
+	// events. It provides backpressure: fast producers can't flood the TUI
+	// faster than this since the status line is last-write-wins.
+	bashStreamThrottle = 100 * time.Millisecond
 
 	// bashMaxOutputBuffer caps captured output to avoid memory issues.
 	bashMaxOutputBuffer = 100 * 1024 // 100KB
@@ -172,6 +178,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 		outputBuf  bytes.Buffer
 		outputMu   sync.Mutex
 		truncated  bool
+		lastLine   string                   // most recent non-empty output line (for live display)
 		outputCh   = make(chan struct{}, 1) // signals new output arrived
 		readerDone = make(chan struct{})    // closed when reader goroutine exits
 	)
@@ -190,6 +197,9 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 					// In practice we just stop appending.
 				} else {
 					outputBuf.Write(buf[:n])
+				}
+				if line := lastNonEmptyLine(buf[:n]); line != "" {
+					lastLine = line
 				}
 				outputMu.Unlock()
 
@@ -218,6 +228,7 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 	progressTicker := time.NewTicker(bashProgressInterval)
 	defer progressTicker.Stop()
 	lastOutputTime := startTime
+	var lastStreamEmit time.Time
 
 	emit := ctx.Emit
 
@@ -238,6 +249,23 @@ func bashHandler(input map[string]any, ctx types.ToolContext) (types.ToolResult,
 				}
 			}
 			idleTimer.Reset(bashIdleTimeout)
+
+			// Stream the latest output line to the TUI, throttled so a fast
+			// producer can't flood the client (status line is last-write-wins).
+			if emit != nil && time.Since(lastStreamEmit) >= bashStreamThrottle {
+				lastStreamEmit = time.Now()
+				outputMu.Lock()
+				line := lastLine
+				outputMu.Unlock()
+				if line != "" {
+					elapsed := time.Since(startTime).Round(time.Second)
+					emit(types.OutboundEvent{
+						Type:     "tool_progress",
+						ToolName: "Bash",
+						Content:  fmt.Sprintf("%s (%s elapsed) %s", truncateCommand(command, 30), elapsed, truncateCommand(line, 80)),
+					})
+				}
+			}
 
 		case <-progressTicker.C:
 			// Periodic TUI progress update.
@@ -407,6 +435,22 @@ func truncateCommand(cmd string, maxLen int) string {
 		return cmd
 	}
 	return cmd[:maxLen-3] + "..."
+}
+
+// lastNonEmptyLine returns the last non-empty line in a chunk of output,
+// with surrounding whitespace and carriage returns trimmed. Used to surface
+// live progress on the TUI status line. Returns "" if the chunk has no
+// printable line.
+func lastNonEmptyLine(chunk []byte) string {
+	lines := strings.Split(string(chunk), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimRight(lines[i], "\r")
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // checkInteractiveCommand detects if a command is likely to be interactive

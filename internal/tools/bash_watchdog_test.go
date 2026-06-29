@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -172,6 +173,64 @@ func TestBashDiagnostics(t *testing.T) {
 	// PID 0 should return the no-PID message.
 	result = gatherDiagnostics(0)
 	require.Contains(t, result, "no PID")
+}
+
+// TestBashLiveOutputStreaming verifies that tool_progress events carry the
+// latest output line in real time as the command produces output (issue #252).
+func TestBashLiveOutputStreaming(t *testing.T) {
+	r := require.New(t)
+
+	var progressMsgs []string
+	var mu sync.Mutex
+
+	// Emit three distinct lines spaced out so each clears the stream throttle.
+	result, err := bashHandler(map[string]any{
+		"command": "echo 'Build step Troy Barnes'; sleep 0.3; echo 'Build step Abed Nadir'; sleep 0.3; echo 'Build step Shirley Bennett'",
+		"timeout": float64(15000),
+	}, types.ToolContext{
+		Ctx: context.Background(),
+		CWD: t.TempDir(),
+		Emit: func(event types.OutboundEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			if event.Type == "tool_progress" {
+				progressMsgs = append(progressMsgs, event.Content)
+			}
+		},
+	})
+
+	r.NoError(err)
+	r.False(result.IsError)
+
+	mu.Lock()
+	defer mu.Unlock()
+	r.NotEmpty(progressMsgs, "live output should produce tool_progress events")
+
+	joined := strings.Join(progressMsgs, "\n")
+	r.Contains(joined, "Build step", "progress should carry live output content")
+}
+
+// TestLastNonEmptyLine verifies the live-output line extraction helper.
+func TestLastNonEmptyLine(t *testing.T) {
+	tests := map[string]struct {
+		input string
+		want  string
+	}{
+		"single line":        {input: "Greendale", want: "Greendale"},
+		"trailing newline":   {input: "Pierce Hawthorne\n", want: "Pierce Hawthorne"},
+		"multiple lines":     {input: "Jeff\nBritta\nAnnie\n", want: "Annie"},
+		"trailing blanks":    {input: "Troy\n\n\n", want: "Troy"},
+		"carriage return":    {input: "progress\r", want: "progress"},
+		"empty":              {input: "", want: ""},
+		"only whitespace":    {input: "   \n\t\n", want: ""},
+		"interleaved blanks": {input: "Chang\n\nDean\n", want: "Dean"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, lastNonEmptyLine([]byte(tc.input)))
+		})
+	}
 }
 
 // TestBashTruncateCommand verifies the truncation helper.
