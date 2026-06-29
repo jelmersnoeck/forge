@@ -1,0 +1,5 @@
+# Learnings - 2026-06-29 15:04
+
+- A clean `git rebase` (no conflict markers) can still produce a broken build via semantic conflicts: branch A adds a method/signature change, branch B independently edits the same file, and the three-way merge keeps both sides' lines but drops a needed definition. After ANY rebase in forge, run `go build ./...` before declaring success — textual cleanliness != compiles.
+- internal/agent/phase merge_poller.go's PRState has unexported methods merged()/closed()/known(); known() classifies State against the OPEN/MERGED/CLOSED enum. RebaseFunc is `func(ctx, cwd, base string) error` (3-arg) since the base-branch rebase feature — test stubs must match or the phase package fails to compile.
+- Trap: `cmd > log 2>&1; echo EXIT:$?` reports the exit code of the WHOLE pipeline's last element, and `just test | tail -60` reports tail's exit (0), masking go test's FAIL. The TaskGet 'exitCode: 0' was wrong because the recipe was piped to tail. Always grep the captured log for '^FAIL' or '^ok' lines rather than trusting the reported exit code when output was piped/tailed.
