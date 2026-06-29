@@ -137,3 +137,35 @@ func TestEmptyDatabase(t *testing.T) {
 	r.NoError(err)
 	r.Empty(breakdowns)
 }
+
+func TestPurgeNegativeRowsOnOpen(t *testing.T) {
+	r := require.New(t)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	tracker, err := NewTracker()
+	r.NoError(err)
+
+	// One good row, several with a negative token column.
+	r.NoError(tracker.Track("session-good", "claude-3-5-sonnet-20241022", 1000, 500, 0, 0, 0.0225))
+	r.NoError(tracker.Track("session-bad-in", "claude-3-5-sonnet-20241022", -288, 89, 0, 0, 0))
+	r.NoError(tracker.Track("session-bad-out", "claude-3-5-sonnet-20241022", 100, -50, 0, 0, 0))
+	r.NoError(tracker.Track("session-bad-cc", "claude-3-5-sonnet-20241022", 100, 50, -5, 0, 0))
+	r.NoError(tracker.Track("session-bad-cr", "claude-3-5-sonnet-20241022", 100, 50, 0, -5, 0))
+	r.NoError(tracker.Close())
+
+	// Reopen: purge should run and drop the four bad rows.
+	tracker, err = NewTracker()
+	r.NoError(err)
+	defer func() { _ = tracker.Close() }()
+
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	end := start.AddDate(0, 1, 0)
+
+	breakdowns, err := tracker.GetSessionBreakdown(start, end)
+	r.NoError(err)
+	r.Len(breakdowns, 1)
+	r.Equal("session-good", breakdowns[0].SessionID)
+}
