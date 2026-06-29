@@ -207,9 +207,10 @@ func TestHashComponent_DeterministicAndContentSensitive(t *testing.T) {
 	b := []types.SystemBlock{{Type: "text", Text: "Greendale Community College"}}
 	c := []types.SystemBlock{{Type: "text", Text: "Señor Chang teaches Spanish"}}
 
-	ha, rawA := hashComponent(a)
-	hb, _ := hashComponent(b)
-	hc, _ := hashComponent(c)
+	ha, rawA, errA := hashComponent(a)
+	r.NoError(errA)
+	hb, _, _ := hashComponent(b)
+	hc, _, _ := hashComponent(c)
 
 	r.Equal(ha, hb, "identical content must hash identically")
 	r.NotEqual(ha, hc, "different content must hash differently")
@@ -250,8 +251,8 @@ func TestMessagePrefix_CacheControlOnlyDiffYieldsSameHash(t *testing.T) {
 		}},
 	}
 
-	h1, _ := hashComponent(messagePrefix(base))
-	h2, _ := hashComponent(messagePrefix(withCC))
+	h1, _, _ := hashComponent(messagePrefix(base))
+	h2, _, _ := hashComponent(messagePrefix(withCC))
 	r.Equal(h1, h2, "differing only in cache_control must not change the hash")
 }
 
@@ -259,7 +260,7 @@ func TestMessagePrefix_EmptyHistory(t *testing.T) {
 	r := require.New(t)
 	prefix := messagePrefix(nil)
 	r.Empty(prefix)
-	h, _ := hashComponent(prefix)
+	h, _, _ := hashComponent(prefix)
 	r.Len(h, 6)
 }
 
@@ -280,6 +281,21 @@ func TestDiffCacheComponents(t *testing.T) {
 	r.Equal("tools", changes[0].Name)
 	r.Equal("bbb222", changes[0].OldHash)
 	r.Equal("ddd444", changes[0].NewHash)
+}
+
+func TestDiffCacheComponents_Params(t *testing.T) {
+	r := require.New(t)
+
+	l := &Loop{
+		lastParamsHash: "aaa111", lastParamsRaw: `{"maxTokens":8192,"model":"opus"}`,
+		currParamsHash: "bbb222", currParamsRaw: `{"maxTokens":8192,"model":"sonnet"}`,
+	}
+
+	changes := l.diffCacheComponents()
+	r.Len(changes, 1)
+	r.Equal("params", changes[0].Name)
+	r.Equal("aaa111", changes[0].OldHash)
+	r.Equal("bbb222", changes[0].NewHash)
 }
 
 func TestWriteCacheBreakDiff(t *testing.T) {
