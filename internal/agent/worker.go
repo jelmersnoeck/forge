@@ -721,12 +721,21 @@ func (w *Worker) executeCompletionQueue(ctx context.Context, registry *tools.Reg
 
 // executeQueuedCommand executes a single queued bash command
 func (w *Worker) executeQueuedCommand(ctx context.Context, registry *tools.Registry, historyID, command, queueType string, emit func(types.OutboundEvent)) {
+	// Queued commands run as background/completion tasks, not the interactive
+	// foreground tool call. Drop the Bash tool's live tool_progress events so
+	// the queued path emits only queued_task_result/queued_task_error.
+	toolEmit := func(e types.OutboundEvent) {
+		if e.Type == "tool_progress" {
+			return
+		}
+		emit(e)
+	}
 	toolCtx := types.ToolContext{
 		Ctx:       ctx,
 		CWD:       w.cwd,
 		SessionID: w.sessionID,
 		HistoryID: historyID,
-		Emit:      emit,
+		Emit:      toolEmit,
 	}
 
 	input := map[string]any{"command": command}
