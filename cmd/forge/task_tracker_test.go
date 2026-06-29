@@ -10,11 +10,7 @@ import (
 func TestHandleTaskStatus_CreatesTracker(t *testing.T) {
 	r := require.New(t)
 
-	m := &model{
-		taskTrackers:     make(map[string]*taskTracker),
-		taskTrackerOrder: nil,
-		width:            120,
-	}
+	s := NewTaskTrackerSet()
 
 	payload := map[string]any{
 		"id":          "b3",
@@ -23,26 +19,24 @@ func TestHandleTaskStatus_CreatesTracker(t *testing.T) {
 		"outputTail":  []string{"PASS TestPaintball", "PASS TestDarkTimeline"},
 	}
 	data, _ := json.Marshal(payload)
-	m.handleTaskStatus(string(data))
+	summary, terminal := s.HandleStatus(string(data))
+	r.Empty(summary)
+	r.False(terminal)
 
-	r.Len(m.taskTrackers, 1)
-	tt := m.taskTrackers["b3"]
+	r.Equal(1, s.Len())
+	tt := s.trackers["b3"]
 	r.NotNil(tt)
 	r.Equal("b3", tt.taskID)
 	r.Equal("Running tests at Greendale", tt.description)
 	r.Equal("running", tt.status)
 	r.Equal([]string{"PASS TestPaintball", "PASS TestDarkTimeline"}, tt.outputTail)
-	r.Equal([]string{"b3"}, m.taskTrackerOrder)
+	r.Equal([]string{"b3"}, s.order)
 }
 
 func TestHandleTaskStatus_UpdatesExistingTracker(t *testing.T) {
 	r := require.New(t)
 
-	m := &model{
-		taskTrackers:     make(map[string]*taskTracker),
-		taskTrackerOrder: nil,
-		width:            120,
-	}
+	s := NewTaskTrackerSet()
 
 	// First update
 	payload := map[string]any{
@@ -52,30 +46,25 @@ func TestHandleTaskStatus_UpdatesExistingTracker(t *testing.T) {
 		"outputTail":  []string{"building..."},
 	}
 	data, _ := json.Marshal(payload)
-	m.handleTaskStatus(string(data))
+	s.HandleStatus(string(data))
 
 	// Second update — same ID, new output
 	payload["outputTail"] = []string{"building...", "linking...", "done!"}
 	data, _ = json.Marshal(payload)
-	m.handleTaskStatus(string(data))
+	s.HandleStatus(string(data))
 
 	// Still one tracker, not two.
-	r.Len(m.taskTrackers, 1)
-	r.Len(m.taskTrackerOrder, 1)
+	r.Equal(1, s.Len())
+	r.Len(s.order, 1)
 
-	tt := m.taskTrackers["b3"]
+	tt := s.trackers["b3"]
 	r.Equal([]string{"building...", "linking...", "done!"}, tt.outputTail)
 }
 
 func TestHandleTaskStatus_TerminalFinalizesToOutput(t *testing.T) {
 	r := require.New(t)
 
-	m := &model{
-		taskTrackers:     make(map[string]*taskTracker),
-		taskTrackerOrder: nil,
-		output:           []string{},
-		width:            120,
-	}
+	s := NewTaskTrackerSet()
 
 	// Start running
 	payload := map[string]any{
@@ -85,34 +74,31 @@ func TestHandleTaskStatus_TerminalFinalizesToOutput(t *testing.T) {
 		"outputTail":  []string{"compiling..."},
 	}
 	data, _ := json.Marshal(payload)
-	m.handleTaskStatus(string(data))
-	r.Len(m.taskTrackers, 1)
+	summary, terminal := s.HandleStatus(string(data))
+	r.Empty(summary)
+	r.False(terminal)
+	r.Equal(1, s.Len())
 
 	// Complete
 	payload["status"] = "completed"
 	payload["duration"] = "4.2s"
 	data, _ = json.Marshal(payload)
-	m.handleTaskStatus(string(data))
+	summary, terminal = s.HandleStatus(string(data))
 
-	// Tracker removed, summary line appended to output.
-	r.Len(m.taskTrackers, 0)
-	r.Len(m.taskTrackerOrder, 0)
-	r.NotEmpty(m.output)
-	// The last output line should mention the description.
-	last := m.output[len(m.output)-1]
-	r.Contains(last, "Troy and Abed's morning show build")
-	r.Contains(last, "b7")
-	r.Contains(last, "4.2s")
+	// Tracker removed, summary line returned.
+	r.True(terminal)
+	r.Equal(0, s.Len())
+	r.Len(s.order, 0)
+	r.NotEmpty(summary)
+	r.Contains(summary, "Troy and Abed's morning show build")
+	r.Contains(summary, "b7")
+	r.Contains(summary, "4.2s")
 }
 
 func TestHandleTaskStatus_MultipleTrackers(t *testing.T) {
 	r := require.New(t)
 
-	m := &model{
-		taskTrackers:     make(map[string]*taskTracker),
-		taskTrackerOrder: nil,
-		width:            120,
-	}
+	s := NewTaskTrackerSet()
 
 	for _, id := range []string{"b1", "b2", "a3"} {
 		payload := map[string]any{
@@ -122,30 +108,24 @@ func TestHandleTaskStatus_MultipleTrackers(t *testing.T) {
 			"outputTail":  []string{},
 		}
 		data, _ := json.Marshal(payload)
-		m.handleTaskStatus(string(data))
+		s.HandleStatus(string(data))
 	}
 
-	r.Len(m.taskTrackers, 3)
-	r.Equal([]string{"b1", "b2", "a3"}, m.taskTrackerOrder)
+	r.Equal(3, s.Len())
+	r.Equal([]string{"b1", "b2", "a3"}, s.order)
 }
 
 func TestRenderTaskTrackers_Empty(t *testing.T) {
 	r := require.New(t)
-
-	m := model{
-		taskTrackers:     make(map[string]*taskTracker),
-		taskTrackerOrder: nil,
-		width:            120,
-	}
-
-	r.Empty(m.renderTaskTrackers())
+	s := NewTaskTrackerSet()
+	r.Empty(s.Render("⠋", 120))
 }
 
 func TestRenderTaskTrackers_WithContent(t *testing.T) {
 	r := require.New(t)
 
-	m := model{
-		taskTrackers: map[string]*taskTracker{
+	s := &TaskTrackerSet{
+		trackers: map[string]*taskTracker{
 			"b3": {
 				taskID:      "b3",
 				description: "Running tests",
@@ -153,12 +133,10 @@ func TestRenderTaskTrackers_WithContent(t *testing.T) {
 				outputTail:  []string{"PASS TestFoo", "FAIL TestBar"},
 			},
 		},
-		taskTrackerOrder: []string{"b3"},
-		width:            120,
-		spinnerFrame:     0,
+		order: []string{"b3"},
 	}
 
-	rendered := m.renderTaskTrackers()
+	rendered := s.Render("⠋", 120)
 	r.Contains(rendered, "Running tests")
 	r.Contains(rendered, "b3")
 	r.Contains(rendered, "running")
@@ -169,8 +147,8 @@ func TestRenderTaskTrackers_WithContent(t *testing.T) {
 func TestTaskTrackerHeight(t *testing.T) {
 	r := require.New(t)
 
-	m := model{
-		taskTrackers: map[string]*taskTracker{
+	s := &TaskTrackerSet{
+		trackers: map[string]*taskTracker{
 			"b1": {
 				taskID:     "b1",
 				outputTail: []string{"line1", "line2"},
@@ -180,24 +158,23 @@ func TestTaskTrackerHeight(t *testing.T) {
 				outputTail: []string{"a", "b", "c"},
 			},
 		},
-		taskTrackerOrder: []string{"b1", "b2"},
+		order: []string{"b1", "b2"},
 	}
 
 	// b1: 1 header + 2 output = 3
 	// b2: 1 header + 3 output = 4
 	// Total: 7
-	r.Equal(7, m.taskTrackerHeight())
+	r.Equal(7, s.Height())
 }
 
 func TestHandleTaskStatus_InvalidJSON(t *testing.T) {
 	r := require.New(t)
 
-	m := &model{
-		taskTrackers:     make(map[string]*taskTracker),
-		taskTrackerOrder: nil,
-	}
+	s := NewTaskTrackerSet()
 
 	// Should not panic on garbage input.
-	m.handleTaskStatus("not json")
-	r.Empty(m.taskTrackers)
+	summary, terminal := s.HandleStatus("not json")
+	r.Empty(summary)
+	r.False(terminal)
+	r.Equal(0, s.Len())
 }

@@ -1,0 +1,4 @@
+# Learnings - 2026-06-28 17:00
+
+- When rebasing a branch that extracted a monolith into new files (e.g. cmd/forge/cli.go split into events.go/output.go/tasks.go) onto a main that edited the original monolith, the conflict resolution is: take your refactored (deleted) side, then manually port the upstream's small edits into the new destination file. Diff the upstream commit (git show <sha> -- path) to find exactly what main changed — it's usually tiny (one switch case) buried in a huge conflict block. Don't just take-theirs/take-ours blindly.
+- git's conflict hunk with empty content between ======= and >>>>>>> means your side deleted everything in that region (code moved elsewhere). Resolution = delete the entire HEAD block plus all three markers. Verify with awk 'NR==X{print}' that the ======= and >>>>>>> are adjacent before sed-deleting the range.
