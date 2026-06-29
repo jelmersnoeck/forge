@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
@@ -236,11 +237,13 @@ func (h *EventHandler) Handle(event types.OutboundEvent) EventResult {
 
 	case "intent_classified":
 		h.flushText()
-		switch event.Content {
+		switch parseClassifiedIntent(event.Content) {
 		case "question":
 			h.out.Append(dimStyle.Render("  answering question..."))
 		case "investigate":
 			h.out.Append(dimStyle.Render("  investigating..."))
+		case "triage":
+			h.out.Append(dimStyle.Render("  triaging — investigating and filing an issue..."))
 		}
 		// "task" is silent — the phase_start events provide the display.
 
@@ -397,4 +400,22 @@ func (h *EventHandler) flushText() {
 		}
 		h.out.SetOffset(offset)
 	}
+}
+
+// parseClassifiedIntent extracts the intent from an intent_classified event's
+// Content. The orchestrator emits a JSON object
+// {"intent":"...","size":"...","spec_match":"..."}; older/direct callers may
+// emit the bare intent string. This handles both: JSON is parsed for its
+// intent field, otherwise the trimmed raw content is returned.
+func parseClassifiedIntent(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "{") {
+		var obj struct {
+			Intent string `json:"intent"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &obj); err == nil {
+			return obj.Intent
+		}
+	}
+	return trimmed
 }

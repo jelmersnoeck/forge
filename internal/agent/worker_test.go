@@ -114,11 +114,52 @@ func TestWorkerStateTransition(t *testing.T) {
 				QAHistoryID: "qa-new",
 			},
 		},
-		"task with empty coder history preserves existing": {
+		"investigate to triage clears investigate": {
 			initial: WorkerState{
-				Phase:     PhaseOrchestrator,
-				HistoryID: "existing",
+				Phase:                PhaseInvestigate,
+				InvestigateHistoryID: "inv-old",
 			},
+			result: phase.OrchestratorResult{
+				Intent:          phase.IntentTriage,
+				TriageHistoryID: "triage-new",
+			},
+			want: WorkerState{
+				Phase:           PhaseTriage,
+				TriageHistoryID: "triage-new",
+			},
+		},
+		"triage to task clears triage state": {
+			initial: WorkerState{
+				Phase:           PhaseTriage,
+				TriageHistoryID: "triage-old",
+			},
+			result: phase.OrchestratorResult{
+				Intent:         phase.IntentTask,
+				CoderHistoryID: "coder-new",
+			},
+			want: WorkerState{
+				Phase:     PhaseOrchestrator,
+				HistoryID: "coder-new",
+			},
+		},
+		"triage to triage updates history": {
+			initial: WorkerState{
+				Phase:           PhaseTriage,
+				TriageHistoryID: "triage-old",
+			},
+			result: phase.OrchestratorResult{
+				Intent:          phase.IntentTriage,
+				TriageHistoryID: "triage-new",
+			},
+			want: WorkerState{
+				Phase:           PhaseTriage,
+				TriageHistoryID: "triage-new",
+			},
+		},
+		"task with empty coder history preserves existing": {initial: WorkerState{
+			Phase:     PhaseOrchestrator,
+			HistoryID: "existing",
+		},
 			result: phase.OrchestratorResult{
 				Intent:         phase.IntentTask,
 				CoderHistoryID: "",
@@ -183,6 +224,16 @@ func TestWorkerStateShouldRunOrchestrator(t *testing.T) {
 		"investigate with non-swe mode": {
 			state: WorkerState{Phase: PhaseInvestigate},
 			mode:  "code",
+			want:  false,
+		},
+		"triage with swe mode": {
+			state: WorkerState{Phase: PhaseTriage},
+			mode:  "swe",
+			want:  true,
+		},
+		"triage with non-swe mode": {
+			state: WorkerState{Phase: PhaseTriage},
+			mode:  "spec",
 			want:  false,
 		},
 		"orchestrator done": {

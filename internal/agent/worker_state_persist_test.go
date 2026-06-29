@@ -11,7 +11,7 @@ import (
 
 func TestPhaseNameRoundTrip(t *testing.T) {
 	r := require.New(t)
-	phases := []WorkerPhase{PhaseIdle, PhaseQA, PhaseInvestigate, PhaseOrchestrator, PhaseDone}
+	phases := []WorkerPhase{PhaseIdle, PhaseQA, PhaseInvestigate, PhaseTriage, PhaseOrchestrator, PhaseDone}
 	for _, p := range phases {
 		r.Equal(p, phaseFromName(phaseName(p)))
 	}
@@ -39,6 +39,7 @@ func TestWorker_PersistThenInitialState(t *testing.T) {
 		HistoryID:            "coder-hist",
 		QAHistoryID:          "qa-hist",
 		InvestigateHistoryID: "inv-hist",
+		TriageHistoryID:      "triage-hist",
 	})
 
 	// Raw file should reflect orchestratorDone and phase label.
@@ -47,6 +48,7 @@ func TestWorker_PersistThenInitialState(t *testing.T) {
 	r.Equal("orchestrator", st.Phase)
 	r.True(st.OrchestratorDone)
 	r.Equal("coder-hist", st.HistoryID)
+	r.Equal("triage-hist", st.TriageID)
 
 	// initialState reconstructs the WorkerState.
 	got := w.initialState()
@@ -54,6 +56,7 @@ func TestWorker_PersistThenInitialState(t *testing.T) {
 	r.Equal("coder-hist", got.HistoryID)
 	r.Equal("qa-hist", got.QAHistoryID)
 	r.Equal("inv-hist", got.InvestigateHistoryID)
+	r.Equal("triage-hist", got.TriageHistoryID)
 }
 
 func TestWorker_InitialState_CorruptIsFresh(t *testing.T) {

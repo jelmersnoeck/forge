@@ -27,10 +27,11 @@ const Version = 1
 type State struct {
 	Version          int       `json:"version"`
 	SessionID        string    `json:"sessionID"`
-	Phase            string    `json:"phase"`            // "idle", "qa", "investigate", "orchestrator", "done"
+	Phase            string    `json:"phase"`            // "idle", "qa", "investigate", "triage", "orchestrator", "done"
 	HistoryID        string    `json:"coderHistoryID"`   // coder/plain loop history for Resume()
 	QAHistoryID      string    `json:"qaHistoryID"`      // Q&A conversation history
 	InvestigateID    string    `json:"investigateID"`    // investigation conversation history
+	TriageID         string    `json:"triageID"`         // triage conversation history
 	OrchestratorDone bool      `json:"orchestratorDone"` // true once a task pipeline ran
 	HeadCommit       string    `json:"headCommit"`       // worktree HEAD at write time
 	UpdatedAt        time.Time `json:"updatedAt"`
