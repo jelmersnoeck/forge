@@ -317,18 +317,42 @@ func (l *Loop) runLoop(ctx context.Context, emit func(types.OutboundEvent)) erro
 		toolTokens := tokens.EstimateTools(toolSchemas)
 
 		if l.budget.ShouldCompact(systemTokens, historyTokens, toolTokens) {
-			compacted, removed := tokens.Compact(messagesWithCache, l.budget, systemTokens, toolTokens)
+			// Phase 1: summarize the about-to-be-dropped messages before
+			// lossy deletion. Summarization failure is non-fatal — fall back
+			// to count-only compaction.
+			summary := ""
+			if drop := tokens.DropSet(messagesWithCache, l.budget, systemTokens, toolTokens); len(drop) > 0 {
+				s, err := tokens.Summarize(ctx, l.provider, drop, l.budget)
+				switch {
+				case err != nil:
+					emit(types.OutboundEvent{
+						ID:        uuid.New().String(),
+						SessionID: l.sessionID,
+						Type:      "warning",
+						Content:   fmt.Sprintf("History summarization failed, compacting without summary: %v", err),
+						Timestamp: time.Now().Unix(),
+					})
+				default:
+					summary = s
+				}
+			}
+
+			compacted, removed := tokens.CompactWithSummary(messagesWithCache, l.budget, systemTokens, toolTokens, summary)
 			if removed > 0 {
 				messagesWithCache = compacted
 				// Re-add cache control after compaction
 				messagesWithCache = addMessageCacheControl(messagesWithCache)
 				historyTokens = tokens.EstimateHistory(messagesWithCache)
 
+				detail := "removed"
+				if summary != "" {
+					detail = "summarized and removed"
+				}
 				emit(types.OutboundEvent{
 					ID:        uuid.New().String(),
 					SessionID: l.sessionID,
 					Type:      "compact",
-					Content:   fmt.Sprintf("Compacted conversation: removed %d messages (now ~%d tokens)", removed, systemTokens+historyTokens+toolTokens),
+					Content:   fmt.Sprintf("Compacted conversation: %s %d messages (now ~%d tokens)", detail, removed, systemTokens+historyTokens+toolTokens),
 					Timestamp: time.Now().Unix(),
 				})
 			}

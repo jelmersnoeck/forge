@@ -143,8 +143,54 @@ func (b Budget) ShouldCompact(systemTokens, historyTokens, toolTokens int) bool 
 //	                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 //	                These two are inseparable.
 func Compact(history []types.ChatMessage, budget Budget, systemTokens, toolTokens int) ([]types.ChatMessage, int) {
-	if len(history) <= 2 {
+	return CompactWithSummary(history, budget, systemTokens, toolTokens, "")
+}
+
+// CompactWithSummary behaves like Compact but, when summary is non-empty,
+// injects it into the boundary marker so the LLM retains the key context of the
+// dropped messages instead of just a count. When summary is empty, output is
+// byte-identical to the legacy count-only Compact.
+func CompactWithSummary(history []types.ChatMessage, budget Budget, systemTokens, toolTokens int, summary string) ([]types.ChatMessage, int) {
+	keepFromIdx, ok := compactKeepIdx(history, budget, systemTokens, toolTokens)
+	if !ok {
 		return history, 0
+	}
+
+	removed := keepFromIdx - 1 // messages between first and keepFromIdx
+	boundary := types.ChatMessage{
+		Role: "user",
+		Content: []types.ChatContentBlock{{
+			Type: "text",
+			Text: boundaryText(removed, summary),
+		}},
+	}
+
+	compacted := make([]types.ChatMessage, 0, 2+len(history)-keepFromIdx)
+	compacted = append(compacted, history[0]) // first message
+	compacted = append(compacted, boundary)
+	compacted = append(compacted, history[keepFromIdx:]...)
+
+	return compacted, removed
+}
+
+// DropSet returns the messages Compact would remove for the given budget so the
+// caller can summarize them before compacting. Returns nil if no compaction
+// would occur. The returned slice is the contiguous middle range
+// history[1:keepFromIdx] (the first message is always retained).
+func DropSet(history []types.ChatMessage, budget Budget, systemTokens, toolTokens int) []types.ChatMessage {
+	keepFromIdx, ok := compactKeepIdx(history, budget, systemTokens, toolTokens)
+	if !ok {
+		return nil
+	}
+	return history[1:keepFromIdx]
+}
+
+// compactKeepIdx computes the index from which recent history is retained,
+// honoring tool_use/tool_result pairing. The second return is false when no
+// compaction should occur (everything fits, or adjustment collapses the range).
+func compactKeepIdx(history []types.ChatMessage, budget Budget, systemTokens, toolTokens int) (int, bool) {
+	if len(history) <= 2 {
+		return 0, false
 	}
 
 	targetHistoryTokens := (budget.Threshold() - systemTokens - toolTokens) * 60 / 100
@@ -164,7 +210,7 @@ func Compact(history []types.ChatMessage, budget Budget, systemTokens, toolToken
 
 	// If we'd keep everything, no compaction needed.
 	if keepFromIdx <= 1 {
-		return history, 0
+		return 0, false
 	}
 
 	// Adjust keepFromIdx so we don't split a tool_use/tool_result pair.
@@ -177,24 +223,20 @@ func Compact(history []types.ChatMessage, budget Budget, systemTokens, toolToken
 
 	// If adjustment collapsed everything, bail.
 	if keepFromIdx <= 1 {
-		return history, 0
+		return 0, false
 	}
 
-	removed := keepFromIdx - 1 // messages between first and keepFromIdx
-	boundary := types.ChatMessage{
-		Role: "user",
-		Content: []types.ChatContentBlock{{
-			Type: "text",
-			Text: fmt.Sprintf("[Context note: %d earlier messages were removed to stay within context limits. The conversation continues below.]", removed),
-		}},
+	return keepFromIdx, true
+}
+
+// boundaryText builds the injected boundary marker. With a summary it embeds
+// the recovered context; without one it falls back to the legacy count-only
+// note (byte-identical to the pre-summarization behavior).
+func boundaryText(removed int, summary string) string {
+	if strings.TrimSpace(summary) == "" {
+		return fmt.Sprintf("[Context note: %d earlier messages were removed to stay within context limits. The conversation continues below.]", removed)
 	}
-
-	compacted := make([]types.ChatMessage, 0, 2+len(history)-keepFromIdx)
-	compacted = append(compacted, history[0]) // first message
-	compacted = append(compacted, boundary)
-	compacted = append(compacted, history[keepFromIdx:]...)
-
-	return compacted, removed
+	return fmt.Sprintf("[Summary of %d earlier messages removed to stay within context limits:\n\n%s\n\nThe conversation continues below.]", removed, summary)
 }
 
 // hasToolResults reports whether msg contains any tool_result content blocks.
