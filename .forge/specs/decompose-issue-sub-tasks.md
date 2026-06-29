@@ -26,6 +26,15 @@ sub-issue-close + base-pull step between phases, so each subsequent phase
 branches from a base that includes all prior merged changes. Wiring the flag into
 the real orchestrator/worker is deferred to a later phase of #220.
 
+Phase 5 (#225): Manage sub-issue lifecycle on the parent issue as phases
+complete. `RunMultiPhase` gains a `ParentNumber` plus injected `CommentIssue` /
+`CloseParent` funcs. After each merged phase it posts a progress comment to the
+parent; on full completion it posts a summary and closes the parent; on any
+phase failure (worktree-create, sub-agent, or merge-wait halt) it posts a
+failure comment naming the sub-issue and linking the PR. Sub-issue closure
+already shipped in Phase 3. All parent lifecycle updates are non-fatal and are
+skipped entirely when `ParentNumber == 0`.
+
 ## Context
 - `internal/agent/phase/decompose.go` — new: decompose LLM call + sub-issue creation
 - `internal/agent/phase/decompose_test.go` — new: decompose + parse tests
@@ -49,6 +58,15 @@ the real orchestrator/worker is deferred to a later phase of #220.
   `RunMultiPhase` (opt-in `WaitForMerge` flag), `gitPullBase`, `ghCloseIssue`,
   `extractPRNumberFromURL` helpers
 - (Phase 3) `internal/agent/phase/multi_test.go` — merge-wait integration tests
+- (Phase 5) `internal/agent/phase/issue_lifecycle.go` — new: parent-comment +
+  parent-close gh wrappers (`ghCommentIssue`, `ghCloseParent`) and pure comment
+  formatters (`formatProgressComment`, `formatCompletionSummary`,
+  `formatPhaseFailureComment`); `phaseRecord` struct
+- (Phase 5) `internal/agent/phase/issue_lifecycle_test.go` — new: formatter +
+  lifecycle integration tests
+- (Phase 5) `internal/agent/phase/multi.go` — `ParentNumber`, `CommentIssue`,
+  `CloseParent` opts; per-phase `phaseRecord` tracking; progress/summary/failure
+  comment posting + parent close wired into `RunMultiPhase`
 
 ## Behavior
 - `Decompose(ctx, provider, issueBody) ([]SubTask, error)` runs a lightweight LLM
@@ -153,6 +171,31 @@ the real orchestrator/worker is deferred to a later phase of #220.
 - `MergePollInterval`/`MergeTimeout` on `MultiPhaseOpts` override the poller's
   interval/timeout; zero uses the poller defaults.
 
+### Phase 5 (#225) — Sub-issue lifecycle on the parent
+- `MultiPhaseOpts` gains `ParentNumber int`, `CommentIssue CommentIssueFunc`
+  (default `ghCommentIssue`: `gh issue comment <n> --body <body>`), and
+  `CloseParent CloseParentFunc` (default `ghCloseParent`, a thin alias of
+  `ghCloseIssue`). All parent lifecycle updates are skipped when
+  `ParentNumber == 0`.
+- After a phase's PR merges (only in the `WaitForMerge` path), `RunMultiPhase`
+  posts a progress comment to the parent via `formatProgressComment`:
+  `Phase <i>/<n> complete: **<title>** — PR #<num> merged.` (PR clause omitted
+  when no PR number is known). The existing sub-issue close (`CloseSubIssue`)
+  fires before the progress comment.
+- After all phases complete (loop exits with no error), `RunMultiPhase` posts a
+  completion summary via `formatCompletionSummary` (`All <n> phases complete:`
+  followed by one `- #<sub> → PR #<pr> (merged|open)` line per phase; `→ no PR`
+  when no PR), then closes the parent via `CloseParent`.
+- On any phase failure that halts the pipeline (worktree-create error,
+  sub-agent error, or merge-wait halt — closed/timeout/cancel or missing PR),
+  `RunMultiPhase` posts a failure comment via `formatPhaseFailureComment`
+  naming the phase + sub-issue and linking the PR when one exists, then returns
+  the error. No summary is posted and the parent is NOT closed on failure.
+- Per-phase outcomes are tracked in a `phaseRecord{Number, Title, PRURL, Merged}`
+  slice; `Merged` is set true only when the merge wait succeeds.
+- All parent comment/close calls are non-fatal: a `CommentIssue`/`CloseParent`
+  error is logged at warn and never halts the pipeline.
+
 ## Constraints
 - Do not add orchestration, worktree creation, CWD overrides, or multi-phase
   routing — those are later phases of #220. Only the three primitives ship here.
@@ -188,6 +231,21 @@ the real orchestrator/worker is deferred to a later phase of #220.
   `parsePRState` is tested against fixture JSON strings.
 - A merged-PR detection must accept the legacy `gh` shape (`CLOSED` + non-empty
   `mergedAt`), not only `state == "MERGED"`.
+
+### Phase 5 constraints (#225)
+- Parent lifecycle updates (progress comment, summary, parent close, failure
+  comment) must be no-ops when `ParentNumber == 0` — existing callers passing
+  no parent are unchanged.
+- A `CommentIssue` or `CloseParent` failure must NOT halt the pipeline — log at
+  warn and continue.
+- The completion summary and parent close must fire only on a clean run (loop
+  exits with nil error). A halt must post a failure comment and must NOT post a
+  summary or close the parent.
+- Progress comments fire only on the merge path (`WaitForMerge` true). With
+  `WaitForMerge` false no progress comments are posted (no merge signal exists).
+- Comment formatters must be pure (no `gh`, no network) and unit-tested against
+  expected strings; lifecycle integration tests inject `CommentIssue` /
+  `CloseParent` / `CloseSubIssue` fakes — never invoke `gh`.
 
 ## Interfaces
 ```go
@@ -302,6 +360,32 @@ type CloseSubIssueFunc func(ctx context.Context, repoRoot string, number int) er
 func extractPRNumberFromURL(prURL string) int // 0 when none found
 ```
 
+### Phase 5 interfaces (#225)
+```go
+// internal/agent/phase/issue_lifecycle.go
+type CommentIssueFunc func(ctx context.Context, repoRoot string, number int, body string) error
+type CloseParentFunc func(ctx context.Context, repoRoot string, number int) error
+
+type phaseRecord struct {
+    Number int    // sub-issue number (0 = unknown)
+    Title  string // sub-issue title
+    PRURL  string // PR URL, empty if none
+    Merged bool   // PR merged (only set when WaitForMerge is on)
+}
+
+func formatProgressComment(index, total int, rec phaseRecord) string
+func formatCompletionSummary(records []phaseRecord) string
+func formatPhaseFailureComment(index, total int, rec phaseRecord, cause error) string
+
+func ghCommentIssue(ctx context.Context, repoRoot string, number int, body string) error
+func ghCloseParent(ctx context.Context, repoRoot string, number int) error
+
+// internal/agent/phase/multi.go (Phase 5 additions to MultiPhaseOpts)
+//   ParentNumber int              // 0 → skip all parent lifecycle updates
+//   CommentIssue CommentIssueFunc // nil → ghCommentIssue
+//   CloseParent  CloseParentFunc  // nil → ghCloseParent
+```
+
 ## Edge Cases
 - Empty / whitespace-only issue body → `Decompose` returns `(nil, err)`, no LLM call.
 - LLM returns a single-element array (single-phase decomposition) → returned as a
@@ -367,3 +451,21 @@ func extractPRNumberFromURL(prURL string) int // 0 when none found
   continues to the next phase.
 - `RunMultiPhase` with `WaitForMerge` false → no merge wait, close, or pull
   occurs (Phase-2 behavior preserved).
+
+### Phase 5 edge cases (#225)
+- `ParentNumber == 0` → no progress comments, no summary, no parent close, no
+  failure comment.
+- All phases merge cleanly → N progress comments + 1 summary; parent closed once.
+- Progress comment with a known PR → `Phase i/n complete: **title** — PR #x merged.`
+- Progress comment with no PR number → `Phase i/n complete: **title**.`
+- Completion summary line with no sub-issue number → falls back to the title.
+- Completion summary line with an un-merged PR (open) → `(open)`; merged → `(merged)`;
+  no PR → `→ no PR`.
+- Sub-agent failure on phase i → one failure comment naming `#<num>` + error,
+  no summary, parent not closed; later phases never start.
+- Worktree-create failure → failure comment posted before the error returns.
+- Merge-wait halt (closed/timeout) → failure comment includes the error and PR
+  link; pipeline halts.
+- `CommentIssue` returns an error → logged at warn, pipeline continues (verified
+  across progress + summary calls).
+- `CloseParent` returns an error → logged at warn, pipeline still returns nil.

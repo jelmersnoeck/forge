@@ -95,6 +95,20 @@ type MultiPhaseOpts struct {
 	// CloseSubIssue closes a merged phase's sub-issue. Defaults to
 	// ghCloseIssue when nil. A close failure is non-fatal.
 	CloseSubIssue CloseSubIssueFunc
+
+	// ParentNumber is the parent GitHub issue the sub-issues were decomposed
+	// from. When > 0, progress comments are posted to it after each phase, a
+	// completion summary + close on success, and a failure comment on halt.
+	// When 0, all parent-issue lifecycle updates are skipped.
+	ParentNumber int
+
+	// CommentIssue posts a comment on a GitHub issue. Defaults to
+	// ghCommentIssue when nil. Comment failures are non-fatal.
+	CommentIssue CommentIssueFunc
+
+	// CloseParent closes the parent issue once all phases complete. Defaults
+	// to ghCloseParent when nil. A close failure is non-fatal.
+	CloseParent CloseParentFunc
 }
 
 // WaitForMergeFunc blocks until a PR reaches a terminal state, returning the
@@ -186,6 +200,30 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 	if closeIssue == nil {
 		closeIssue = ghCloseIssue
 	}
+	commentIssue := opts.CommentIssue
+	if commentIssue == nil {
+		commentIssue = ghCommentIssue
+	}
+	closeParent := opts.CloseParent
+	if closeParent == nil {
+		closeParent = ghCloseParent
+	}
+
+	// records accumulates each phase's outcome for the completion summary and
+	// the failure comment posted to the parent issue.
+	records := make([]phaseRecord, 0, len(opts.Phases))
+
+	// postParentComment posts a comment on the parent issue when one is
+	// configured; failures are logged, never fatal.
+	postParentComment := func(body string) {
+		if opts.ParentNumber <= 0 {
+			return
+		}
+		if cerr := commentIssue(ctx, opts.RepoRoot, opts.ParentNumber, body); cerr != nil {
+			slog.Warn("multi-phase: parent comment failed",
+				"parent", opts.ParentNumber, "error", cerr)
+		}
+	}
 
 	for i, ph := range opts.Phases {
 		if err := ctx.Err(); err != nil {
@@ -195,6 +233,8 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 		branch := phaseBranchName(opts.ParentSlug, ph.Number)
 		worktreePath := filepath.Join(opts.WorktreeBase, branchToDir(branch))
 
+		rec := phaseRecord{Number: ph.Number, Title: ph.Title}
+
 		emit(opts.Emit, types.OutboundEvent{
 			Type:    "text",
 			Content: fmt.Sprintf("Phase %d/%d: %s (branch %s)\n", i+1, len(opts.Phases), ph.Title, branch),
@@ -202,16 +242,21 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 
 		cwd, err := createWT(ctx, opts.RepoRoot, opts.BaseBranch, branch, worktreePath)
 		if err != nil {
-			return fmt.Errorf("multi-phase: phase %d (%q): create worktree: %w", i, ph.Title, err)
+			werr := fmt.Errorf("multi-phase: phase %d (%q): create worktree: %w", i, ph.Title, err)
+			postParentComment(formatPhaseFailureComment(i+1, len(opts.Phases), rec, werr))
+			return werr
 		}
 
 		prompt := formatSubIssuePrompt(ph)
 		if err := opts.SpawnAgent(ctx, cwd, branch, prompt); err != nil {
 			// Leave the worktree in place for inspection on failure.
-			return fmt.Errorf("multi-phase: phase %d (%q): sub-agent failed: %w", i, ph.Title, err)
+			serr := fmt.Errorf("multi-phase: phase %d (%q): sub-agent failed: %w", i, ph.Title, err)
+			postParentComment(formatPhaseFailureComment(i+1, len(opts.Phases), rec, serr))
+			return serr
 		}
 
 		pr := ensurePR(ctx, cwd)
+		rec.PRURL = pr.URL
 		switch {
 		case pr.Error != nil:
 			// PR failure is non-fatal — surface it but keep the pipeline going.
@@ -237,7 +282,9 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 			case pr.Error != nil || prNumber == 0:
 				// No mergeable PR was created — halt rather than silently
 				// running the next phase on a stale base.
-				return fmt.Errorf("multi-phase: phase %d (%q): cannot wait for merge, no PR was created", i, ph.Title)
+				herr := fmt.Errorf("multi-phase: phase %d (%q): cannot wait for merge, no PR was created", i, ph.Title)
+				postParentComment(formatPhaseFailureComment(i+1, len(opts.Phases), rec, herr))
+				return herr
 			default:
 				outcome, err := waitMerge(ctx, WaitForMergeOpts{
 					CWD:          cwd,
@@ -249,8 +296,12 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 					},
 				})
 				if err != nil {
-					return fmt.Errorf("multi-phase: phase %d (%q): merge wait (%s): %w", i, ph.Title, outcome, err)
+					merr := fmt.Errorf("multi-phase: phase %d (%q): merge wait (%s): %w", i, ph.Title, outcome, err)
+					postParentComment(formatPhaseFailureComment(i+1, len(opts.Phases), rec, merr))
+					return merr
 				}
+
+				rec.Merged = true
 
 				// Close the merged sub-issue (non-fatal).
 				if ph.Number > 0 {
@@ -259,6 +310,9 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 							"phase", i, "issue", ph.Number, "error", cerr)
 					}
 				}
+
+				// Post a progress comment on the parent issue (non-fatal).
+				postParentComment(formatProgressComment(i+1, len(opts.Phases), rec))
 
 				// Pull the merged changes into the local base branch so the
 				// next phase's worktree includes them (non-fatal — log only).
@@ -269,10 +323,21 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 			}
 		}
 
+		records = append(records, rec)
+
 		if err := removeWT(ctx, opts.RepoRoot, cwd); err != nil {
 			// Cleanup failure is non-fatal — log and continue.
 			slog.Warn("multi-phase: worktree cleanup failed",
 				"phase", i, "path", cwd, "error", err)
+		}
+	}
+
+	// All phases done: post a completion summary and close the parent issue.
+	if opts.ParentNumber > 0 && len(records) > 0 {
+		postParentComment(formatCompletionSummary(records))
+		if cerr := closeParent(ctx, opts.RepoRoot, opts.ParentNumber); cerr != nil {
+			slog.Warn("multi-phase: close parent issue failed",
+				"parent", opts.ParentNumber, "error", cerr)
 		}
 	}
 
