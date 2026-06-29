@@ -22,6 +22,11 @@ provider-agnostic; this spec adds per-provider lightweight model lists). Touches
 The work is incremental: each Phase below is a standalone PR. Phases 1–2 are
 high-impact/low-risk and land first.
 
+Follow-up: `provider-router` (issue #232) adds a model→provider router that
+re-routes mid-session `/model` switches to the owning provider and folds the
+duplicated provider-map construction (`collectProviders`,
+`CollectReviewProviders`, `selectProvider`) into one place.
+
 ## Context
 
 Files that change:
