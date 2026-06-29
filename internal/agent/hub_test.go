@@ -476,6 +476,109 @@ func TestHub_ConsumeSteeringMessage_AllEmpty(t *testing.T) {
 	r.False(ok)
 }
 
+func TestHub_ImmediateQueue(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	r.Empty(hub.GetImmediateQueue(), "fresh hub has empty immediate queue")
+
+	hub.EnqueueImmediate("just refill the dispensers")
+	hub.EnqueueImmediate("inspect the chicken fingers")
+	r.Equal([]string{"just refill the dispensers", "inspect the chicken fingers"}, hub.GetImmediateQueue())
+
+	// Empty string clears the queue.
+	hub.EnqueueImmediate("")
+	r.Empty(hub.GetImmediateQueue(), "empty enqueue clears immediate queue")
+}
+
+func TestHub_GetImmediateQueue_ReturnsCopy(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	hub.EnqueueImmediate("six seasons")
+	got := hub.GetImmediateQueue()
+	got[0] = "tampered"
+
+	r.Equal([]string{"six seasons"}, hub.GetImmediateQueue(),
+		"mutating the returned slice must not affect internal queue")
+}
+
+func TestHub_CompletionQueue(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	r.Empty(hub.PullCompletionQueue(), "fresh hub has empty completion queue")
+
+	hub.EnqueueCompletion("and a movie")
+	hub.EnqueueCompletion("pop pop")
+	r.Equal([]string{"and a movie", "pop pop"}, hub.PullCompletionQueue())
+
+	// Pull clears the queue.
+	r.Empty(hub.PullCompletionQueue(), "completion queue is cleared after pull")
+}
+
+func TestHub_TriggerReview(t *testing.T) {
+	tests := map[string]struct {
+		base string
+		want string
+	}{
+		"explicit base":       {base: "main", want: "main"},
+		"empty auto-detect":   {base: "", want: ""},
+		"feature branch base": {base: "jelmer/greendale", want: "jelmer/greendale"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			hub := NewHub()
+
+			hub.TriggerReview(tc.base)
+
+			select {
+			case got := <-hub.ReviewChannel():
+				r.Equal(tc.want, got)
+			case <-time.After(time.Second):
+				r.Fail("review channel did not receive value")
+			}
+		})
+	}
+}
+
+func TestHub_TriggerReview_SecondDropped(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	hub.TriggerReview("main")
+	hub.TriggerReview("develop") // dropped — buffer size 1, first still pending
+
+	select {
+	case got := <-hub.ReviewChannel():
+		r.Equal("main", got, "first trigger wins; second is dropped")
+	case <-time.After(time.Second):
+		r.Fail("review channel did not receive value")
+	}
+
+	// No second value buffered.
+	select {
+	case <-hub.ReviewChannel():
+		r.Fail("second trigger should have been dropped")
+	default:
+	}
+}
+
+func TestHub_IsIdle(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+
+	r.False(hub.IsIdle(), "no waiter registered → not idle")
+
+	awaitReady := waitForWaiter(hub)
+	go func() { hub.PullMessage(context.Background()) }()
+	awaitReady()
+
+	r.True(hub.IsIdle(), "worker waiting on PullMessage → idle")
+}
+
 func TestHub_PeekSteeringMessage_SkipsEmpty(t *testing.T) {
 	r := require.New(t)
 	hub := NewHub()

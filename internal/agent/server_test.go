@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +22,8 @@ func newTestServer(hub *Hub, sessionID string) *httptest.Server {
 	mux.HandleFunc("GET /health", handleHealth(sessionID))
 	mux.HandleFunc("POST /messages", handleMessages(hub, sessionID))
 	mux.HandleFunc("GET /events", handleSSE(hub))
+	mux.HandleFunc("POST /review", handleReview(hub, sessionID))
+	mux.HandleFunc("POST /interrupt", handleInterrupt(hub))
 	return httptest.NewServer(mux)
 }
 
@@ -164,6 +168,124 @@ func TestSSE_EventDelivery(t *testing.T) {
 	require.Equal(t, "paintball-101", event.SessionID)
 	require.Equal(t, "text", event.Type)
 	require.Equal(t, "Welcome to the thunderdome.", event.Content)
+}
+
+func TestPostReview_Endpoint(t *testing.T) {
+	tests := map[string]struct {
+		body string
+		want string
+	}{
+		"explicit base":  {body: `{"base":"main"}`, want: "main"},
+		"empty body":     {body: ``, want: ""},
+		"malformed JSON": {body: `{oops`, want: ""},
+		"feature base":   {body: `{"base":"jelmer/greendale"}`, want: "jelmer/greendale"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			hub := NewHub()
+			srv := newTestServer(hub, "review-101")
+			defer srv.Close()
+
+			resp, err := http.Post(srv.URL+"/review", "application/json", strings.NewReader(tc.body))
+			r.NoError(err)
+			defer func() { _ = resp.Body.Close() }()
+
+			r.Equal(http.StatusAccepted, resp.StatusCode)
+
+			var out map[string]string
+			r.NoError(json.NewDecoder(resp.Body).Decode(&out))
+			r.Equal("review_started", out["status"])
+
+			select {
+			case got := <-hub.ReviewChannel():
+				r.Equal(tc.want, got)
+			case <-time.After(time.Second):
+				r.Fail("review channel did not receive value")
+			}
+		})
+	}
+}
+
+// TestPostReview_MalformedBody_LogsWarning verifies that a malformed (non-empty)
+// POST /review body is surfaced via a warning log for operational visibility,
+// while still returning 202 and auto-detecting the base. An empty body (the
+// common case) must NOT log, since it is expected.
+func TestPostReview_MalformedBody_LogsWarning(t *testing.T) {
+	tests := map[string]struct {
+		body        string
+		wantLogged  bool
+		wantContent string
+	}{
+		"malformed body logs": {body: `{oops`, wantLogged: true, wantContent: "malformed POST /review body"},
+		"empty body silent":   {body: ``, wantLogged: false},
+		"valid body silent":   {body: `{"base":"greendale"}`, wantLogged: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+
+			var logBuf bytes.Buffer
+			origOut := log.Writer()
+			origFlags := log.Flags()
+			log.SetOutput(&logBuf)
+			log.SetFlags(0)
+			defer func() {
+				log.SetOutput(origOut)
+				log.SetFlags(origFlags)
+			}()
+
+			hub := NewHub()
+			srv := newTestServer(hub, "review-malformed-101")
+			defer srv.Close()
+
+			resp, err := http.Post(srv.URL+"/review", "application/json", strings.NewReader(tc.body))
+			r.NoError(err)
+			defer func() { _ = resp.Body.Close() }()
+			r.Equal(http.StatusAccepted, resp.StatusCode)
+
+			// Drain the review trigger so the handler's TriggerReview does not leak.
+			select {
+			case <-hub.ReviewChannel():
+			case <-time.After(time.Second):
+				r.Fail("review channel did not receive value")
+			}
+
+			logged := logBuf.String()
+			if tc.wantLogged {
+				r.Contains(logged, tc.wantContent)
+				r.Contains(logged, "review-malformed-101")
+			} else {
+				r.Empty(logged, "expected no log output for non-malformed body")
+			}
+		})
+	}
+}
+
+func TestPostInterrupt_Endpoint(t *testing.T) {
+	r := require.New(t)
+	hub := NewHub()
+	srv := newTestServer(hub, "interrupt-101")
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/interrupt", "application/json", strings.NewReader(""))
+	r.NoError(err)
+	defer func() { _ = resp.Body.Close() }()
+
+	r.Equal(http.StatusAccepted, resp.StatusCode)
+
+	var out map[string]string
+	r.NoError(json.NewDecoder(resp.Body).Decode(&out))
+	r.Equal("interrupted", out["status"])
+
+	select {
+	case <-hub.InterruptChannel():
+		// good — interrupt delivered
+	case <-time.After(time.Second):
+		r.Fail("interrupt channel did not receive signal")
+	}
 }
 
 func TestSetModel_Endpoint(t *testing.T) {
