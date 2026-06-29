@@ -18,6 +18,15 @@ PR, and cleans up before moving to the next. A phase failure halts the pipeline;
 PR and cleanup failures are non-fatal. Merge coordination between phases is #223
 (out of scope here). This is part of the multi-phase orchestrator (issue #220).
 
+Phase 3 (#223): Add `phase.WaitForMerge`, a merge poller that polls
+`gh pr view <n> --json state,mergeable,mergeStateStatus` at a configurable
+interval (default 30s) until the PR is MERGED (return nil), CLOSED (halt), or a
+timeout (default 2h) elapses (halt). On a CONFLICTING/DIRTY open PR it rebases
+onto origin/base and force-pushes. `RunMultiPhase` gains an opt-in merge-wait
+step (`WaitForMergeEnabled`) inserted between PR ensure and worktree removal,
+followed by a base fast-forward (`pullMain`) so the next phase branches off the
+updated base. A closed PR or merge timeout halts the pipeline.
+
 ## Context
 - `internal/agent/phase/decompose.go` — new: decompose LLM call + sub-issue creation
 - `internal/agent/phase/decompose_test.go` — new: decompose + parse tests
@@ -34,6 +43,11 @@ PR and cleanup failures are non-fatal. Merge coordination between phases is #223
   worktree helpers, branch/slug helpers, sub-issue prompt formatting
 - (Phase 2) `internal/agent/phase/multi_test.go` — new: coordinator + git worktree tests
 - (Phase 2) `internal/agent/phase/pr.go` — `EnsurePR` reused per phase (unchanged)
+- (Phase 3) `internal/agent/phase/merge_poller.go` — new: `WaitForMerge` poller,
+  `ghPRStatus`, `gitRebaseAndForcePush`, `pullMain`, `extractPRNumberFromURL`
+- (Phase 3) `internal/agent/phase/merge_poller_test.go` — new: poller + rebase tests
+- (Phase 3) `internal/agent/phase/multi.go` — merge-wait + pull-base step wired
+  into `RunMultiPhase` behind `WaitForMergeEnabled`
 
 ## Behavior
 - `Decompose(ctx, provider, issueBody) ([]SubTask, error)` runs a lightweight LLM
@@ -102,6 +116,37 @@ PR and cleanup failures are non-fatal. Merge coordination between phases is #223
 - `SlugifyTitle(title, maxLen)` lowercases, collapses non-alphanumeric runs to
   single hyphens, trims hyphens, and truncates to `maxLen` (0 = no truncation).
 
+### Phase 3 (#223) — Merge waiting + branch management
+- `WaitForMerge(ctx, MergeWaitOpts)` polls a PR until it merges or halts:
+  - Polls immediately, then every `PollInterval` (default 30s) via the injectable
+    `PRStatus` func (real impl: `gh pr view <n> --json state,mergeable,mergeStateStatus`).
+  - `MERGED` → returns nil. `CLOSED` → returns an error ("closed without merging").
+  - `OPEN` with `Mergeable == "CONFLICTING"` OR `MergeStateStatus == "DIRTY"` →
+    calls the injectable `Rebase` func (real impl: fetch + rebase onto
+    origin/base + `push --force-with-lease`); a rebase error is logged, NOT
+    fatal — polling continues so a human can resolve.
+  - A `PRStatus` query error is logged and retried on the next tick (transient
+    gh/network errors do not halt).
+  - After `Timeout` (default 2h) with no merge → returns a "not merged within"
+    error. A cancelled parent ctx → returns a "cancelled" error (distinct text).
+  - `PRNumber <= 0` → returns an "invalid PR number" error immediately.
+- `RunMultiPhase` gains `WaitForMergeEnabled` (default false → legacy behavior,
+  no merge coordination). When true, after the PR-ensure step and before
+  worktree removal, for each phase:
+  1. Extract the PR number from `PRResult.URL` via `extractPRNumberFromURL`.
+     If `<= 0` (PR skipped/failed), skip the merge wait (non-fatal) — the PR
+     failure was already surfaced.
+  2. Call `WaitForMergeFn(ctx, prNumber, cwd, BaseBranch)`. An error (closed PR
+     or timeout) halts the pipeline; the error names "phase i" + title +
+     "merge wait"; the worktree is left in place.
+  3. On merge, call `PullMainFn(ctx, RepoRoot, BaseBranch)` to fast-forward the
+     local base ref; a pull error is logged, NOT fatal (CreateWorktree still
+     branches off origin/base).
+- `MergePollInterval` / `MergeTimeout` on `MultiPhaseOpts` configure the default
+  `WaitForMergeFn`; zero values fall back to the package defaults.
+- `WaitForMergeFn` / `PullMainFn` default to wrappers around `WaitForMerge` /
+  `pullMain` when nil, so the worker wires nothing extra and tests inject fakes.
+
 ## Constraints
 - Do not add orchestration, worktree creation, CWD overrides, or multi-phase
   routing — those are later phases of #220. Only the three primitives ship here.
@@ -123,6 +168,18 @@ PR and cleanup failures are non-fatal. Merge coordination between phases is #223
   worktree-creation or sub-agent failure halts it.
 - The CWD override must default to the parent worker's cwd when `SubAgent.CWD`
   is empty — existing single-worktree sub-agent behavior is unchanged.
+
+### Phase 3 constraints (#223)
+- A `PRStatus` query error or a `Rebase` error must NOT halt `WaitForMerge` —
+  log and keep polling. Only `CLOSED`, timeout, cancellation, or an invalid PR
+  number halt it.
+- `WaitForMergeEnabled` defaults to false; when false `RunMultiPhase` must be
+  byte-for-byte the legacy behavior (no merge wait, no base pull).
+- A skipped/failed PR (no number in `PRResult.URL`) must NOT halt the pipeline
+  and must NOT call `WaitForMergeFn`.
+- A `PullMainFn` error must NOT halt the pipeline (logged only).
+- `WaitForMerge` must use injectable `PRStatus`/`Rebase` funcs so tests never
+  invoke real `gh` or git; the `merge_poller_test.go` poller tests pass closures.
 
 ## Interfaces
 ```go
@@ -189,6 +246,32 @@ type MultiPhaseOpts struct {
 
 func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error
 func SlugifyTitle(title string, maxLen int) string
+```
+
+### Phase 3 interfaces (#223)
+```go
+// internal/agent/phase/merge_poller.go
+type PRStatusFunc func(ctx context.Context, cwd string, prNumber int) (prStatus, error)
+type RebaseFunc func(ctx context.Context, cwd, base string) error
+
+type MergeWaitOpts struct {
+    PRNumber     int           // REQUIRED (> 0)
+    Cwd          string
+    BaseBranch   string
+    PollInterval time.Duration // <= 0 → 30s
+    Timeout      time.Duration // <= 0 → 2h
+    PRStatus     PRStatusFunc  // nil → ghPRStatus
+    Rebase       RebaseFunc    // nil → gitRebaseAndForcePush
+}
+
+func WaitForMerge(ctx context.Context, opts MergeWaitOpts) error
+func extractPRNumberFromURL(s string) int // /pull/(\d+) parser; 0 if none
+
+// internal/agent/phase/multi.go (added to MultiPhaseOpts)
+type WaitForMergeFunc func(ctx context.Context, prNumber int, cwd, base string) error
+type PullMainFunc func(ctx context.Context, repoRoot, base string) error
+// MultiPhaseOpts += WaitForMergeEnabled bool, MergePollInterval/MergeTimeout
+//   time.Duration, WaitForMergeFn WaitForMergeFunc, PullMainFn PullMainFunc
 ```
 
 ## Edge Cases

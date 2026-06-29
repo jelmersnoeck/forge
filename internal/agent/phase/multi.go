@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -65,6 +66,24 @@ type MultiPhaseOpts struct {
 	// EnsurePRFn ensures a PR for a phase worktree.
 	// Defaults to a thin wrapper around EnsurePR when nil.
 	EnsurePRFn EnsurePRFunc
+
+	// WaitForMergeEnabled turns on the merge-wait step between phases. When
+	// false (the default) RunMultiPhase behaves as before: each phase branches
+	// independently from BaseBranch with no cross-phase merge coordination.
+	WaitForMergeEnabled bool
+
+	// MergePollInterval / MergeTimeout configure WaitForMerge. Zero values fall
+	// back to the package defaults (30s / 2h).
+	MergePollInterval time.Duration
+	MergeTimeout      time.Duration
+
+	// WaitForMergeFn waits for a phase's PR to merge. Defaults to a wrapper
+	// around WaitForMerge when nil (only used when WaitForMergeEnabled is true).
+	WaitForMergeFn WaitForMergeFunc
+
+	// PullMainFn fast-forwards the local base branch after a phase merges, so
+	// the next phase branches off the updated base. Defaults to pullMain.
+	PullMainFn PullMainFunc
 }
 
 // SubIssue is one sub-issue (decomposed phase) to run. Number is the GitHub
@@ -90,6 +109,13 @@ type RemoveWorktreeFunc func(ctx context.Context, repoRoot, worktreePath string)
 // EnsurePRFunc ensures a PR for a phase worktree.
 type EnsurePRFunc func(ctx context.Context, cwd string) PRResult
 
+// WaitForMergeFunc blocks until a phase's PR (by number) merges, is closed, or
+// times out. Returns nil on merge, an error on close/timeout/cancel.
+type WaitForMergeFunc func(ctx context.Context, prNumber int, cwd, base string) error
+
+// PullMainFunc fast-forwards the local base branch in repoRoot after a merge.
+type PullMainFunc func(ctx context.Context, repoRoot, base string) error
+
 // RunMultiPhase runs each sub-issue sequentially: create worktree, spawn a
 // full-access sub-agent, ensure a PR, clean up, then move to the next.
 //
@@ -107,11 +133,16 @@ type EnsurePRFunc func(ctx context.Context, cwd string) PRResult
 //	  └──────────────┬───────────────┘
 //	                 ▼
 //	  ┌──────────────────────────────┐
+//	  │ wait for PR merge (optional) │  WaitForMergeEnabled
+//	  └──────────────┬───────────────┘  → pull base after merge
+//	                 ▼
+//	  ┌──────────────────────────────┐
 //	  │ remove worktree              │  (best-effort)
 //	  └──────────────────────────────┘
 //
-// A phase failure (worktree creation or sub-agent error) returns immediately;
-// remaining phases are not started. Merge coordination between phases is #223.
+// A phase failure (worktree creation, sub-agent error, or — when merge waiting
+// is enabled — a closed PR / merge timeout) returns immediately; remaining
+// phases are not started.
 func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 	if opts.SpawnAgent == nil {
 		return fmt.Errorf("multi-phase: SpawnAgent is required")
@@ -133,6 +164,22 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 		ensurePR = func(ctx context.Context, cwd string) PRResult {
 			return EnsurePR(ctx, opts.Provider, cwd, "", opts.PRAttr)
 		}
+	}
+	waitMerge := opts.WaitForMergeFn
+	if waitMerge == nil {
+		waitMerge = func(ctx context.Context, prNumber int, cwd, base string) error {
+			return WaitForMerge(ctx, MergeWaitOpts{
+				PRNumber:     prNumber,
+				Cwd:          cwd,
+				BaseBranch:   base,
+				PollInterval: opts.MergePollInterval,
+				Timeout:      opts.MergeTimeout,
+			})
+		}
+	}
+	pullMainFn := opts.PullMainFn
+	if pullMainFn == nil {
+		pullMainFn = pullMain
 	}
 
 	for i, ph := range opts.Phases {
@@ -174,6 +221,39 @@ func RunMultiPhase(ctx context.Context, opts MultiPhaseOpts) error {
 				Type:    "text",
 				Content: fmt.Sprintf("Phase %d: PR %s\n", i+1, pr.URL),
 			})
+		}
+
+		// Wait for the PR to merge before the next phase, so later phases build
+		// on a base that includes this phase's changes. A closed (un-merged) PR
+		// or timeout halts the pipeline; a successful merge then fast-forwards
+		// the local base ref.
+		if opts.WaitForMergeEnabled {
+			prNum := extractPRNumberFromURL(pr.URL)
+			switch {
+			case prNum <= 0:
+				// No PR to wait on (creation skipped/failed). Don't halt — the
+				// PR failure was already surfaced above as non-fatal.
+				slog.Warn("multi-phase: no PR number to wait on; skipping merge wait",
+					"phase", i, "title", ph.Title, "url", pr.URL)
+			default:
+				emit(opts.Emit, types.OutboundEvent{
+					Type:    "text",
+					Content: fmt.Sprintf("Phase %d: waiting for PR #%d to merge\n", i+1, prNum),
+				})
+				if err := waitMerge(ctx, prNum, cwd, opts.BaseBranch); err != nil {
+					// Leave the worktree in place for inspection on halt.
+					return fmt.Errorf("multi-phase: phase %d (%q): merge wait: %w", i, ph.Title, err)
+				}
+				emit(opts.Emit, types.OutboundEvent{
+					Type:    "text",
+					Content: fmt.Sprintf("Phase %d: PR #%d merged\n", i+1, prNum),
+				})
+				if err := pullMainFn(ctx, opts.RepoRoot, opts.BaseBranch); err != nil {
+					// Non-fatal: CreateWorktree still branches off origin/<base>.
+					slog.Warn("multi-phase: pull base after merge failed",
+						"phase", i, "error", err)
+				}
+			}
 		}
 
 		if err := removeWT(ctx, opts.RepoRoot, cwd); err != nil {
