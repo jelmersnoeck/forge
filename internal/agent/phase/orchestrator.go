@@ -2,6 +2,7 @@ package phase
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -44,6 +45,10 @@ func CollectReviewProviders() map[string]types.LLMProvider {
 // Orchestrator chains phases together into a complete workflow.
 type Orchestrator struct {
 	maxReviewCycles int
+
+	// runMultiPhase is the multi-phase coordinator. Defaults to RunMultiPhase;
+	// overridden in tests to avoid touching git/gh.
+	runMultiPhase func(ctx context.Context, opts MultiPhaseOpts) error
 }
 
 // OrchestratorOpts configures an orchestrator run.
@@ -90,7 +95,57 @@ type OrchestratorOpts struct {
 	// SteeringSource is called between LLM iterations to check for
 	// mid-turn user messages. Passed through to loop.Options.
 	SteeringSource func() (string, bool)
+
+	// MultiPhase enables sub-issue multi-phase routing on the large-task
+	// path (issue #224). When set and the run classifies as a large task,
+	// the orchestrator decomposes the parent issue into sub-issues (if none
+	// exist yet) and runs each as its own worktree/branch/PR via
+	// RunMultiPhase. When false, large tasks use the normal ideate pipeline.
+	MultiPhase bool
+
+	// IssueNumber is the parent GitHub issue number for the session. Used to
+	// fetch existing sub-issues and to attach newly decomposed ones.
+	IssueNumber int
+
+	// IssueTitle is the parent issue title, slugified into phase branch names.
+	IssueTitle string
+
+	// IssueBody is the parent issue body, fed to Decompose when no sub-issues
+	// exist yet.
+	IssueBody string
+
+	// RepoRoot is the git repository root multi-phase worktrees branch from.
+	// Defaults to CWD when empty.
+	RepoRoot string
+
+	// WorktreeBase is the directory under which per-phase worktrees are
+	// created. Defaults to /tmp/forge/worktrees when empty.
+	WorktreeBase string
+
+	// SubIssuesFn fetches the parent's sub-issues. Defaults to a gh-backed
+	// fetcher when nil. Injected for tests.
+	SubIssuesFn SubIssuesFunc
+
+	// CreateSubIssuesFn creates GitHub sub-issues from decomposed tasks.
+	// Defaults to CreateSubIssues when nil. Injected for tests.
+	CreateSubIssuesFn CreateSubIssuesFunc
+
+	// SpawnPhaseAgentFn runs a full-access sub-agent for one phase, blocking
+	// until completion. Required for multi-phase runs; wired by the worker.
+	SpawnPhaseAgentFn SpawnPhaseAgent
 }
+
+// maxParentSlugLen caps the slugified parent-issue title used in phase branch
+// names.
+const maxParentSlugLen = 40
+
+// SubIssuesFunc fetches a parent's sub-issues as SubIssue values, in position
+// order. Returns (nil, nil) when the parent has no sub-issues.
+type SubIssuesFunc func(ctx context.Context, cwd string, parentNumber int) ([]SubIssue, error)
+
+// CreateSubIssuesFunc creates GitHub sub-issues from decomposed tasks and
+// returns the created issue numbers in task order.
+type CreateSubIssuesFunc func(ctx context.Context, parent int, repo string, tasks []SubTask) ([]int, error)
 
 // OrchestratorResult is the return value from Orchestrator.Run.
 type OrchestratorResult struct {
@@ -297,6 +352,14 @@ func (o *Orchestrator) runConversationPhase(ctx context.Context, opts Orchestrat
 // runSWEPipeline runs the SWE pipeline with size-based routing.
 func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts, specPath string, classification Classification) (OrchestratorResult, error) {
 	result := OrchestratorResult{Intent: IntentTask}
+
+	// Multi-phase routing (#224): a large task with the multi-phase signal set
+	// decomposes the parent into sub-issues (if none exist) and runs each as
+	// its own worktree/branch/PR. A spec path or non-large size falls through
+	// to the normal size-based pipeline.
+	if opts.MultiPhase && specPath == "" && classification.Size == TaskSizeLarge {
+		return o.runMultiPhasePipeline(ctx, opts)
+	}
 
 	// Size-based routing: small tasks skip spec and review entirely.
 	skipSpec, useIdeation := resolveTaskPipeline(opts.PipelineHint, classification.Size)
@@ -517,6 +580,159 @@ func (o *Orchestrator) runSWEPipeline(ctx context.Context, opts OrchestratorOpts
 
 	result.CoderHistoryID = coderHistoryID
 	return result, nil
+}
+
+// runMultiPhasePipeline runs the large-task multi-phase path (#224): fetch the
+// parent's sub-issues (decomposing + creating them if none exist yet), then run
+// each as its own worktree/branch/PR via RunMultiPhase.
+//
+//	┌────────────────────────┐
+//	│ fetch sub-issues       │
+//	└───────────┬────────────┘
+//	    exist?  │  none
+//	       ┌────┴─────┐
+//	       │          ▼
+//	       │   ┌──────────────┐
+//	       │   │ Decompose    │
+//	       │   │ CreateSubIss.│
+//	       │   │ re-fetch     │
+//	       │   └──────┬───────┘
+//	       ▼          ▼
+//	┌────────────────────────┐
+//	│ RunMultiPhase(phases)  │
+//	└────────────────────────┘
+func (o *Orchestrator) runMultiPhasePipeline(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error) {
+	result := OrchestratorResult{Intent: IntentTask}
+	if opts.SpawnPhaseAgentFn == nil {
+		return result, fmt.Errorf("multi-phase: SpawnPhaseAgentFn is required")
+	}
+
+	subIssuesFn := opts.SubIssuesFn
+	if subIssuesFn == nil {
+		subIssuesFn = ghSubIssues
+	}
+	createSubIssuesFn := opts.CreateSubIssuesFn
+	if createSubIssuesFn == nil {
+		createSubIssuesFn = CreateSubIssues
+	}
+
+	repoRoot := opts.RepoRoot
+	if repoRoot == "" {
+		repoRoot = opts.CWD
+	}
+	worktreeBase := opts.WorktreeBase
+	if worktreeBase == "" {
+		worktreeBase = "/tmp/forge/worktrees"
+	}
+
+	o.emitPhaseStart(opts, "multi-phase")
+
+	phases, err := subIssuesFn(ctx, opts.CWD, opts.IssueNumber)
+	if err != nil {
+		log.Printf("[orchestrator:%s] multi-phase: fetch sub-issues failed (parent #%d, cwd=%s): %v",
+			opts.SessionID, opts.IssueNumber, opts.CWD, err)
+		return result, fmt.Errorf("multi-phase: fetch sub-issues (parent #%d): %w", opts.IssueNumber, err)
+	}
+
+	// No sub-issues yet — decompose the parent and create them.
+	if len(phases) == 0 {
+		log.Printf("[orchestrator:%s] multi-phase: no sub-issues, decomposing parent #%d", opts.SessionID, opts.IssueNumber)
+		tasks, derr := Decompose(ctx, opts.Provider, opts.IssueBody)
+		if derr != nil {
+			// Decompose failure falls back to the normal ideate pipeline so
+			// the session still makes progress on a single branch. Surface the
+			// downgrade to the user so it isn't a silent behavior change, and
+			// return the fallback's OrchestratorResult so session continuity
+			// (CoderHistoryID etc.) survives the fallback.
+			log.Printf("[orchestrator:%s] multi-phase: decompose failed (parent #%d), falling back to ideate: %v",
+				opts.SessionID, opts.IssueNumber, derr)
+			o.emitWarning(opts, fmt.Sprintf("Could not decompose issue into sub-tasks (%v) — falling back to single-pipeline implementation.", derr))
+			return o.runSWEPipelineNoMultiPhase(ctx, opts)
+		}
+		// CreateSubIssues may partially create sub-issues before failing (no
+		// rollback). Halt the task rather than running an incomplete plan, but
+		// warn that GitHub may now hold orphaned sub-issues a re-run will reuse.
+		// The empty repo is intentional: per the decompose contract gh omits
+		// the --repo flag and resolves the repo from opts.CWD (the worktree).
+		if _, cerr := createSubIssuesFn(ctx, opts.IssueNumber, "", tasks); cerr != nil {
+			log.Printf("[orchestrator:%s] multi-phase: create sub-issues failed (parent #%d); GitHub may hold partially-created sub-issues: %v",
+				opts.SessionID, opts.IssueNumber, cerr)
+			o.emitWarning(opts, fmt.Sprintf("Sub-issue creation failed partway (%v); some sub-issues may already exist on parent issue #%d. Review the parent issue on GitHub and close any partially-created sub-issues before re-running, or pass --no-plan to implement #%d as a single pipeline.", cerr, opts.IssueNumber, opts.IssueNumber))
+			return result, fmt.Errorf("multi-phase: create sub-issues: %w", cerr)
+		}
+		phases, err = subIssuesFn(ctx, opts.CWD, opts.IssueNumber)
+		if err != nil {
+			log.Printf("[orchestrator:%s] multi-phase: re-fetch sub-issues failed (parent #%d): %v",
+				opts.SessionID, opts.IssueNumber, err)
+			return result, fmt.Errorf("multi-phase: re-fetch sub-issues (parent #%d): %w", opts.IssueNumber, err)
+		}
+	}
+
+	if len(phases) == 0 {
+		return result, fmt.Errorf("multi-phase: no sub-issues to run after decomposition")
+	}
+
+	return result, o.runMultiPhaseFn()(ctx, MultiPhaseOpts{
+		Provider:     opts.Provider,
+		RepoRoot:     repoRoot,
+		BaseBranch:   DetectDefaultBranchSafe(repoRoot),
+		ParentSlug:   SlugifyTitle(opts.IssueTitle, maxParentSlugLen),
+		WorktreeBase: worktreeBase,
+		Phases:       phases,
+		Emit:         opts.Emit,
+		SpawnAgent:   opts.SpawnPhaseAgentFn,
+	})
+}
+
+// runMultiPhaseFn returns the orchestrator's multi-phase coordinator, defaulting
+// to RunMultiPhase when unset (tests override it to avoid git/gh).
+func (o *Orchestrator) runMultiPhaseFn() func(ctx context.Context, opts MultiPhaseOpts) error {
+	if o.runMultiPhase != nil {
+		return o.runMultiPhase
+	}
+	return RunMultiPhase
+}
+
+// runSWEPipelineNoMultiPhase runs the normal large-task ideate pipeline,
+// bypassing multi-phase routing. Used as the fallback when decomposition fails.
+func (o *Orchestrator) runSWEPipelineNoMultiPhase(ctx context.Context, opts OrchestratorOpts) (OrchestratorResult, error) {
+	opts.MultiPhase = false
+	return o.runSWEPipeline(ctx, opts, "", Classification{Intent: IntentTask, Size: TaskSizeLarge})
+}
+
+// ghSubIssues is the default SubIssuesFunc: it queries the GitHub sub-issues API
+// for the parent and maps the result into SubIssue values in position order.
+func ghSubIssues(ctx context.Context, cwd string, parentNumber int) ([]SubIssue, error) {
+	if !tools.GHAvailable() {
+		return nil, fmt.Errorf("gh CLI not installed (https://cli.github.com/)")
+	}
+	out, err := tools.GHOutputCtx(ctx, cwd,
+		"api", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/sub_issues", parentNumber))
+	if err != nil {
+		return nil, fmt.Errorf("gh api sub_issues: %w", err)
+	}
+	return parseGHSubIssues([]byte(out))
+}
+
+// parseGHSubIssues unmarshals the GitHub sub-issues API response into SubIssue
+// values, preserving position order. Empty input returns (nil, nil).
+func parseGHSubIssues(raw []byte) ([]SubIssue, error) {
+	var items []struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("parsing sub-issues: %w", err)
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	subs := make([]SubIssue, len(items))
+	for i, it := range items {
+		subs[i] = SubIssue{Number: it.Number, Title: it.Title, Body: it.Body}
+	}
+	return subs, nil
 }
 
 // RunSinglePhase runs a single phase in isolation.
@@ -921,6 +1137,21 @@ func (o *Orchestrator) emitPhaseEvent(opts OrchestratorOpts, eventType, content 
 		Type:      "phase_event",
 		Content:   fmt.Sprintf("%s: %s", eventType, content),
 		Timestamp: time.Now().Unix(),
+	})
+}
+
+// emitWarning emits a user-facing warning event. It is nil-safe: when opts.Emit
+// is unset (some tests / call paths) it is a no-op rather than panicking.
+func (o *Orchestrator) emitWarning(opts OrchestratorOpts, content string) {
+	if opts.Emit == nil {
+		return
+	}
+	opts.Emit(types.OutboundEvent{
+		ID:        uuid.New().String(),
+		SessionID: opts.SessionID,
+		Type:      "warning",
+		Content:   content,
+		Timestamp: time.Now().UnixMilli(),
 	})
 }
 

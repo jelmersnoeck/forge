@@ -117,6 +117,23 @@ func parseSubIssues(raw []byte) ([]ghIssue, error) {
 	return subs, nil
 }
 
+// detectMultiPhase decides whether an --issue session enters multi-phase mode.
+// It returns true when the parent issue has sub-issues AND noPlan is false.
+//
+// A fetchSubIssues error is NON-FATAL: the function returns (false, err) so the
+// caller can warn and fall back to the single-pipeline path. When noPlan is set
+// the function short-circuits to (false, nil) without querying GitHub.
+func detectMultiPhase(issueRef, cwd string, noPlan bool) (bool, error) {
+	if noPlan {
+		return false, nil
+	}
+	subs, err := fetchSubIssues(issueRef, cwd)
+	if err != nil {
+		return false, err
+	}
+	return len(subs) > 0, nil
+}
+
 // normalizeIssueRef strips leading `#` and whitespace from an issue reference.
 // Full URLs are passed through unchanged.
 func normalizeIssueRef(ref string) string {

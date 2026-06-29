@@ -62,6 +62,7 @@ Flags (interactive mode):
   --branch NAME            check out branch (reuses existing worktree if found)
   --spec PATH              implement a spec file directly
   --issue REF              GitHub issue URL or #N to use as initial prompt
+  --no-plan                force single-pipeline even when an issue has sub-issues (requires --issue)
 
 Examples:
   forge                                        # start interactive session
@@ -70,6 +71,7 @@ Examples:
   forge --spec .forge/specs/my-feature.md      # implement a spec
   forge --issue #42                            # implement a GitHub issue
   forge --issue https://github.com/o/r/issues/42  # issue by URL
+  forge --issue #42 --no-plan                  # implement #42 as one session, ignoring sub-issues
   forge --gateway http://localhost:3000        # connect to remote gateway
   forge stats --month 2026-04                  # show costs for April 2026
   forge mcp add datadog --url https://mcp.datadoghq.com/mcp --auth oauth

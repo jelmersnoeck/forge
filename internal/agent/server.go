@@ -25,6 +25,7 @@ type Config struct {
 	SpecPath    string // path to spec file (for --spec flag)
 	Model       string // explicit model override (from --model flag)
 	IssueURL    string // GitHub issue URL for PR linking (from --issue)
+	MultiPhase  bool   // run sub-issues as a sequential multi-phase pipeline (#224)
 }
 
 // Start creates a Hub, starts the Worker in a background goroutine,
@@ -35,7 +36,7 @@ type Config struct {
 func Start(cfg Config) error {
 	hub := NewHub()
 
-	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir, cfg.Mode, cfg.SpecPath, cfg.Model, cfg.IssueURL)
+	worker := NewWorker(hub, cfg.SessionID, cfg.CWD, cfg.SessionsDir, cfg.Mode, cfg.SpecPath, cfg.Model, cfg.IssueURL, cfg.MultiPhase)
 	go worker.Run(context.Background())
 
 	mux := http.NewServeMux()

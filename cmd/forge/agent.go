@@ -21,6 +21,7 @@ func runAgent(args []string) int {
 	specPath := fs.String("spec", "", "path to spec file (used by coder phase)")
 	modelFlag := fs.String("model", "", "model to use (overrides settings)")
 	issueURLFlag := fs.String("issue-url", "", "GitHub issue URL for PR linking")
+	multiPhase := fs.Bool("multi-phase", false, "run sub-issues as sequential multi-phase pipeline")
 	_ = fs.Parse(args[1:])
 
 	if err := os.Chdir(*cwd); err != nil {
@@ -60,6 +61,7 @@ func runAgent(args []string) int {
 		SpecPath:    *specPath,
 		Model:       *modelFlag,
 		IssueURL:    *issueURLFlag,
+		MultiPhase:  *multiPhase,
 	}
 
 	if err := agent.Start(cfg); err != nil {

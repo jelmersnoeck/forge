@@ -195,3 +195,23 @@ func TestFetchSubIssuesNoGH(t *testing.T) {
 	r.Nil(got)
 	r.Contains(err.Error(), "GitHub CLI")
 }
+
+func TestDetectMultiPhase_NoPlanShortCircuits(t *testing.T) {
+	// With --no-plan set, detectMultiPhase must NOT query gh (PATH empty proves
+	// it short-circuits) and must report single-pipeline (false, nil).
+	t.Setenv("PATH", "")
+	r := require.New(t)
+	mp, err := detectMultiPhase("42", t.TempDir(), true)
+	r.NoError(err)
+	r.False(mp)
+}
+
+func TestDetectMultiPhase_FetchErrorIsNonFatal(t *testing.T) {
+	// A fetchSubIssues failure (gh missing) surfaces as (false, err) so the
+	// caller warns and falls back to single-pipeline — not a hard abort.
+	t.Setenv("PATH", "")
+	r := require.New(t)
+	mp, err := detectMultiPhase("42", t.TempDir(), false)
+	r.Error(err)
+	r.False(mp)
+}
