@@ -381,9 +381,12 @@ func TestWorkerResolveModel(t *testing.T) {
 			override: "sonnet", settingsModel: "", isClaudeCLI: true,
 			want: "sonnet",
 		},
-		"settings with non-claude prefix ignored for Anthropic": {
+		"settings with non-claude prefix passes through for Anthropic": {
+			// The claude- prefix gate was removed: a non-empty settings model
+			// passes through to whatever provider is active, which owns model
+			// validation (eliminate-provider-coupling Phase 1).
 			override: "", settingsModel: "opus[1m]", isClaudeCLI: false,
-			want: "claude-opus-4-6",
+			want: "opus[1m]",
 		},
 		"settings with non-claude prefix used for Claude CLI": {
 			override: "", settingsModel: "opus[1m]", isClaudeCLI: true,

@@ -39,6 +39,16 @@ func NewOpenAI(apiKey string) *OpenAIProvider {
 	}
 }
 
+// DefaultModel returns the OpenAI default model.
+func (p *OpenAIProvider) DefaultModel() string { return openAIDefaultModel }
+
+// openAILightweightModels is the ordered list of cheap OpenAI models for
+// auxiliary calls.
+var openAILightweightModels = []string{"gpt-4.1-mini"}
+
+// LightweightModels returns the OpenAI cheap-model list.
+func (p *OpenAIProvider) LightweightModels() []string { return openAILightweightModels }
+
 // ── OpenAI API request types ────────────────────────────────
 
 type oaiRequest struct {

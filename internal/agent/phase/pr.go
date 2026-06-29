@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jelmersnoeck/forge/internal/attribution"
+	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/tools"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -169,7 +170,7 @@ func generatePRContent(ctx context.Context, prov types.LLMProvider, diff, commit
 	}
 
 	var lastErr error
-	for _, model := range types.LightweightModels {
+	for _, model := range provider.LightweightModels(prov) {
 		title, body, err := generateWithModel(ctx, prov, model, prompt.String())
 		if err == nil {
 			return title, body, nil

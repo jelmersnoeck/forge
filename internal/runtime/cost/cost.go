@@ -91,6 +91,30 @@ var modelPricing = map[string]Pricing{
 		CacheWrite: 1.25,
 		CacheRead:  0.10,
 	},
+	// ── OpenAI ──────────────────────────────────────────────
+	// OpenAI has no separate cache-write rate; cached input is billed at a
+	// reduced input rate, captured in CacheRead. CacheWrite stays 0.
+	// GPT-4.1
+	"gpt-4.1": {
+		Input:      2.00,
+		Output:     8.00,
+		CacheWrite: 0,
+		CacheRead:  0.50,
+	},
+	// GPT-4.1 mini
+	"gpt-4.1-mini": {
+		Input:      0.40,
+		Output:     1.60,
+		CacheWrite: 0,
+		CacheRead:  0.10,
+	},
+	// o3
+	"o3": {
+		Input:      2.00,
+		Output:     8.00,
+		CacheWrite: 0,
+		CacheRead:  0.50,
+	},
 }
 
 // dateSuffixLen is the length of the YYYYMMDD date suffix on dated model names.
@@ -144,6 +168,22 @@ func logAliasOnce(model string, pricing Pricing) {
 	})
 }
 
+// unknownModelLogOnce ensures the unknown-model cost warning fires at most once
+// per model per process lifetime — Calculate runs on every API response, so
+// per-call logging would be noisy. Mirrors aliasLogOnce.
+var unknownModelLogOnce sync.Map // model string -> *sync.Once
+
+func logUnknownModelOnce(model string) {
+	v, _ := unknownModelLogOnce.LoadOrStore(model, &sync.Once{})
+	once, ok := v.(*sync.Once)
+	if !ok {
+		return
+	}
+	once.Do(func() {
+		log.Printf("[cost] no pricing for model %q — cost will be reported as $0.00; add it to modelPricing to track spend", model)
+	})
+}
+
 // Calculate computes the cost in USD for the given token usage and model.
 // Returns 0.0 if model is unknown.
 //
@@ -158,6 +198,7 @@ func logAliasOnce(model string, pricing Pricing) {
 func Calculate(model string, usage types.TokenUsage) float64 {
 	pricing, ok := modelPricing[model]
 	if !ok {
+		logUnknownModelOnce(model)
 		return 0.0
 	}
 

@@ -130,6 +130,20 @@ type ModelLister interface {
 	ListModels(ctx context.Context) ([]ModelEntry, error)
 }
 
+// ModelDefaulter is an optional interface for providers that supply a default
+// model when none is configured. Mirrors ModelLister.
+type ModelDefaulter interface {
+	DefaultModel() string
+}
+
+// LightweightModeler is an optional interface for providers that supply an
+// ordered list of cheap/fast models for auxiliary calls (classification,
+// session naming, summarization). Callers try each in order, falling through
+// on error, and use the provider's default model when the list is empty.
+type LightweightModeler interface {
+	LightweightModels() []string
+}
+
 // ModelEntry represents a single model in a provider's catalog.
 type ModelEntry struct {
 	ID          string `json:"id"`
@@ -141,18 +155,6 @@ type ProviderModels struct {
 	Provider string       `json:"provider"`
 	Models   []ModelEntry `json:"models"`
 	Error    string       `json:"error,omitempty"`
-}
-
-// LightweightModels is a prioritized list of cheap/fast models for auxiliary
-// LLM calls (session naming, intent classification, etc.). Callsites should
-// try each model in order, falling through on error.
-//
-// Priority order:
-//   - claude-haiku-4-5: alias → latest Haiku; fast path, may 404 during rollouts
-//   - claude-haiku-4-5-20251001: pinned release as stability fallback
-var LightweightModels = []string{
-	"claude-haiku-4-5",
-	"claude-haiku-4-5-20251001",
 }
 
 // ── Tool System ──────────────────────────────────────────────

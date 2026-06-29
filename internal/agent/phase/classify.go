@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/spec"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
@@ -90,10 +91,10 @@ var _ [1<<20 - maxStripInputLen]struct{} // fails if > 1 MiB
 // as question, investigate, review, or task.
 // Returns (IntentTask, nil) for empty prompts.
 // Returns (IntentTask, err) on classification failure (safe default).
-// Tries each model in types.LightweightModels before giving up.
+// Tries each model in the provider's lightweight list before giving up.
 // Preserved for backward compatibility — delegates to Classify.
-func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt string) (Intent, error) {
-	c, err := Classify(ctx, provider, prompt, nil)
+func ClassifyIntent(ctx context.Context, prov types.LLMProvider, prompt string) (Intent, error) {
+	c, err := Classify(ctx, prov, prompt, nil)
 	return c.Intent, err
 }
 
@@ -103,7 +104,7 @@ func ClassifyIntent(ctx context.Context, provider types.LLMProvider, prompt stri
 // index so the classifier can match tasks to existing specs.
 // Returns (Classification{IntentTask, TaskSizeStandard, ""}, nil) for empty prompts.
 // Returns (Classification{IntentTask, TaskSizeStandard, ""}, err) on failure (safe default).
-func Classify(ctx context.Context, provider types.LLMProvider, prompt string, specs []types.SpecEntry) (Classification, error) {
+func Classify(ctx context.Context, prov types.LLMProvider, prompt string, specs []types.SpecEntry) (Classification, error) {
 	defaultClassification := Classification{Intent: IntentTask, Size: TaskSizeStandard}
 
 	if strings.TrimSpace(prompt) == "" {
@@ -114,8 +115,9 @@ func Classify(ctx context.Context, provider types.LLMProvider, prompt string, sp
 	systemPrompt := buildClassificationPrompt(specs)
 
 	var lastErr error
-	for i, model := range types.LightweightModels {
-		c, err := classifyFullWithModel(ctx, provider, model, systemPrompt, classifyPrompt, specs)
+	models := provider.LightweightModels(prov)
+	for i, model := range models {
+		c, err := classifyFullWithModel(ctx, prov, model, systemPrompt, classifyPrompt, specs)
 		if err == nil {
 			switch {
 			case i > 0:
@@ -134,7 +136,7 @@ func Classify(ctx context.Context, provider types.LLMProvider, prompt string, sp
 	}
 
 	slog.Error("classify: all models failed, defaulting to task/standard",
-		"models_tried", len(types.LightweightModels))
+		"models_tried", len(models))
 	if lastErr == nil {
 		return defaultClassification, fmt.Errorf("all models failed (no models configured)")
 	}
@@ -149,7 +151,7 @@ func buildClassificationPrompt(specs []types.SpecEntry) string {
 
 // classifyFullWithModel runs a single classification attempt against a specific model,
 // returning the full Classification.
-func classifyFullWithModel(ctx context.Context, provider types.LLMProvider, model, systemPrompt, prompt string, specs []types.SpecEntry) (Classification, error) {
+func classifyFullWithModel(ctx context.Context, prov types.LLMProvider, model, systemPrompt, prompt string, specs []types.SpecEntry) (Classification, error) {
 	defaultClassification := Classification{Intent: IntentTask, Size: TaskSizeStandard}
 
 	classifyCtx, cancel := context.WithTimeout(ctx, classificationTimeout)
@@ -172,7 +174,7 @@ func classifyFullWithModel(ctx context.Context, provider types.LLMProvider, mode
 		Stream:    true,
 	}
 
-	deltaChan, err := provider.Chat(classifyCtx, req)
+	deltaChan, err := prov.Chat(classifyCtx, req)
 	if err != nil {
 		return defaultClassification, fmt.Errorf("provider.Chat: %w", err)
 	}

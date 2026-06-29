@@ -25,6 +25,24 @@ func NewAnthropic(apiKey string) *AnthropicProvider {
 	}
 }
 
+// anthropicDefaultModel is the default model when none is configured.
+const anthropicDefaultModel = "claude-opus-4-6"
+
+// DefaultModel returns the Anthropic default model.
+func (p *AnthropicProvider) DefaultModel() string { return anthropicDefaultModel }
+
+// anthropicLightweightModels is the ordered list of cheap Anthropic models for
+// auxiliary calls (classification, session naming, summarization). Priority:
+//   - claude-haiku-4-5: alias → latest Haiku; fast path, may 404 during rollouts
+//   - claude-haiku-4-5-20251001: pinned release as stability fallback
+var anthropicLightweightModels = []string{
+	"claude-haiku-4-5",
+	"claude-haiku-4-5-20251001",
+}
+
+// LightweightModels returns the Anthropic cheap-model list.
+func (p *AnthropicProvider) LightweightModels() []string { return anthropicLightweightModels }
+
 // toCacheControl converts our CacheControl type to the Anthropic SDK param.
 func toCacheControl(cc *types.CacheControl) anthropic.CacheControlEphemeralParam {
 	param := anthropic.NewCacheControlEphemeralParam()

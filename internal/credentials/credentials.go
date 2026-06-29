@@ -29,6 +29,12 @@ var logicalToEnv = map[string]string{
 	OpenAIAPIKey:    "OPENAI_API_KEY",
 }
 
+// EnvVarName returns the environment-variable spelling for a logical credential
+// key, or "" if the key is unknown. Used for provider-aware user messages.
+func EnvVarName(logicalKey string) string {
+	return logicalToEnv[logicalKey]
+}
+
 // Provider resolves a logical credential key from some source.
 type Provider interface {
 	// Get returns the value for a logical key. ok is false if the key is

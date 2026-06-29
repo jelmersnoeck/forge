@@ -402,10 +402,29 @@ func TestModelForProvider(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			r.Equal(tc.want, modelForProvider(tc.input))
+			// nil provider exercises the name-based heuristic fallback (the
+			// provider doesn't implement types.ModelDefaulter).
+			r.Equal(tc.want, modelForProvider(tc.input, nil))
 		})
 	}
 }
+
+func TestModelForProviderUsesDefaultModel(t *testing.T) {
+	r := require.New(t)
+	// A provider implementing types.ModelDefaulter wins over the name heuristic.
+	r.Equal("haiku-of-greendale", modelForProvider("openai", defaulterProvider{model: "haiku-of-greendale"}))
+}
+
+// defaulterProvider implements types.LLMProvider and types.ModelDefaulter.
+type defaulterProvider struct {
+	model string
+}
+
+func (defaulterProvider) Chat(_ context.Context, _ types.ChatRequest) (<-chan types.ChatDelta, error) {
+	return nil, nil
+}
+
+func (d defaulterProvider) DefaultModel() string { return d.model }
 
 // callTrackingProvider wraps a mockProvider and records how many Chat calls it receives.
 type callTrackingProvider struct {

@@ -39,7 +39,7 @@ func Consolidate(
 	}
 
 	if model == "" {
-		model = modelForProvider("")
+		model = modelForProvider("", provider)
 		log.Printf("[consolidate] no model specified, defaulting to %s", model)
 	}
 

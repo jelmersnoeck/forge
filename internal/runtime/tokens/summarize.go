@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
@@ -33,7 +34,7 @@ Preserve, in priority order:
 Be terse. Use compact bullet points. Omit pleasantries, restated tool output, and anything the agent can re-derive cheaply. Target 500 tokens or fewer. Respond with ONLY the summary text.`
 
 // Summarize produces a terse plain-text summary of the given messages using a
-// lightweight model. It tries each model in types.LightweightModels in order,
+// lightweight model. It tries each model in the provider's lightweight list in order,
 // falling through on error. Returns ("", err) on any failure (all models
 // errored, timeout, empty response, or a mid-stream error delta); callers must
 // tolerate this and fall back to count-only compaction.
@@ -42,7 +43,7 @@ Be terse. Use compact bullet points. Omit pleasantries, restated tool output, an
 // bounded) messages plus a small system prompt and does not route through the
 // conversation loop. If the input exceeds the budget threshold it is truncated
 // from the oldest end before the call.
-func Summarize(ctx context.Context, provider types.LLMProvider, msgs []types.ChatMessage, budget Budget) (string, error) {
+func Summarize(ctx context.Context, prov types.LLMProvider, msgs []types.ChatMessage, budget Budget) (string, error) {
 	if len(msgs) == 0 {
 		return "", fmt.Errorf("summarize: no messages to summarize")
 	}
@@ -58,8 +59,9 @@ func Summarize(ctx context.Context, provider types.LLMProvider, msgs []types.Cha
 	defer cancel()
 
 	var lastErr error
-	for i, model := range types.LightweightModels {
-		summary, err := summarizeWithModel(sumCtx, provider, model, userText)
+	models := provider.LightweightModels(prov)
+	for i, model := range models {
+		summary, err := summarizeWithModel(sumCtx, prov, model, userText)
 		if err == nil {
 			if i > 0 {
 				slog.Info("summarize: succeeded on fallback model", "model", model, "failed_attempts", i)
@@ -77,7 +79,7 @@ func Summarize(ctx context.Context, provider types.LLMProvider, msgs []types.Cha
 }
 
 // summarizeWithModel runs a single summarization attempt against one model.
-func summarizeWithModel(ctx context.Context, provider types.LLMProvider, model, userText string) (string, error) {
+func summarizeWithModel(ctx context.Context, prov types.LLMProvider, model, userText string) (string, error) {
 	req := types.ChatRequest{
 		Model: model,
 		System: []types.SystemBlock{
@@ -95,7 +97,7 @@ func summarizeWithModel(ctx context.Context, provider types.LLMProvider, model, 
 		Stream:    true,
 	}
 
-	deltaChan, err := provider.Chat(ctx, req)
+	deltaChan, err := prov.Chat(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("provider.Chat: %w", err)
 	}

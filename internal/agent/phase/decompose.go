@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jelmersnoeck/forge/internal/runtime/provider"
 	"github.com/jelmersnoeck/forge/internal/types"
 )
 
@@ -46,12 +47,12 @@ Respond with ONLY a JSON array, no prose, no code fences:
 [{"title":"...","body":"...","depends_on":[0]}]`
 
 // Decompose runs a lightweight LLM call to break issueBody into ordered
-// sub-tasks. It tries each model in types.LightweightModels in order, falling
+// sub-tasks. It tries each model in the provider's lightweight list in order, falling
 // through on error.
 //
 // Returns (nil, err) for an empty/whitespace-only body (no LLM call is made).
 // Returns (nil, nil) when the LLM legitimately produces an empty array.
-func Decompose(ctx context.Context, provider types.LLMProvider, issueBody string) ([]SubTask, error) {
+func Decompose(ctx context.Context, prov types.LLMProvider, issueBody string) ([]SubTask, error) {
 	if strings.TrimSpace(issueBody) == "" {
 		return nil, fmt.Errorf("decompose: empty issue body")
 	}
@@ -59,8 +60,9 @@ func Decompose(ctx context.Context, provider types.LLMProvider, issueBody string
 	body := truncateAtWordBoundary(issueBody, maxDecomposePromptLen)
 
 	var lastErr error
-	for i, model := range types.LightweightModels {
-		tasks, err := decomposeWithModel(ctx, provider, model, body)
+	models := provider.LightweightModels(prov)
+	for i, model := range models {
+		tasks, err := decomposeWithModel(ctx, prov, model, body)
 		if err == nil {
 			if i > 0 {
 				slog.Info("decompose: succeeded on fallback model",
@@ -79,7 +81,7 @@ func Decompose(ctx context.Context, provider types.LLMProvider, issueBody string
 }
 
 // decomposeWithModel runs a single decompose attempt against a specific model.
-func decomposeWithModel(ctx context.Context, provider types.LLMProvider, model, body string) ([]SubTask, error) {
+func decomposeWithModel(ctx context.Context, prov types.LLMProvider, model, body string) ([]SubTask, error) {
 	callCtx, cancel := context.WithTimeout(ctx, decomposeTimeout)
 	defer cancel()
 
@@ -100,7 +102,7 @@ func decomposeWithModel(ctx context.Context, provider types.LLMProvider, model, 
 		Stream:    true,
 	}
 
-	deltaChan, err := provider.Chat(callCtx, req)
+	deltaChan, err := prov.Chat(callCtx, req)
 	if err != nil {
 		return nil, fmt.Errorf("provider.Chat: %w", err)
 	}

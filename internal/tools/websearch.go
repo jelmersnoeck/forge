@@ -66,10 +66,14 @@ func webSearchHandler(input map[string]any, ctx types.ToolContext) (types.ToolRe
 
 	apiKey, ok := credentials.Default().Get(credentials.AnthropicAPIKey)
 	if !ok {
+		// WebSearch's only backend today is the Anthropic web_search server tool.
+		// When no Anthropic key is present, web search is unavailable regardless
+		// of which provider drives the main conversation. Surface a clear,
+		// non-fatal error so the conversation continues.
 		return types.ToolResult{
 			Content: []types.ToolResultContent{{
 				Type: "text",
-				Text: "WebSearch requires ANTHROPIC_API_KEY to be set.",
+				Text: "WebSearch is unavailable for the active provider. Set ANTHROPIC_API_KEY to enable web search via the Anthropic backend.",
 			}},
 			IsError: true,
 		}, nil
