@@ -33,6 +33,11 @@ in `cache_test.go` (`TestHasCacheSignal`,
 `TestCheckCacheHealth_MessageDeltaDoesNotFalseBreak`,
 `TestCheckCacheHealth_RealBreakStillFires`).
 
+Issue #257 re-reported this exact bug; verification confirmed the fix was
+already present and complete in the worktree (loop.go:576 gate, loop.go:870
+baseline update only reached via gated path). All three regression tests pass.
+No further code change required.
+
 ## Behavior
 - A `message_delta` usage event (OutputTokens set, all cache/input fields 0)
   MUST NOT trigger a CACHE BREAK warning.
