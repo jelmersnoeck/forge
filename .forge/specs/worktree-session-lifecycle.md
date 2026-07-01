@@ -164,10 +164,11 @@ const Version   = 1
 type State struct {
     Version          int
     SessionID        string
-    Phase            string // "idle"|"qa"|"investigate"|"orchestrator"|"done"
+    Phase            string // "idle"|"qa"|"investigate"|"triage"|"orchestrator"|"done"
     HistoryID        string // coderHistoryID
     QAHistoryID      string
     InvestigateID    string
+    TriageID         string // triage conversation history
     OrchestratorDone bool
     HeadCommit       string
     UpdatedAt        time.Time
