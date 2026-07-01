@@ -295,6 +295,7 @@ type ContextBundle struct {
 	AgentDefinitions  map[string]AgentDefinition
 	Specs             []SpecEntry
 	Settings          MergedSettings
+	RepoMap           string // rendered structural repo map, empty when disabled
 }
 
 // AgentsMDEntry is a single AGENTS.md file carrying project instructions

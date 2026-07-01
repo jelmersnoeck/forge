@@ -36,6 +36,33 @@ func TestAssemble_DocumentationSection_NotInBaseOrSpecPrompt(t *testing.T) {
 		"base/spec prompt should not contain Documentation section")
 }
 
+func TestAssemble_RepoMap(t *testing.T) {
+	r := require.New(t)
+
+	repoMap := "greendale.go\n  type Dean\n  func Study\n"
+	bundle := types.ContextBundle{RepoMap: repoMap}
+	blocks := Assemble(bundle, "/greendale")
+	r.Len(blocks, 2)
+
+	// Repo map lives in the dynamic block (index 1), never the static block.
+	r.NotContains(blocks[0].Text, "Repository map")
+	r.Contains(blocks[1].Text, "Repository map (structural overview):")
+	r.Contains(blocks[1].Text, "type Dean")
+
+	// Placed before the daily date line to keep prefix stable within a day.
+	r.Less(strings.Index(blocks[1].Text, "Repository map"),
+		strings.Index(blocks[1].Text, "Current date:"))
+}
+
+func TestAssemble_RepoMap_EmptyOmitsSection(t *testing.T) {
+	r := require.New(t)
+	bundle := types.ContextBundle{}
+	blocks := Assemble(bundle, "/greendale")
+	for _, b := range blocks {
+		r.NotContains(b.Text, "Repository map")
+	}
+}
+
 func TestAssemble_AgentsMD_Instructions(t *testing.T) {
 	r := require.New(t)
 

@@ -13,7 +13,29 @@ import (
 
 // ForgeConfig holds forge-level configuration.
 type ForgeConfig struct {
-	SpecsDir string `json:"specsDir,omitempty"` // override for specs directory (default: .forge/specs)
+	SpecsDir string        `json:"specsDir,omitempty"` // override for specs directory (default: .forge/specs)
+	RepoMap  RepoMapConfig `json:"repoMap,omitempty"`  // optional structural repo map
+}
+
+// RepoMapConfig gates and bounds the optional repo map injected into context.
+type RepoMapConfig struct {
+	Enabled     bool `json:"enabled,omitempty"`
+	TokenBudget int  `json:"tokenBudget,omitempty"` // default 2000 when enabled
+	MaxFiles    int  `json:"maxFiles,omitempty"`    // 0 = unlimited
+}
+
+// rawConfig mirrors ForgeConfig for a single decode pass, but types the repo
+// map's Enabled flag as *bool so an explicit "enabled": false in a more-specific
+// config can override an earlier true. A plain bool under omitempty cannot
+// distinguish "false" from "unset". Consumers still see the clean bool via
+// ForgeConfig; the pointer stays internal to merging.
+type rawConfig struct {
+	SpecsDir string `json:"specsDir"`
+	RepoMap  struct {
+		Enabled     *bool `json:"enabled"`
+		TokenBudget int   `json:"tokenBudget"`
+		MaxFiles    int   `json:"maxFiles"`
+	} `json:"repoMap"`
 }
 
 // Load merges configuration from user (~/.forge/config.json) and project
@@ -47,13 +69,23 @@ func mergeFile(dst *ForgeConfig, path string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
-	var cfg ForgeConfig
+	var cfg rawConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
 
 	if cfg.SpecsDir != "" {
 		dst.SpecsDir = cfg.SpecsDir
+	}
+
+	if cfg.RepoMap.Enabled != nil {
+		dst.RepoMap.Enabled = *cfg.RepoMap.Enabled
+	}
+	if cfg.RepoMap.TokenBudget != 0 {
+		dst.RepoMap.TokenBudget = cfg.RepoMap.TokenBudget
+	}
+	if cfg.RepoMap.MaxFiles != 0 {
+		dst.RepoMap.MaxFiles = cfg.RepoMap.MaxFiles
 	}
 
 	return nil
