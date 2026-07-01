@@ -107,6 +107,27 @@ Key files:
 - `internal/config/config.go` — forge config loader
 - `internal/runtime/prompt/prompt.go` — spec instructions in system prompt
 
+## Repository Map (optional)
+
+An opt-in structural overview of the tracked source tree (files + top-level
+symbols, PageRank-ranked, token-budgeted) can be injected into the agent's
+context. Off by default. Enable via `.forge/config.json` (or `~/.forge/config.json`):
+
+```json
+{ "repoMap": { "enabled": true, "tokenBudget": 2000, "maxFiles": 0 } }
+```
+
+- File discovery uses `git ls-files` (respects `.gitignore`; skipped when not a
+  git repo or `git` is missing — degrades to empty, never errors).
+- Go files parsed via stdlib `go/parser`; `.py/.js/.ts/.tsx/.jsx/.rb/.rs/.java`
+  via regex extractors. Only declaration names/signatures — never file bodies.
+- Rendered into the dynamic system block (not the global static block) so tree
+  changes never bust the large cross-session cache. Fully deterministic output.
+- `tokenBudget` default 2000 (approx `len/4`); `maxFiles` 0 = unlimited; files
+  over 1 MiB skipped.
+
+Key files: `internal/runtime/repomap/{repomap,render,gosymbols,generic,rank}.go`.
+
 ## Configuration
 
 All forge configuration lives under `.forge/`:

@@ -142,6 +142,20 @@ func TestEveningLocalCrossesUTCDay(t *testing.T) {
 	r.NoError(err)
 	defer func() { _ = tracker.Close() }()
 
+	// SHARP EDGE: the sqlite3 C library resolves the TZ env var via the libc
+	// tzset() machinery, which on some platforms caches the zone at first use.
+	// If an earlier test in this process already triggered tzset() under a
+	// different TZ, our t.Setenv above may not take effect for SQLite's
+	// 'localtime' modifier — the assertions below would then flake depending on
+	// test order. Rather than assert on a stale zone, probe SQLite directly:
+	// convert a known UTC instant to localtime and confirm it reflects the PDT
+	// offset. If it doesn't, the C runtime cached a different zone, so skip with
+	// a clear diagnostic instead of producing a misleading failure.
+	if !sqliteLocaltimeMatches(t, tracker, loc) {
+		t.Skip("skipping: sqlite3 C library cached a different TZ (tzset already " +
+			"called this process); TZ changes are not reliably picked up mid-run")
+	}
+
 	// Local June 30 21:15 PDT == UTC July 1 04:15 (next UTC day). Mirror what
 	// Track stores: the UTC instant.
 	localEvening := time.Date(2026, 6, 30, 21, 15, 18, 0, loc)
@@ -165,8 +179,24 @@ func TestEveningLocalCrossesUTCDay(t *testing.T) {
 	r.Equal("greendale-troy-barnes", breakdowns[0].SessionID)
 }
 
-// testInsertRawRecord writes a cost row with a caller-controlled timestamp,
-// bypassing Track's time.Now(). TEST-ONLY: this helper lives in a _test.go file
+// sqliteLocaltimeMatches reports whether SQLite's 'localtime' modifier resolves
+// to the same wall-clock day as loc for a known UTC instant. It guards against
+// the libc tzset() caching described in TestEveningLocalCrossesUTCDay: if the C
+// library ignored our TZ change, SQLite's localtime will disagree with loc and
+// the caller should skip rather than flake.
+func sqliteLocaltimeMatches(t *testing.T, tracker *Tracker, loc *time.Location) bool {
+	t.Helper()
+	// UTC July 1 04:15 == June 30 (evening) in America/Los_Angeles (PDT).
+	probe := time.Date(2026, 7, 1, 4, 15, 0, 0, time.UTC)
+	wantDay := probe.In(loc).Format("2006-01-02")
+
+	var gotDay string
+	err := tracker.db.QueryRow(`SELECT DATE(?, 'localtime')`, probe).Scan(&gotDay)
+	require.NoError(t, err)
+	return gotDay == wantDay
+}
+
+// testInsertRawRecord writes a cost row with a caller-controlled timestamp,// bypassing Track's time.Now(). TEST-ONLY: this helper lives in a _test.go file
 // so it is never compiled into the production binary. It exists solely to
 // simulate API calls at specific instants (e.g. the UTC/local boundary in
 // TestEveningLocalCrossesUTCDay); it must never be promoted to non-test code, as

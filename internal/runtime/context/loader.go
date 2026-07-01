@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jelmersnoeck/forge/internal/config"
+	"github.com/jelmersnoeck/forge/internal/runtime/repomap"
 	"github.com/jelmersnoeck/forge/internal/spec"
 	"github.com/jelmersnoeck/forge/internal/types"
 	"gopkg.in/yaml.v3"
@@ -241,6 +242,17 @@ func (l *Loader) loadProjectContext(bundle *types.ContextBundle) error {
 		return fmt.Errorf("load specs: %w", err)
 	}
 	bundle.Specs = append(bundle.Specs, specs...)
+
+	// Optional structural repo map (gated by config, degrades to empty).
+	// Build never returns an error — it logs git/parse failures internally
+	// at debug level and yields an empty map — so ignoring err here is safe.
+	if cfg.RepoMap.Enabled {
+		m, _ := repomap.Build(l.cwd, repomap.Options{
+			TokenBudget: cfg.RepoMap.TokenBudget,
+			MaxFiles:    cfg.RepoMap.MaxFiles,
+		})
+		bundle.RepoMap = repomap.Render(m)
+	}
 
 	return nil
 }

@@ -289,6 +289,19 @@ func Assemble(bundle types.ContextBundle, cwd string) []types.SystemBlock {
 		}
 	}
 
+	// Repository map — structural overview (files + top-level symbols).
+	// Placed in the dynamic block so tree changes never bust the global static
+	// block, and before the daily date line to keep the dynamic prefix stable.
+	if strings.TrimSpace(bundle.RepoMap) != "" {
+		bundledContent.WriteString("<system-reminder>\n")
+		bundledContent.WriteString("Repository map (structural overview):\n\n")
+		bundledContent.WriteString(bundle.RepoMap)
+		if !strings.HasSuffix(bundle.RepoMap, "\n") {
+			bundledContent.WriteString("\n")
+		}
+		bundledContent.WriteString("</system-reminder>\n\n")
+	}
+
 	// Current date is appended last in the dynamic block. It changes daily and
 	// is deliberately kept out of the large cross-session static block to avoid
 	// a daily cache break of that block. Placing it at the end keeps the rest of
