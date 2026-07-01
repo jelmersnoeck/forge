@@ -272,6 +272,7 @@ func NewDefaultRegistry() *Registry {
 	r.Register(ReadTool())
 	r.Register(WriteTool())
 	r.Register(EditTool())
+	r.Register(MultiEditTool())
 	r.Register(BashTool())
 	r.Register(GlobTool())
 	r.Register(GrepTool())

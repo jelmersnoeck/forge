@@ -216,7 +216,7 @@ forge stats --sessions         # per-session breakdown
 - `internal/runtime/provider/anthropic.go` — Anthropic Messages API streaming
 - `internal/runtime/task/manager.go` — background task & sub-agent manager
 - `internal/tools/registry.go` — tool registry + NewDefaultRegistry()
-- `internal/tools/*.go` — tool implementations (Read, Write, Edit, Bash, Grep, Glob, WebSearch, Reflect, TaskCreate, TaskGet, TaskList, TaskStop, TaskOutput, Agent, AgentGet, AgentList, AgentStop, UseMCPTool)
+- `internal/tools/*.go` — tool implementations (Read, Write, Edit, MultiEdit, Bash, Grep, Glob, WebSearch, Reflect, TaskCreate, TaskGet, TaskList, TaskStop, TaskOutput, Agent, AgentGet, AgentList, AgentStop, UseMCPTool)
 - `internal/types/types.go` — shared contracts
 - `internal/types/task.go` — task & sub-agent types
 
