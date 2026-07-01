@@ -135,7 +135,7 @@ func (t *Tracker) GetDailySummaries(start, end time.Time) ([]DailySummary, error
 	ORDER BY date DESC
 	`
 
-	rows, err := t.db.Query(query, start, end)
+	rows, err := t.db.Query(query, start.UTC(), end.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("query summaries: %w", err)
 	}
@@ -205,7 +205,7 @@ func (t *Tracker) GetSessionBreakdown(start, end time.Time) ([]SessionBreakdown,
 	ORDER BY total_cost DESC
 	`
 
-	rows, err := t.db.Query(query, start, end)
+	rows, err := t.db.Query(query, start.UTC(), end.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("query session breakdown: %w", err)
 	}

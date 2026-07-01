@@ -111,6 +111,76 @@ func TestSessionBreakdown(t *testing.T) {
 	r.InDelta(0.00038, breakdowns[1].TotalCost, 0.00001)
 }
 
+// TestEveningLocalCrossesUTCDay pins issue #300: a cost row recorded in the
+// evening of a negative-offset zone lands on the *next* UTC calendar day. The
+// stats query range is built from local-time boundaries, so the WHERE filter
+// must compare against UTC-normalized boundaries or the row vanishes from the
+// daily/session views even though MonthlyTotal (already UTC) counts it.
+func TestEveningLocalCrossesUTCDay(t *testing.T) {
+	r := require.New(t)
+
+	// Force a negative-offset zone so local evening == next-day UTC.
+	//
+	// SHARP EDGE: t.Setenv("TZ", ...) does NOT update Go's time.Local (that is
+	// resolved once at process start). This test deliberately avoids time.Local:
+	// every time.Date call below uses the explicit `loc` loaded via
+	// time.LoadLocation, so the Go-side boundaries are deterministic regardless
+	// of the machine's timezone. The TZ setenv exists solely for the SQLite side:
+	// the "localtime" modifier in DATE(timestamp, 'localtime') is evaluated by
+	// the sqlite3 C library, which reads the TZ env var at query time. That is
+	// what makes the "2026-06-30" daily-bucket assertion below hold in CI (UTC)
+	// as well as on a developer's machine. Do NOT rely on time.Now()/time.Local
+	// matching `loc` in this test.
+	t.Setenv("TZ", "America/Los_Angeles")
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	r.NoError(err)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	tracker, err := NewTracker()
+	r.NoError(err)
+	defer func() { _ = tracker.Close() }()
+
+	// Local June 30 21:15 PDT == UTC July 1 04:15 (next UTC day). Mirror what
+	// Track stores: the UTC instant.
+	localEvening := time.Date(2026, 6, 30, 21, 15, 18, 0, loc)
+	testInsertRawRecord(t, tracker, "greendale-troy-barnes", localEvening.UTC())
+
+	// Build the query range exactly like cmd/forge/stats.go: local-time
+	// month boundaries for the local "today".
+	start := time.Date(2026, 6, 1, 0, 0, 0, 0, loc)
+	end := start.AddDate(0, 1, 0)
+
+	summaries, err := tracker.GetDailySummaries(start, end)
+	r.NoError(err)
+	r.Len(summaries, 1, "evening-local row must appear in daily breakdown")
+	r.Equal("2026-06-30", summaries[0].Date.Format("2006-01-02"),
+		"daily bucket must use the local day, not the UTC day")
+	r.Equal(1, summaries[0].CallCount)
+
+	breakdowns, err := tracker.GetSessionBreakdown(start, end)
+	r.NoError(err)
+	r.Len(breakdowns, 1, "evening-local row must appear in session breakdown")
+	r.Equal("greendale-troy-barnes", breakdowns[0].SessionID)
+}
+
+// testInsertRawRecord writes a cost row with a caller-controlled timestamp,
+// bypassing Track's time.Now(). TEST-ONLY: this helper lives in a _test.go file
+// so it is never compiled into the production binary. It exists solely to
+// simulate API calls at specific instants (e.g. the UTC/local boundary in
+// TestEveningLocalCrossesUTCDay); it must never be promoted to non-test code, as
+// arbitrary caller-controlled billing timestamps would corrupt cost accounting.
+func testInsertRawRecord(t *testing.T, tracker *Tracker, sessionID string, ts time.Time) {
+	t.Helper()
+	_, err := tracker.db.Exec(`
+		INSERT INTO cost_records
+			(timestamp, session_id, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		ts, sessionID, "claude-3-5-sonnet-20241022", 1000, 500, 0, 0, 0.0225)
+	require.NoError(t, err)
+}
+
 func TestEmptyDatabase(t *testing.T) {
 	r := require.New(t)
 
